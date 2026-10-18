@@ -29,6 +29,7 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 | **Android 原生编译** | ❌ **未执行** —— 没有 Android SDK |
 | **原生 CSR / Secure Enclave 密钥生成（iOS）** | ✅ 已实现（`modules/dsh-mtls/ios/DSHMTLSCsr.swift`：P-256、Secure Enclave 优先/软件回退、PKCS#10；证书通过 `installCertificate` 装回 Keychain）；⏳ 未在 Xcode 编译 |
 | **Android CSR / 证书安装** | ✅ 源码：`DshMtlsCsr.kt`（AndroidKeyStore P-256 + 手写 PKCS#10 DER）+ `installCertificate`（`setKeyEntry`）；⏳ 无 Android SDK，未编译验证 |
+| **Expo prebuild（iOS/Android）** | ✅ `npx expo prebuild --platform ios/android --no-install` 成功生成原生工程；autolinking 在两端均识别 `dsh-mtls`（未运行 pod install/编译） |
 | **环境就绪检查** | ✅ `npm run check:ios-env` / `check:android-env`（本机如实报告缺失 Xcode/Android SDK） |
 | **真机验收手册** | ✅ [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)：iOS/Android 构建、配对、mTLS、推送、生物识别、撤销、证书轮换验收清单 |
 | **原生源码一致性检查** | ✅ `npm run check:native`：JS bridge ↔ iOS/Android 方法/模块名/关键 API/括号平衡 |
