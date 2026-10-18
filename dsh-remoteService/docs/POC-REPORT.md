@@ -10,6 +10,8 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.12 | relay 数据面基准 | ✅ 2000 req / 32 并发：**10,912 req/s**，p50 2.03ms / p95 4.06ms / p99 34.21ms，0 错误（本机 loopback，仅作基线） | `poc/bench-relay.js`、`npm run bench` |
+| 1.11 | 断线重连可靠性 | ✅ relay 主动断开控制面后 connector 自动重连并重新注册 push token（测试覆盖） | `packages/host-plugin/test/connector.test.js` |
 | 1.10 | 客户端推送设置 + relay 连接限制 | ✅ 设置页新增推送开关/冷却；relay 新增 per-IP/全站并发上限（测试覆盖） | `client.js`、`packages/relay/lib/{config,server}.js`、`test/limits.test.js` |
 | 1.9 | Android 原生 mTLS HTTP（源码） | ✅ `DshMtlsNetwork.kt`（HttpsURLConnection + KeyManager）；⏳ 无 Android SDK，未编译验证 | `dsh-remoteApp/modules/dsh-mtls/android/.../DshMtlsNetwork.kt` |
 | 1.8 | Android CSR（源码） | ✅ AndroidKeyStore P-256 + 手写 PKCS#10 DER（与 iOS 同结构）；⏳ 无 Android SDK，未编译验证 | `dsh-remoteApp/modules/dsh-mtls/android/.../DshMtlsCsr.kt` |
@@ -29,10 +31,11 @@
 
 ```bash
 cd dsh-remoteService
-npm test                 # 55 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
+npm test                 # 56 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
 node poc/run-poc.js      # 端到端：配对→设备 mTLS→relay→DSH UI/WS；需要 dsh CLI 在 PATH
 npm run poc:webview      # macOS WKWebView + URLSession 客户端证书 POC（Swift/WebKit；无需 Xcode）
 npm run poc:csr          # Swift P-256 CSR → host CA 签发 → openssl 校验（无需 Xcode）
+npm run bench            # relay 数据面吞吐/延迟基线（本地）
 ```
 
 最近一次运行（节选）：
@@ -82,7 +85,8 @@ POC 使用独立临时 `$DSH_HOME`（不会碰用户的真实 DSH 数据），�
 4. **推送**：✅ host/relay 零内容推送链路 + 测试；⏳ App 原生 mTLS HTTP 客户端（`requestWithClientCert`）与 EAS/APNs 凭据（真机里程碑）。
 5. **client UI 桌面确认按钮**：✅ 已补齐（pending 卡片 + 允许/拒绝 + 刷新 + 测试）。
 6. **生产部署**：需要用户提供 VPS + 域名（或按 `DEPLOY.md` 自行部署）；relay 控制面必须用真实证书（`--dev` 仅本机）。
-7. **加固收尾**：✅ 已加远程响应安全头（nosniff/frame/referrer/HSTS）、请求体上限、`/open-in-app` deny；⏳ Android 编译、换机/撤销演练、CSP 评估。
+7. **加固收尾**：✅ 远程响应安全头/请求体上限/`/open-in-app` deny、relay per-IP 连接限制、断线重连；⏳ Android 编译、换机/撤销演练、CSP 评估。
+8. **部署产物校验**：✅ `docker compose config` 通过、launchd plist `plutil -lint` 通过；本机 Docker daemon 未运行，镜像构建需在部署机上执行。
 
 ## 6. 已知限制（POC 级别）
 

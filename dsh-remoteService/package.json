@@ -12,7 +12,8 @@
     "relay": "node packages/relay/bin/relay.js",
     "poc": "node poc/run-poc.js",
     "poc:webview": "bash poc/webview-mtls/run.sh",
-    "poc:csr": "bash poc/native-csr/run.sh"
+    "poc:csr": "bash poc/native-csr/run.sh",
+    "bench": "node poc/bench-relay.js"
   },
   "engines": {
     "node": ">=22"
