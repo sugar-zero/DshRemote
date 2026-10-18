@@ -66,6 +66,7 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
       audit,
       getConfig: () => config,
       savePushToken: () => {},
+      getStatus: () => ({ tls: null, relayConnected: true, version: '0.1.0-test' }),
     });
     const { port } = await remote.listen(0, '127.0.0.1');
 
@@ -177,6 +178,23 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
       keepAliveSocket.once('error', (error) => { clearTimeout(timer); reject(error); });
     });
     const keepAliveClosed = new Promise((resolve) => keepAliveSocket.once('close', () => resolve(true)));
+
+    const statusRes = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/__dsh_remote/status',
+    });
+    assert.equal(statusRes.status, 200);
+    const statusJson = JSON.parse(statusRes.body);
+    assert.equal(statusJson.data.hostId, 'h_test');
+    assert.equal(statusJson.data.domain, 'h_test.relay.test');
+    assert.equal(statusJson.data.devices.total, 2);
+    assert.equal(statusJson.data.devices.active, 2);
+    assert.equal(statusJson.data.version, '0.1.0-test');
+    assert.equal(statusJson.data.relayConnected, true);
+    const statusNoCert = await tlsRequestNoClientCert({
+      port, servername: fqdn, caPem: devCert.certPem, path: '/__dsh_remote/status',
+    });
+    assert.equal(statusNoCert.status, 403);
 
     const revokeRes = await tlsRequest({
       port, servername: fqdn, caPem: devCert.certPem,

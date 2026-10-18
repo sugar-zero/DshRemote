@@ -60,8 +60,10 @@ import {
 } from '../lib/appLock';
 import {
   canManageRemoteDevices,
+  fetchHostStatus,
   fetchRemoteDevices,
   revokeRemoteDevice,
+  type HostStatus,
   type RemoteDevice,
 } from '../lib/devices';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
@@ -116,12 +118,18 @@ export function DevicesScreen({
   const [remoteDevices, setRemoteDevices] = useState<RemoteDevice[] | null>(null);
   const [remoteDevicesError, setRemoteDevicesError] = useState<string | null>(null);
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
+  const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
 
   useEffect(() => {
     if (!canManageRemoteDevices()) return undefined;
     let cancelled = false;
-    fetchRemoteDevices(connection)
-      .then((devices) => { if (!cancelled) { setRemoteDevices(devices); setRemoteDevicesError(null); } })
+    Promise.all([fetchRemoteDevices(connection), fetchHostStatus(connection)])
+      .then(([devices, status]) => {
+        if (cancelled) return;
+        setRemoteDevices(devices);
+        setHostStatus(status);
+        setRemoteDevicesError(null);
+      })
       .catch((error: unknown) => { if (!cancelled) setRemoteDevicesError(error instanceof Error ? error.message : String(error)); });
     return () => { cancelled = true; };
   }, [connection]);

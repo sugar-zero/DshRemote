@@ -32,6 +32,7 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 | **Android 原生 mTLS HTTP** | ✅ 源码：`DshMtlsNetwork.kt`（HttpsURLConnection + X509ExtendedKeyManager）；⏳ 无 Android SDK，未编译验证 |
 | **App 锁（Face ID / Touch ID / 指纹）** | ✅ 源码：`src/lib/appLock.ts` + `LockScreen`；启动/回前台门禁 + 设备页开关（expo-local-authentication） |
 | **设备管理（App）** | ✅ `src/lib/devices.ts`：经 mTLS 隧道读取设备列表/撤销（host 侧已测试）；依赖原生 `requestWithClientCert` |
+| **主机诊断（App）** | ✅ 设备页显示主机版本/域名/TLS 证书到期/relay 连接/设备数（`/__dsh_remote/status`，mTLS） |
 | **原生 mTLS HTTP 客户端（iOS）** | ✅ `DSHMTLSNetwork.swift`（URLSession delegate）；URLSession 客户端证书机制已独立 POC 验证；⏳ 未编译 |
 | 推送（expo-notifications + 注册到 host） | ✅ JS 已接入（`src/lib/notifications.ts`）；⏳ 等原生 `requestWithClientCert` + EAS/APNs 凭据 |
 

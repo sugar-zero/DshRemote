@@ -4,6 +4,7 @@ import {
   PAIR_PATH,
   PAIR_STATUS_PATH,
   PUSH_TOKEN_PATH,
+  STATUS_PATH,
   TUNNEL_BASE,
 } from 'dsh-remote-protocol';
 import { readJsonBody, pathnameOf, sendError, sendJson } from './http-utils.js';
@@ -25,6 +26,7 @@ export function createRemoteServer({
   audit,
   getConfig,
   savePushToken,
+  getStatus,
   log = () => {},
 }) {
   const verifyPeer = createPeerVerifier({ devices, caCertPem });
@@ -76,6 +78,28 @@ export function createRemoteServer({
     devices.touch(peer.serial);
     trackDeviceSocket(req.socket, peer.serial);
 
+    if (pathname === STATUS_PATH) {
+      if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
+      const config = getConfig();
+      const status = typeof getStatus === 'function' ? getStatus() : {};
+      const allDevices = devices.list();
+      sendJson(res, 200, {
+        ok: true,
+        data: {
+          hostId: config.hostId,
+          hostName: config.hostName || '',
+          domain: `${config.hostId}.${config.relayDomain}`,
+          tls: status.tls ?? null,
+          relayConnected: status.relayConnected ?? null,
+          version: status.version ?? null,
+          devices: {
+            total: allDevices.length,
+            active: allDevices.filter((device) => !device.revokedAt).length,
+          },
+        },
+      });
+      return;
+    }
     if (pathname === DEVICES_PATH) {
       if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
       sendJson(res, 200, {

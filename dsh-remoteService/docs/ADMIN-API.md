@@ -121,6 +121,17 @@ Body：
 ### POST `/__dsh_remote/push-token`（要求 mTLS）
 Body：`{ "provider": "expo" | "apns" | "fcm", "token": "..." }`
 
+### GET `/__dsh_remote/status`（要求 mTLS）
+返回主机状态（App 诊断页用，不含敏感内容）：
+```json
+{ "ok": true, "data": {
+  "hostId": "h_xxx", "hostName": "Example Mac", "domain": "h_xxx.relay.example.com",
+  "tls": { "subject": "CN=h_xxx.relay.example.com", "notAfter": "2026-..." , "dev": false, "valid": true },
+  "relayConnected": true, "version": "0.1.0",
+  "devices": { "total": 2, "active": 1 }
+} }
+```
+
 ### GET `/__dsh_remote/devices`（要求 mTLS）
 返回已配对设备列表（App 设备管理用）：
 ```json
