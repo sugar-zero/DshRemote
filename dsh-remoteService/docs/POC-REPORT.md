@@ -18,7 +18,8 @@
 | 5 | 证书（B2 生产形态） | ✅ 开发自签通过；设备 EC(P-256) CSR 已支持（openssl 签发，适配 Secure Enclave/Keystore）；⏳ 生产 DNS-01 以文档 + acme.sh 为准（插件已实现**证书文件热加载**） | `docs/DEPLOY.md` §3；`lib/identity.js`（forge RSA + openssl EC 两条路径）；`#watchCertFiles` |
 | 6 | 安全断言 | ✅ **通过** | 无客户端证书/不受信 CA/已撤销设备 → 403；伪造 `Host`/`X-Forwarded-For`/`X-Real-IP`/`Origin` 不影响身份；`/connect` 被 deny；配对错误密钥限速（10 次后 429） |
 | 7 | 客户端 UI：入口 / 配对弹窗 / 桌面确认 | ✅ **通过（真实 DSH 截图）** | 入口在账号行正上方；配对弹窗含真实二维码/备用码/指纹/SAS；`pending` 时显示「待确认的配对请求」+设备名/SAS+「拒绝/允许配对」，点击允许后设备写入并刷新（截图见下） |
-| 8 | App 源码/TS 检查 | ✅ 通过（未编译原生） | `npx tsc --noEmit` exit 0；`expo config` 通过；autolinking 识别 `dsh-mtls`；协议自测 14/14 |
+| 8 | App 锁 / 生物识别（源码） | ✅ `src/lib/appLock.ts` + `LockScreen`：启动/回前台触发 Face ID/Touch ID/指纹；设备页可开关（本机未编译原生） |
+| 9 | App 源码/TS 检查 | ✅ 通过（未编译原生） | `npx tsc --noEmit` exit 0；`expo config` 通过；autolinking 识别 `dsh-mtls`；协议自测 14/14 |
 
 ## 2. 端到端 POC 运行结果
 

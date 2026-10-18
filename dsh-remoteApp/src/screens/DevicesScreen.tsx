@@ -25,6 +25,7 @@ import {
   Platform,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -51,6 +52,12 @@ import {
   setClientIdentity,
   type DshMtlsDiagnostics,
 } from '../../modules/dsh-mtls/src';
+import {
+  getBiometricAvailability,
+  isAppLockEnabled,
+  setAppLockEnabled,
+  type BiometricAvailability,
+} from '../lib/appLock';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
 interface DevicesScreenProps {
@@ -98,6 +105,18 @@ export function DevicesScreen({
   const [p12Password, setP12Password] = useState('');
   const [importing, setImporting] = useState(false);
   const [importMessage, setImportMessage] = useState<string | null>(null);
+  const [appLockEnabled, setAppLockEnabledState] = useState(false);
+  const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.all([isAppLockEnabled(), getBiometricAvailability()]).then(([enabled, availability]) => {
+      if (cancelled) return;
+      setAppLockEnabledState(enabled);
+      setBiometrics(availability);
+    });
+    return () => { cancelled = true; };
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -348,6 +367,9 @@ export function DevicesScreen({
 }
 
 const styles = StyleSheet.create({
+  section: { marginTop: spacing.lg },
+  lockRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  detailHint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs },
   screen: {
     flex: 1,
     backgroundColor: colors.background,
