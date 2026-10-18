@@ -19,6 +19,8 @@ export const PAIR_PATH = `${TUNNEL_BASE}/pair`;
 export const PAIR_STATUS_PATH = `${TUNNEL_BASE}/pair/status`;
 export const PAIR_APPROVE_PATH = `${TUNNEL_BASE}/pair/approve`;
 export const PUSH_TOKEN_PATH = `${TUNNEL_BASE}/push-token`;
+export const DEVICES_PATH = `${TUNNEL_BASE}/devices`;
+export const DEVICE_REVOKE_PATH_PREFIX = `${TUNNEL_BASE}/devices/`;
 
 /** 配对二维码 URI scheme。 */
 export const PAIR_URI_SCHEME = 'dshremote';

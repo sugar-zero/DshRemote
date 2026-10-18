@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.7 | 设备管理（App → 主机，mTLS 隧道） | ✅ host 侧 `GET /__dsh_remote/devices` + `POST /devices/:id/revoke` 已实现并被测试覆盖（列表/current 标记/撤销/无证书 403）；App `src/lib/devices.ts` + 设备页已接入 | `packages/host-plugin/lib/server.js`、`test/proxy.test.js`、`dsh-remoteApp/src/lib/devices.ts` |
 | 1.6 | URLSession 客户端证书（App 原生 HTTP） | ✅ **已验证**（同一 `npm run poc:webview` 中 URLSession 以客户端证书 POST 成功，服务器确认 `CN=dsh-poc-device`）；用途：push token 注册/`pair/status` | `poc/webview-mtls/urlsession-mtls.swift` |
 | 1.5 | 设备密钥 + PKCS#10 CSR（P-256） | ✅ **Swift 生成器已验证**：`npm run poc:csr`（Secure Enclave 优先、软件回退）→ host 插件真实设备 CA（openssl 路径）签发 → openssl 校验 CSR 自签名/证书链/公钥一致；iOS 源码在 `dsh-remoteApp/modules/dsh-mtls/ios/DSHMTLSCsr.swift` | `poc/native-csr/`；host 侧 `lib/identity.js` 支持 forge(RSA) + openssl(EC) 两条签发路径 |
 | 2 | relay TLS 透传 + SNI 路由 | ✅ **通过** | `packages/relay` 27 项测试（真实 ClientHello 捕获/分片、端到端 `tls.connect` → relay → 自签 TLS server、token 拒绝、未知 SNI 销毁、并发流、CLOSE 帧、控制面 TLS） |

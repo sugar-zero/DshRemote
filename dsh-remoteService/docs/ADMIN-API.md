@@ -115,6 +115,20 @@ Body：
 ### POST `/__dsh_remote/push-token`（要求 mTLS）
 Body：`{ "provider": "expo" | "apns" | "fcm", "token": "..." }`
 
+### GET `/__dsh_remote/devices`（要求 mTLS）
+返回已配对设备列表（App 设备管理用）：
+```json
+{ "ok": true, "data": { "devices": [
+  { "id": "d_xxx", "name": "iPhone 15 Pro", "platform": "ios", "serial": "01...",
+    "createdAt": 0, "lastSeenAt": 0, "revokedAt": null, "current": true }
+] } }
+```
+`current` 表示发起请求的这台设备（按客户端证书 serial 匹配）。
+
+### POST `/__dsh_remote/devices/:id/revoke`（要求 mTLS）
+撤销指定设备（立即断链、拒绝续期）。返回 `{ ok:true, data:{ device } }`；未知设备 404。
+> 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
+
 ### 其余路径
 全部反代到本机 DSH Web 服务（`http://127.0.0.1:<webServer.port>`），并：
 - 剥离 `Cookie / Authorization / Host / Origin / Forwarded / X-Forwarded-* / X-Real-IP / Sec-Fetch-*`；

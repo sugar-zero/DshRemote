@@ -58,6 +58,12 @@ import {
   setAppLockEnabled,
   type BiometricAvailability,
 } from '../lib/appLock';
+import {
+  canManageRemoteDevices,
+  fetchRemoteDevices,
+  revokeRemoteDevice,
+  type RemoteDevice,
+} from '../lib/devices';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
 interface DevicesScreenProps {
@@ -107,6 +113,18 @@ export function DevicesScreen({
   const [importMessage, setImportMessage] = useState<string | null>(null);
   const [appLockEnabled, setAppLockEnabledState] = useState(false);
   const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
+  const [remoteDevices, setRemoteDevices] = useState<RemoteDevice[] | null>(null);
+  const [remoteDevicesError, setRemoteDevicesError] = useState<string | null>(null);
+  const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!canManageRemoteDevices()) return undefined;
+    let cancelled = false;
+    fetchRemoteDevices(connection)
+      .then((devices) => { if (!cancelled) { setRemoteDevices(devices); setRemoteDevicesError(null); } })
+      .catch((error: unknown) => { if (!cancelled) setRemoteDevicesError(error instanceof Error ? error.message : String(error)); });
+    return () => { cancelled = true; };
+  }, [connection]);
 
   useEffect(() => {
     let cancelled = false;
@@ -369,6 +387,21 @@ export function DevicesScreen({
 const styles = StyleSheet.create({
   section: { marginTop: spacing.lg },
   lockRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
+  remoteDeviceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.border,
+  },
+  revokeButton: {
+    backgroundColor: 'rgba(242, 99, 122, 0.14)',
+    borderRadius: radii.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+  },
+  revokeButtonText: { color: colors.danger, fontSize: 13, fontWeight: '600' },
   detailHint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs },
   screen: {
     flex: 1,
