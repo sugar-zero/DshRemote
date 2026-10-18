@@ -137,6 +137,34 @@ object DshMtlsIdentityStore {
     return null
   }
 
+  /**
+   * 安装主机签发的设备证书到 AndroidKeyStore（与 CSR 生成的私钥 alias 关联）。
+   * 说明：AndroidKeyStore 不允许导入外部私钥，但允许把证书链 setKeyEntry 到已有私钥上。
+   */
+  @Throws(Exception::class)
+  fun installCertificate(context: Context, certPem: String, alias: String): Map<String, Any?> {
+    val certificate = parseCertificatePem(certPem)
+      ?: throw IllegalStateException("主机返回的设备证书不是合法 PEM/DER")
+    val keyStore = loadAndroidKeyStore()
+    val privateKey = keyStore.getKey(alias, null) as? PrivateKey
+      ?: throw IllegalStateException("找不到与设备证书匹配的私钥（alias=$alias）")
+    keyStore.setKeyEntry(alias, privateKey, null, arrayOf(certificate))
+    configuredLabel = alias
+    return diagnostics(context)
+  }
+
+  /** PKCS#7/X.509 PEM 单证书解析（忽略头尾行）。 */
+  fun parseCertificatePem(certPem: String): X509Certificate? = try {
+    val base64 = certPem.lineSequence()
+      .filter { !it.startsWith("-----") }
+      .joinToString("")
+    val der = Base64.decode(base64, Base64.DEFAULT)
+    val factory = java.security.cert.CertificateFactory.getInstance("X.509")
+    factory.generateCertificate(der.inputStream()) as X509Certificate
+  } catch (_: Exception) {
+    null
+  }
+
   // MARK: - Diagnostics (never returns key material)
 
   fun diagnostics(context: Context?): Map<String, Any?> {

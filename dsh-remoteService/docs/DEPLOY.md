@@ -235,6 +235,15 @@ tail -f /tmp/dsh-web.err.log
 
 ---
 
+## 7.1 部署自检
+
+```bash
+./scripts/check-deploy.sh relay.example.com h_ab12cd34
+```
+依次检查 DNS（含泛解析）、relay `/healthz` 里的 hostId、8443 可达性、relay 控制面证书、主机子域证书（经 relay 透传握手）。
+
+---
+
 ## 8. 排障
 
 | 现象 | 检查 |

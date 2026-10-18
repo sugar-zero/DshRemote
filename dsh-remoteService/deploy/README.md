@@ -8,6 +8,13 @@
 
 完整步骤见 [`../docs/DEPLOY.md`](../docs/DEPLOY.md)。
 
+部署完成后运行自检：
+
+```bash
+./scripts/check-deploy.sh relay.example.com h_ab12cd34
+# 检查 DNS（含泛解析）、relay /healthz 里的 hostId、8443 端口、relay 证书、主机子域证书
+```
+
 快速检查（部署后）：
 
 ```bash

@@ -28,7 +28,8 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 | **iOS 原生编译**（Swift / pod install / Xcode） | ❌ **未执行** —— 开发机只有 Command Line Tools，没有 Xcode |
 | **Android 原生编译** | ❌ **未执行** —— 没有 Android SDK |
 | **原生 CSR / Secure Enclave 密钥生成（iOS）** | ✅ 已实现（`modules/dsh-mtls/ios/DSHMTLSCsr.swift`：P-256、Secure Enclave 优先/软件回退、PKCS#10；证书通过 `installCertificate` 装回 Keychain）；⏳ 未在 Xcode 编译 |
-| **Android CSR / 原生 HTTP** | ⏳ 下一里程碑（Keystore + BouncyCastle） |
+| **Android CSR / 证书安装** | ✅ 源码：`DshMtlsCsr.kt`（AndroidKeyStore P-256 + 手写 PKCS#10 DER）+ `installCertificate`（`setKeyEntry`）；⏳ 无 Android SDK，未编译验证 |
+| **Android 原生 mTLS HTTP** | ⏳ 下一里程碑（HttpsURLConnection + KeyManager） |
 | **App 锁（Face ID / Touch ID / 指纹）** | ✅ 源码：`src/lib/appLock.ts` + `LockScreen`；启动/回前台门禁 + 设备页开关（expo-local-authentication） |
 | **设备管理（App）** | ✅ `src/lib/devices.ts`：经 mTLS 隧道读取设备列表/撤销（host 侧已测试）；依赖原生 `requestWithClientCert` |
 | **原生 mTLS HTTP 客户端（iOS）** | ✅ `DSHMTLSNetwork.swift`（URLSession delegate）；URLSession 客户端证书机制已独立 POC 验证；⏳ 未编译 |
