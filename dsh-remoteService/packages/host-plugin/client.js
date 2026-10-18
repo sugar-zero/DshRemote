@@ -55,6 +55,9 @@ window.__ModuleLoader__.load({
       'msg.revokeFailed': '撤销失败：{message}',
       'msg.pairCanceled': '已取消配对',
       'msg.pairFailed': '配对操作失败：{message}',
+      'msg.paired': '设备已加入',
+      'msg.pairDenied': '已拒绝',
+      'msg.approveFailed': '确认失败：{message}',
 
       'btn.save': '保存',
       'btn.saving': '保存中…',
@@ -62,6 +65,8 @@ window.__ModuleLoader__.load({
       'btn.close': '关闭',
       'btn.regenerate': '重新生成',
       'btn.openPairing': '配对新设备',
+      'btn.approvePairing': '允许配对',
+      'btn.denyPairing': '拒绝',
       'btn.revoke': '撤销',
       'btn.revokeConfirm': '确认撤销？',
 
@@ -83,6 +88,8 @@ window.__ModuleLoader__.load({
       'field.hostNameHint': '手机上显示的名字',
       'field.tlsCertFile': 'TLS 证书路径',
       'field.tlsKeyFile': 'TLS 私钥路径',
+      'field.configuredPlaceholder': '已配置，留空保持不变',
+      'field.hostTokenEmpty': '未配置，请输入',
 
       'relay.status': '中继连接',
       'relay.connected': '已连接',
@@ -99,6 +106,12 @@ window.__ModuleLoader__.load({
 
       'pairing.title': '配对新设备',
       'pairing.started': '配对码已生成',
+      'pairing.pendingTitle': '待确认的配对请求',
+      'pairing.pendingPill': '待确认',
+      'pairing.pendingDevice': '设备',
+      'pairing.pendingHint': '请确认手机上显示的短码与此处一致，再允许配对。',
+      'pairing.newDevice': '新设备',
+      'pairing.noSas': '等待手机提交配对信息…',
       'pairing.note': '手机安装 DSH Remote App 扫码',
       'pairing.qrAlt': '配对二维码',
       'pairing.qrFailed': '二维码加载失败，请点击「重新生成」',
@@ -118,6 +131,7 @@ window.__ModuleLoader__.load({
       'pairing.active': '配对进行中',
       'pairing.inactive': '没有进行中的配对',
       'pairing.settingsNote': '点击「配对新设备」生成一次性二维码，2 分钟内有效。',
+      'pairing.settingsPendingNote': '有设备正在等待本机确认，点击「配对新设备」完成确认。',
       'pairing.requiresApproval': '本次配对需要在这台电脑上确认。',
 
       'devices.empty': '还没有配对设备。',
@@ -190,6 +204,9 @@ window.__ModuleLoader__.load({
       'msg.revokeFailed': 'Revoke failed: {message}',
       'msg.pairCanceled': 'Pairing canceled',
       'msg.pairFailed': 'Pairing action failed: {message}',
+      'msg.paired': 'Device added',
+      'msg.pairDenied': 'Pairing denied',
+      'msg.approveFailed': 'Approval failed: {message}',
 
       'btn.save': 'Save',
       'btn.saving': 'Saving…',
@@ -197,6 +214,8 @@ window.__ModuleLoader__.load({
       'btn.close': 'Close',
       'btn.regenerate': 'Regenerate',
       'btn.openPairing': 'Pair new device',
+      'btn.approvePairing': 'Allow pairing',
+      'btn.denyPairing': 'Deny',
       'btn.revoke': 'Revoke',
       'btn.revokeConfirm': 'Confirm revoke?',
 
@@ -218,6 +237,8 @@ window.__ModuleLoader__.load({
       'field.hostNameHint': 'Shown on the phone',
       'field.tlsCertFile': 'TLS certificate path',
       'field.tlsKeyFile': 'TLS private key path',
+      'field.configuredPlaceholder': 'Configured — leave empty to keep',
+      'field.hostTokenEmpty': 'Not configured — enter it',
 
       'relay.status': 'Relay connection',
       'relay.connected': 'Connected',
@@ -234,6 +255,12 @@ window.__ModuleLoader__.load({
 
       'pairing.title': 'Pair a new device',
       'pairing.started': 'Pairing code generated',
+      'pairing.pendingTitle': 'Pending pairing request',
+      'pairing.pendingPill': 'Pending approval',
+      'pairing.pendingDevice': 'Device',
+      'pairing.pendingHint': 'Confirm the short code shown on the phone matches this one before allowing.',
+      'pairing.newDevice': 'New device',
+      'pairing.noSas': 'Waiting for the phone to submit pairing details…',
       'pairing.note': 'Install DSH Remote App on the phone and scan the code',
       'pairing.qrAlt': 'Pairing QR code',
       'pairing.qrFailed': 'Failed to load the QR code — click Regenerate',
@@ -253,6 +280,7 @@ window.__ModuleLoader__.load({
       'pairing.active': 'Pairing in progress',
       'pairing.inactive': 'No active pairing',
       'pairing.settingsNote': 'Click Pair new device to generate a one-time QR code valid for 2 minutes.',
+      'pairing.settingsPendingNote': 'A device is waiting for confirmation here; click Pair new device to approve or deny it.',
       'pairing.requiresApproval': 'This pairing requires confirmation on this computer.',
 
       'devices.empty': 'No paired devices yet.',
@@ -440,16 +468,26 @@ window.__ModuleLoader__.load({
       const config = status && status.config ? status.config : {};
       const stringOrPrevious = (value, fallback) => (value === undefined || value === null ? fallback : String(value));
       const firstDefined = (first, second) => (first !== undefined && first !== null ? first : second);
+      // 密钥类字段 host 只回 'configured' / configured 布尔，不回明文：编辑框留空 + 占位提示。
+      const tlsCertFileConfigured = config.tlsCertFile === 'configured'
+        || config.tlsCertFileConfigured === true
+        || prev.tlsCertFileConfigured === true;
+      const tlsKeyFileConfigured = config.tlsKeyFileConfigured === true || prev.tlsKeyFileConfigured === true;
+      const hostTokenConfigured = config.hostTokenConfigured === true || prev.hostTokenConfigured === true;
+      const certValue = tlsCertFileConfigured ? '' : firstDefined(config.tlsCertFile, tls.certFile);
       return {
-        enabled: status ? status.enabled === true : false,
+        enabled: config.enabled !== undefined ? config.enabled === true : (status ? status.enabled === true : false),
         relayUrl: stringOrPrevious(firstDefined(config.relayUrl, relay.url), prev.relayUrl || ''),
         hostId: stringOrPrevious(firstDefined(config.hostId, host.id), prev.hostId || ''),
         relayDomain: stringOrPrevious(deriveRelayDomain(status), prev.relayDomain || ''),
         hostToken: '',
         hostName: stringOrPrevious(firstDefined(config.hostName, host.name), prev.hostName || ''),
-        tlsCertFile: stringOrPrevious(firstDefined(config.tlsCertFile, tls.certFile), prev.tlsCertFile || ''),
+        tlsCertFile: stringOrPrevious(certValue, prev.tlsCertFile || ''),
         tlsKeyFile: stringOrPrevious(firstDefined(config.tlsKeyFile, tls.keyFile), prev.tlsKeyFile || ''),
         requireApproval: pickRequireApproval(status),
+        tlsCertFileConfigured,
+        tlsKeyFileConfigured,
+        hostTokenConfigured,
       };
     }
 
@@ -785,6 +823,7 @@ window.__ModuleLoader__.load({
         'data-ra-btn': '',
         'data-primary': props.primary ? '1' : undefined,
         'data-danger': props.danger ? '1' : undefined,
+        'data-ra-action': props.action,
         disabled: props.disabled,
         title: props.title,
         onClick: props.onClick,
@@ -936,6 +975,7 @@ window.__ModuleLoader__.load({
       const canceledRef = useRef(false);
       const startingRef = useRef(false);
       const autoTriesRef = useRef(0);
+      const handledRef = useRef(false);
 
       useEffect(() => {
         aliveRef.current = true;
@@ -1009,9 +1049,10 @@ window.__ModuleLoader__.load({
       const active = pairing !== null;
 
       // 打开弹窗时若没有活跃配对 → 自动创建；过期后也自动续一张（最多连续两次）。
+      // pending（等待桌面确认）/ 已确认 / 已拒绝时绝不自动续期。
       useEffect(() => {
         if (status === null || !enabled || active) return;
-        if (canceledRef.current || startingRef.current) return;
+        if (handledRef.current || canceledRef.current || startingRef.current) return;
         if (autoTriesRef.current >= 2) return;
         autoTriesRef.current += 1;
         void startPairing(true);
@@ -1023,6 +1064,28 @@ window.__ModuleLoader__.load({
       const codeText = pairing && pairing.code ? groupCode(pairing.code) : '';
       const fingerprint = status && status.host && status.host.fingerprint ? shortFingerprint(status.host.fingerprint) : '';
       const qrSrc = `${API}/pairing/qr.svg?ts=${qrTs}`;
+      const rawPairing = status && status.pairing ? status.pairing : null;
+      const pending = !!(rawPairing && rawPairing.active === true && rawPairing.status === 'pending');
+      const pendingDevice = rawPairing && rawPairing.pendingDevice ? rawPairing.pendingDevice : null;
+      const pendingDeviceName = pendingDevice && pendingDevice.name ? String(pendingDevice.name) : t('pairing.newDevice');
+      const pendingPlatform = pendingDevice && pendingDevice.platform ? platformLabel(pendingDevice.platform) : '';
+      const pendingSas = rawPairing && rawPairing.sas ? String(rawPairing.sas) : '';
+
+      const approve = useCallback(async (allow) => {
+        if (busy !== '' || !rawPairing || !rawPairing.pairingId) return;
+        setBusy('approve');
+        try {
+          await jpost('/pairing/approve', { pairingId: rawPairing.pairingId, approve: allow === true });
+          handledRef.current = true;
+          canceledRef.current = true;
+          await refresh();
+          if (aliveRef.current) showFlash('good', allow === true ? t('msg.paired') : t('msg.pairDenied'));
+        } catch (error) {
+          if (aliveRef.current) showFlash('warn', t('msg.approveFailed', { message: formatError(error) }));
+        } finally {
+          if (aliveRef.current) setBusy('');
+        }
+      }, [busy, rawPairing, refresh, showFlash, t]);
 
       return h('div', { 'data-ra-overlay': '', role: 'presentation' },
         h('div', { 'data-ra-mask': '', onClick: close }),
@@ -1035,7 +1098,7 @@ window.__ModuleLoader__.load({
           h('div', { 'data-ra-dialog-head': '' },
             h('span', { 'data-ra-dialog-glyph': '' }, h(PhoneGlyph, { size: 17 })),
             h('div', { 'data-ra-dialog-title': '' }, t('pairing.title')),
-            h(StatusPill, { tone, label: t(toneKey(tone)) }),
+            h(StatusPill, { tone, label: pending ? t('pairing.pendingPill') : t(toneKey(tone)) }),
             h('button', {
               type: 'button',
               'data-ra-x': '',
@@ -1052,7 +1115,40 @@ window.__ModuleLoader__.load({
               ? h('div', { 'data-ra-disabled': '' },
                 h('div', { 'data-ra-step-title': '' }, t('pairing.disabledHint')))
               : null,
-            status !== null && enabled
+            status !== null && enabled && pending
+              ? h('div', { 'data-ra-pending': '' },
+                h('div', { 'data-ra-pending-head': '' },
+                  h('span', { 'data-ra-pending-glyph': '' }, h(PhoneGlyph, { size: 20 })),
+                  h('div', { 'data-ra-pending-main': '' },
+                    h('div', { 'data-ra-step-title': '' }, t('pairing.pendingTitle')),
+                    h('div', { 'data-ra-step-note': '' },
+                      `${t('pairing.pendingDevice')}：${pendingDeviceName}${pendingPlatform !== '' ? ` · ${pendingPlatform}` : ''}`))),
+                h('div', { 'data-ra-pending-sas': '' },
+                  h('span', { 'data-ra-kv-label': '' }, t('pairing.sas')),
+                  pendingSas !== ''
+                    ? h('span', { 'data-ra-code': '' }, pendingSas)
+                    : h('span', { 'data-ra-note': '' }, t('pairing.noSas'))),
+                fingerprint
+                  ? h('div', { 'data-ra-kv': '' },
+                    h('span', { 'data-ra-kv-label': '' }, t('pairing.hostFingerprint')),
+                    h('span', { 'data-ra-mono': '' }, fingerprint))
+                  : null,
+                h('div', { 'data-ra-note': '' }, t('pairing.pendingHint')),
+                h('div', { 'data-ra-pending-actions': '' },
+                  h(Btn, {
+                    danger: true,
+                    disabled: busy !== '',
+                    action: 'pair-deny',
+                    onClick: () => { void approve(false); },
+                  }, t('btn.denyPairing')),
+                  h(Btn, {
+                    primary: true,
+                    disabled: busy !== '',
+                    action: 'pair-allow',
+                    onClick: () => { void approve(true); },
+                  }, busy === 'approve' ? t('msg.loading') : t('btn.approvePairing'))))
+              : null,
+            status !== null && enabled && !pending
               ? h('div', { 'data-ra-qr-col': '' },
                 h('div', { 'data-ra-qr-card': '' },
                   active && !qrFailed
@@ -1071,7 +1167,7 @@ window.__ModuleLoader__.load({
                     : (active && expiresAt > 0 ? t('pairing.expired') : t('pairing.inactive'))),
                 active ? h('div', { 'data-ra-qr-note': '' }, t('pairing.autoRefresh')) : null)
               : null,
-            status !== null && enabled
+            status !== null && enabled && !pending
               ? h('div', { 'data-ra-pair-col': '' },
                 h('div', { 'data-ra-steps': '' },
                   h('div', { 'data-ra-step': '' },
@@ -1110,14 +1206,17 @@ window.__ModuleLoader__.load({
           h('div', { 'data-ra-dialog-foot': '' },
             h('div', { 'data-ra-foot-note': '' }, t('pairing.note')),
             h(Btn, { onClick: close, disabled: busy !== '' }, t('btn.cancel')),
-            h(Btn, {
-              primary: true,
-              disabled: !enabled || busy !== '',
-              onClick: () => {
-                setQrFailed(false);
-                void startPairing(false);
-              },
-            }, busy === 'start' ? t('msg.loading') : t('btn.regenerate')))),
+            pending
+              ? null
+              : h(Btn, {
+                primary: true,
+                disabled: !enabled || busy !== '',
+                action: 'pair-regenerate',
+                onClick: () => {
+                  setQrFailed(false);
+                  void startPairing(false);
+                },
+              }, busy === 'start' ? t('msg.loading') : t('btn.regenerate')))),
         h(Toast, { flash, onDismiss: dismissFlash }));
     }
 
@@ -1236,6 +1335,9 @@ window.__ModuleLoader__.load({
           if (!aliveRef.current) return;
           const next = response && typeof response === 'object' ? response : status;
           const fresh = draftFromStatus(next, draft);
+          if (hostToken !== '') fresh.hostTokenConfigured = true;
+          if (tlsCertFile !== '') fresh.tlsCertFileConfigured = true;
+          if (tlsKeyFile !== '') fresh.tlsKeyFileConfigured = true;
           setStatus(next);
           setDraft(fresh);
           setBaseline(fresh);
@@ -1315,6 +1417,7 @@ window.__ModuleLoader__.load({
       const host = status.host || {};
       const tls = host.tls || {};
       const pairing = status.pairing && status.pairing.active ? status.pairing : null;
+      const pairingPending = Boolean(pairing && pairing.status === 'pending');
       const devices = Array.isArray(status.devices) ? status.devices : [];
       const enabled = status.enabled === true;
       const tone = statusTone(status);
@@ -1388,7 +1491,7 @@ window.__ModuleLoader__.load({
             label: t('field.hostToken'),
             type: 'password',
             value: draft.hostToken,
-            placeholder: t('field.hostTokenPlaceholder'),
+            placeholder: draft.hostTokenConfigured ? t('field.configuredPlaceholder') : t('field.hostTokenEmpty'),
             autoComplete: 'new-password',
             onChange: (value) => setDraft({ ...draft, hostToken: value }),
           })),
@@ -1396,13 +1499,13 @@ window.__ModuleLoader__.load({
           h(Field, {
             label: t('field.tlsCertFile'),
             value: draft.tlsCertFile,
-            placeholder: '/path/fullchain.pem',
+            placeholder: draft.tlsCertFileConfigured ? t('field.configuredPlaceholder') : '/path/fullchain.pem',
             onChange: (value) => setDraft({ ...draft, tlsCertFile: value }),
           }),
           h(Field, {
             label: t('field.tlsKeyFile'),
             value: draft.tlsKeyFile,
-            placeholder: '/path/privkey.pem',
+            placeholder: draft.tlsKeyFileConfigured ? t('field.configuredPlaceholder') : '/path/privkey.pem',
             onChange: (value) => setDraft({ ...draft, tlsKeyFile: value }),
           })),
         h(Row, { label: t('sw.requireApproval'), note: t('sw.requireApprovalNote') },
@@ -1418,8 +1521,10 @@ window.__ModuleLoader__.load({
 
       const pairingSection = h(Section, { title: t('section.pairing') },
         h(Row, {
-          label: pairing ? t('pairing.active') : t('pairing.inactive'),
-          note: enabled ? t('pairing.settingsNote') : t('pairing.disabledHint'),
+          label: pairing ? (pairingPending ? t('pairing.pendingPill') : t('pairing.active')) : t('pairing.inactive'),
+          note: enabled
+            ? (pairingPending ? t('pairing.settingsPendingNote') : t('pairing.settingsNote'))
+            : t('pairing.disabledHint'),
         },
           h(Btn, {
             primary: true,
@@ -1433,6 +1538,9 @@ window.__ModuleLoader__.load({
         pairing
           ? h('div', { 'data-ra-inline': '' },
             h('span', { 'data-ra-code': '' }, groupCode(pairing.code)),
+            pairing.sas
+              ? h('span', { 'data-ra-mono': '' }, `${t('pairing.sas')} ${pairing.sas}`)
+              : null,
             expiresAt > 0
               ? h('span', { 'data-ra-note': '' }, t('pairing.expires', { time: formatCountdown(remaining) }))
               : null)
@@ -1529,6 +1637,8 @@ window.__ModuleLoader__.load({
 
     return {
       inject: ['slots', 'locale'],
+      // 仅供 packages/host-plugin/test/client-smoke.test.js 使用；DSH 运行时只消费 inject/apply。
+      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus },
       apply(ctx) {
         ctx.effect(injectStyles, 'remote-access: 样式');
 

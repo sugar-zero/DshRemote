@@ -17,7 +17,7 @@ docs/                  # ADMIN-API.md / DEPLOY.md / POC-REPORT.md
 | 项 | 状态 |
 |---|---|
 | 协议 / host 插件 / relay / 客户端 UI / 管理 API | ✅ 已实现 |
-| 单元+集成测试 `npm test` | ✅ 45 tests / 0 fail |
+| 单元+集成测试 `npm test` | ✅ 48 tests / 0 fail |
 | 端到端 POC `node poc/run-poc.js`（配对→mTLS→relay→DSH UI/WS） | ✅ PASS |
 | 真实 DSH 内入口 & 配对弹窗（截图验证） | ✅ PASS（`../mockups/live-pairing.png`） |
 | B2 生产部署文档（域名/DNS-01/acme.sh/运维/安全红线） | ✅ `docs/DEPLOY.md` |
@@ -29,7 +29,7 @@ docs/                  # ADMIN-API.md / DEPLOY.md / POC-REPORT.md
 ```bash
 cd dsh-remoteService
 npm install
-npm test                 # 45 tests
+npm test                 # 48 tests
 node poc/run-poc.js      # 端到端 POC（需要 dsh CLI；使用独立临时 DSH_HOME，安全）
 ```
 
