@@ -16,6 +16,11 @@ export const RELAY_PUSH_DEFAULTS = Object.freeze({
   body: '有任务需要你',
 });
 
+export const RELAY_LIMIT_DEFAULTS = Object.freeze({
+  maxConnectionsPerIp: 64,
+  maxDataConnections: 1024,
+});
+
 export const RELAY_DEFAULTS = Object.freeze({
   dataPort: 443,
   controlPort: 8443,
@@ -197,6 +202,7 @@ export function normalizeConfig(raw = {}) {
   return {
     domain: normalizeDomain(input.domain),
     push: normalizePush(input.push),
+    limits: normalizeLimits(input.limits),
     dataPort: normalizePort(input.dataPort, 'dataPort', RELAY_DEFAULTS.dataPort),
     controlPort: normalizePort(input.controlPort, 'controlPort', RELAY_DEFAULTS.controlPort),
     httpPort: normalizePort(input.httpPort, 'httpPort', RELAY_DEFAULTS.httpPort),
@@ -239,4 +245,22 @@ export function normalizePush(raw) {
   const title = input.title === undefined ? RELAY_PUSH_DEFAULTS.title : String(input.title).slice(0, 80);
   const body = input.body === undefined ? RELAY_PUSH_DEFAULTS.body : String(input.body).slice(0, 200);
   return { enabled: input.enabled !== false, endpoint, accessToken, title, body };
+}
+
+
+/**
+ * 规范化数据面连接限制（DoS 兜底；不替代 host 侧配对/反代鉴权）。
+ * @param {unknown} raw
+ */
+export function normalizeLimits(raw) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const maxConnectionsPerIp = input.maxConnectionsPerIp === undefined
+    ? RELAY_LIMIT_DEFAULTS.maxConnectionsPerIp
+    : Number(input.maxConnectionsPerIp);
+  const maxDataConnections = input.maxDataConnections === undefined
+    ? RELAY_LIMIT_DEFAULTS.maxDataConnections
+    : Number(input.maxDataConnections);
+  if (!Number.isSafeInteger(maxConnectionsPerIp) || maxConnectionsPerIp < 1) throw new Error('limits.maxConnectionsPerIp 必须是正整数');
+  if (!Number.isSafeInteger(maxDataConnections) || maxDataConnections < 1) throw new Error('limits.maxDataConnections 必须是正整数');
+  return { maxConnectionsPerIp, maxDataConnections };
 }

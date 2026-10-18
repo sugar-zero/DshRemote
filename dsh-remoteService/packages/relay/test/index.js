@@ -14,3 +14,4 @@ import './control.test.js';
 import './http.test.js';
 import './data-plane.test.js';
 import './push.test.js';
+import './limits.test.js';

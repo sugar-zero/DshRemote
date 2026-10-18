@@ -264,6 +264,21 @@ relay → host: {t:'push.result', action:'register'|'send', ok, delivered, faile
 
 ---
 
+## 6.2 连接限制（DoS 兜底）
+
+`relay.json` 可选：
+
+```json
+{ "limits": { "maxConnectionsPerIp": 64, "maxDataConnections": 1024 } }
+```
+
+- `maxConnectionsPerIp`：同一来源 IP 允许的并发 443 数据连接数（默认 64）；
+- `maxDataConnections`：全站并发数据连接上限（默认 1024）。
+- 超限连接会被立即销毁并记 warn 日志；这是 DoS 兜底，不替代 host 侧 mTLS/配对鉴权。
+- `limits` 字段也接受 `RELAY_...` 之外的 JSON 配置（CLI 暂未映射环境变量）。
+
+---
+
 ## 7. 日志与隐私
 
 - 会记录：hostId、来源 IP:port、streamId、字节数（debug）、错误码、在线/离线、心跳超时、token 校验失败（不含 token 值）。

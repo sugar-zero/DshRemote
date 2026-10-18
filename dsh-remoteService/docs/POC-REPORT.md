@@ -10,6 +10,8 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.10 | 客户端推送设置 + relay 连接限制 | ✅ 设置页新增推送开关/冷却；relay 新增 per-IP/全站并发上限（测试覆盖） | `client.js`、`packages/relay/lib/{config,server}.js`、`test/limits.test.js` |
+| 1.9 | Android 原生 mTLS HTTP（源码） | ✅ `DshMtlsNetwork.kt`（HttpsURLConnection + KeyManager）；⏳ 无 Android SDK，未编译验证 | `dsh-remoteApp/modules/dsh-mtls/android/.../DshMtlsNetwork.kt` |
 | 1.8 | Android CSR（源码） | ✅ AndroidKeyStore P-256 + 手写 PKCS#10 DER（与 iOS 同结构）；⏳ 无 Android SDK，未编译验证 | `dsh-remoteApp/modules/dsh-mtls/android/.../DshMtlsCsr.kt` |
 | 1.7 | 设备管理（App → 主机，mTLS 隧道） | ✅ host 侧 `GET /__dsh_remote/devices` + `POST /devices/:id/revoke` 已实现并被测试覆盖（列表/current 标记/撤销/无证书 403）；App `src/lib/devices.ts` + 设备页已接入 | `packages/host-plugin/lib/server.js`、`test/proxy.test.js`、`dsh-remoteApp/src/lib/devices.ts` |
 | 1.6 | URLSession 客户端证书（App 原生 HTTP） | ✅ **已验证**（同一 `npm run poc:webview` 中 URLSession 以客户端证书 POST 成功，服务器确认 `CN=dsh-poc-device`）；用途：push token 注册/`pair/status` | `poc/webview-mtls/urlsession-mtls.swift` |
@@ -27,7 +29,7 @@
 
 ```bash
 cd dsh-remoteService
-npm test                 # 54 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
+npm test                 # 55 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
 node poc/run-poc.js      # 端到端：配对→设备 mTLS→relay→DSH UI/WS；需要 dsh CLI 在 PATH
 npm run poc:webview      # macOS WKWebView + URLSession 客户端证书 POC（Swift/WebKit；无需 Xcode）
 npm run poc:csr          # Swift P-256 CSR → host CA 签发 → openssl 校验（无需 Xcode）

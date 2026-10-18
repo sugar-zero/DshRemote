@@ -49,6 +49,9 @@
       "hostId": "h_ab12cd34",
       "hostName": "Example Mac",
       "requireApproval": true,
+      "pushEnabled": true,
+      "pushCooldownSeconds": 30,
+      "maxRequestBytes": 268435456,
       "relayTlsInsecure": false,
       "listenPort": 0,
       "tlsCertFile": "configured",
@@ -72,7 +75,10 @@ Body（全部可选，只改传入字段）：
   "tlsCertFile": "/path/fullchain.pem",
   "tlsKeyFile": "/path/privkey.pem",
   "requireApproval": true,
-  "hostName": "Example Mac"
+  "hostName": "Example Mac",
+  "pushEnabled": true,
+  "pushCooldownSeconds": 30,
+  "maxRequestBytes": 268435456
 }
 ```
 返回同 `/status`。

@@ -37,7 +37,7 @@ DSH 已有约六成底座（Web 传输/会话/审批/插件/入口/自托管链�
 | 推送 host/relay 链路 / 安全加固 | ✅ 已实现 + 测试 |
 | 原生 Secure Enclave CSR + mTLS HTTP（iOS 源码 + POC） | ✅ `npm run poc:csr` / `poc:webview`（含 URLSession）通过；⏳ Xcode 编译/真机 |
 | Android CSR（源码） | ✅ Keystore P-256 + PKCS#10 源码；⏳ 无 SDK 未编译 |
-| Android 原生 mTLS HTTP 客户端 | ⏳ 下一阶段 |
+| Android 原生 mTLS HTTP（源码） | ✅ HttpsURLConnection + KeyManager；⏳ 无 SDK 未编译 |
 
 快速验收：`cd dsh-remoteService && npm install && npm test && node poc/run-poc.js`
 
