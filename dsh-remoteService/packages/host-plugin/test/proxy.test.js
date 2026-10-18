@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
+import { connect as tlsConnect } from 'node:tls';
 import { WebSocketServer } from 'ws';
 import WebSocket from 'ws';
 import { withTempHome, makeCsr, makeRogueClientCert, tlsRequest, tlsRequestNoClientCert } from './helpers.js';
@@ -148,12 +149,47 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     assert.equal(listJson.data.devices.length, 2);
     assert.equal(listJson.data.devices.find((d) => d.id === 'd_test01').current, true);
     assert.equal(listJson.data.devices.find((d) => d.id === 'd_test02').current, false);
+    // 撤销前先给 d_test02 建一条 keep-alive 连接：撤销后服务端应主动断链。
+    const keepAliveSocket = tlsConnect({
+      host: '127.0.0.1',
+      port,
+      servername: fqdn,
+      ca: devCert.certPem,
+      cert: secondSigned.certPem,
+      key: secondCsr.privateKeyPem,
+      rejectUnauthorized: true,
+    });
+    await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('keepalive 建立超时')), 3000);
+      keepAliveSocket.once('secureConnect', () => {
+        keepAliveSocket.write(`GET /api/keepalive HTTP/1.1\r\nHost: ${fqdn}\r\nConnection: keep-alive\r\n\r\n`);
+      });
+      let buffer = '';
+      const onData = (chunk) => {
+        buffer += chunk.toString('utf8');
+        if (buffer.includes(' 200 ')) {
+          clearTimeout(timer);
+          keepAliveSocket.off('data', onData);
+          resolve();
+        }
+      };
+      keepAliveSocket.on('data', onData);
+      keepAliveSocket.once('error', (error) => { clearTimeout(timer); reject(error); });
+    });
+    const keepAliveClosed = new Promise((resolve) => keepAliveSocket.once('close', () => resolve(true)));
+
     const revokeRes = await tlsRequest({
       port, servername: fqdn, caPem: devCert.certPem,
       certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem,
       method: 'POST', path: '/__dsh_remote/devices/d_test02/revoke',
     });
     assert.equal(revokeRes.status, 200);
+    const revokedSocketClosed = await Promise.race([
+      keepAliveClosed,
+      new Promise((resolve) => setTimeout(() => resolve(false), 1500)),
+    ]);
+    assert.equal(revokedSocketClosed, true, '撤销设备后其活跃 mTLS 连接应被立即断开');
+    keepAliveSocket.destroy();
     const listAfter = JSON.parse((await tlsRequest({
       port, servername: fqdn, caPem: devCert.certPem,
       certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/__dsh_remote/devices',

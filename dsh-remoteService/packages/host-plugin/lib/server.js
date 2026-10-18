@@ -28,6 +28,10 @@ export function createRemoteServer({
   log = () => {},
 }) {
   const verifyPeer = createPeerVerifier({ devices, caCertPem });
+  /** @type {Map<string, Set<import('node:net').Socket>>} 设备证书 serial → 活跃 TLS socket */
+  const deviceSockets = new Map();
+  /** @type {WeakSet<import('node:net').Socket>} */
+  const trackedSockets = new WeakSet();
   const server = createRemoteTlsServer({ certPem, keyPem });
 
   async function handleRequest(req, res) {
@@ -70,6 +74,7 @@ export function createRemoteServer({
       return;
     }
     devices.touch(peer.serial);
+    trackDeviceSocket(req.socket, peer.serial);
 
     if (pathname === DEVICES_PATH) {
       if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
@@ -91,6 +96,8 @@ export function createRemoteServer({
       const revoked = devices.revoke(deviceId);
       if (!revoked) { sendError(res, 404, 'device-not-found', '设备不存在'); return; }
       audit.append({ deviceId, action: 'device-revoke', result: 'ok', hash: deviceId === peer.device.id ? 'self' : 'remote' });
+      // 等响应发完再断链（自撤销时当前连接也在这里被清理）。
+      res.once('finish', () => disconnectSerial(revoked.serial));
       sendJson(res, 200, { ok: true, data: { device: revoked } });
       return;
     }
@@ -119,6 +126,42 @@ export function createRemoteServer({
     await proxy.handle(req, res, peer.device);
   }
 
+  /**
+   * 记录设备证书对应的活跃 socket，便于撤销时立即断链。
+   * @param {import('node:net').Socket} socket
+   * @param {string} serial
+   */
+  function trackDeviceSocket(socket, serial) {
+    if (trackedSockets.has(socket)) return;
+    trackedSockets.add(socket);
+    const key = String(serial).toUpperCase();
+    let set = deviceSockets.get(key);
+    if (!set) { set = new Set(); deviceSockets.set(key, set); }
+    set.add(socket);
+    socket.once('close', () => {
+      set.delete(socket);
+      if (set.size === 0) deviceSockets.delete(key);
+    });
+  }
+
+  /**
+   * 立即断开某设备的所有活跃 TLS/WS 连接（撤销设备时调用）。
+   * @param {string} serial
+   * @returns {number}
+   */
+  function disconnectSerial(serial) {
+    const key = String(serial).toUpperCase();
+    const set = deviceSockets.get(key);
+    if (!set) return 0;
+    let count = 0;
+    for (const socket of set) {
+      count += 1;
+      socket.destroy();
+    }
+    deviceSockets.delete(key);
+    return count;
+  }
+
   server.on('request', (req, res) => {
     handleRequest(req, res).catch((error) => {
       log(`request failed: ${error.message}`);
@@ -137,6 +180,7 @@ export function createRemoteServer({
       return;
     }
     devices.touch(peer.serial);
+    trackDeviceSocket(socket, peer.serial);
     proxy.handleUpgrade(req, socket, head, peer.device).catch((error) => {
       log(`ws proxy failed: ${error.message}`);
       socket.destroy();
@@ -149,6 +193,8 @@ export function createRemoteServer({
 
   return {
     server,
+    /** 撤销设备时立即断链（service/admin 调用）。 */
+    disconnectDevice: disconnectSerial,
     listen(port = 0, host = '127.0.0.1') {
       return new Promise((resolve, reject) => {
         server.once('error', reject);

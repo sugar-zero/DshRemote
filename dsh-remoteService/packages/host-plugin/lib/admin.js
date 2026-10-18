@@ -64,6 +64,7 @@ export function createAdminHandler({ ctx, service, authDisabled = false }) {
         const device = service.devices.revoke(decodeURIComponent(revokeMatch[1]));
         if (!device) { sendError(res, 404, 'device-not-found', '设备不存在'); return; }
         service.audit.append({ deviceId: device.id, action: 'device-revoke', result: 'ok' });
+        service.disconnectDevice?.(device.id);
         sendOk(res, { device });
         return;
       }
