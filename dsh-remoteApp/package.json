@@ -12,7 +12,8 @@
     "typecheck": "tsc --noEmit",
     "prebuild": "expo prebuild",
     "prebuild:clean": "expo prebuild --clean",
-    "doctor": "expo-doctor"
+    "doctor": "expo-doctor",
+    "check:native": "node scripts/check-native-sources.mjs"
   },
   "dependencies": {
     "expo": "~58.0.14",
