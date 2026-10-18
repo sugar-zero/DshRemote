@@ -1,4 +1,6 @@
 import {
+  DEVICE_REVOKE_PATH_PREFIX,
+  DEVICES_PATH,
   PAIR_PATH,
   PAIR_STATUS_PATH,
   PUSH_TOKEN_PATH,
@@ -60,11 +62,6 @@ export function createRemoteServer({
       }
       return;
     }
-    if (pathname.startsWith(`${TUNNEL_BASE}/`)) {
-      sendError(res, 404, 'not-found', '未知远程路径');
-      return;
-    }
-
     // —— 其余全部要求设备 mTLS ——
     const peer = verifyPeer(req.socket);
     if (!peer.ok) {
@@ -73,6 +70,30 @@ export function createRemoteServer({
       return;
     }
     devices.touch(peer.serial);
+
+    if (pathname === DEVICES_PATH) {
+      if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
+      sendJson(res, 200, {
+        ok: true,
+        data: {
+          devices: devices.list().map((device) => ({
+            ...device,
+            current: String(device.serial).toUpperCase() === String(peer.serial).toUpperCase(),
+          })),
+        },
+      });
+      return;
+    }
+    if (pathname.startsWith(DEVICE_REVOKE_PATH_PREFIX) && pathname.endsWith('/revoke')) {
+      if (req.method !== 'POST') { sendError(res, 405, 'method-not-allowed', '仅支持 POST'); return; }
+      const encodedId = pathname.slice(DEVICE_REVOKE_PATH_PREFIX.length, -'/revoke'.length);
+      const deviceId = decodeURIComponent(encodedId);
+      const revoked = devices.revoke(deviceId);
+      if (!revoked) { sendError(res, 404, 'device-not-found', '设备不存在'); return; }
+      audit.append({ deviceId, action: 'device-revoke', result: 'ok', hash: deviceId === peer.device.id ? 'self' : 'remote' });
+      sendJson(res, 200, { ok: true, data: { device: revoked } });
+      return;
+    }
 
     if (pathname === PUSH_TOKEN_PATH) {
       if (req.method !== 'POST') { sendError(res, 405, 'method-not-allowed', '仅支持 POST'); return; }
@@ -86,6 +107,12 @@ export function createRemoteServer({
       } catch (error) {
         sendError(res, error.status ?? 400, error.code ?? 'invalid-push-token', error.message);
       }
+      return;
+    }
+
+    // 未知的远程内部路径（已知的 pair/devices/push-token 已在上方处理）
+    if (pathname.startsWith(`${TUNNEL_BASE}/`)) {
+      sendError(res, 404, 'not-found', '未知远程路径');
       return;
     }
 

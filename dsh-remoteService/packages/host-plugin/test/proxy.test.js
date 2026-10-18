@@ -135,6 +135,33 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     assert.equal(apiRes.status, 200);
     assert.equal(apiRes.headers['cache-control'], 'no-store');
 
+    // 设备管理 tunnel API（App 侧 mTLS 调用）：列表/撤销
+    const secondCsr = makeCsr('Second iPhone');
+    const secondSigned = signDeviceCertificate({ ca, csrPem: secondCsr.csrPem, deviceId: 'd_test02', commonName: 'Second iPhone' });
+    devices.add({ id: 'd_test02', name: 'Second iPhone', platform: 'ios', serial: secondSigned.serial, notAfter: secondSigned.notAfter });
+    const listRes = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/__dsh_remote/devices',
+    });
+    assert.equal(listRes.status, 200);
+    const listJson = JSON.parse(listRes.body);
+    assert.equal(listJson.data.devices.length, 2);
+    assert.equal(listJson.data.devices.find((d) => d.id === 'd_test01').current, true);
+    assert.equal(listJson.data.devices.find((d) => d.id === 'd_test02').current, false);
+    const revokeRes = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem,
+      method: 'POST', path: '/__dsh_remote/devices/d_test02/revoke',
+    });
+    assert.equal(revokeRes.status, 200);
+    const listAfter = JSON.parse((await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/__dsh_remote/devices',
+    })).body);
+    assert.ok(listAfter.data.devices.find((d) => d.id === 'd_test02').revokedAt);
+    const listNoCert = await tlsRequestNoClientCert({ port, servername: fqdn, caPem: devCert.certPem, path: '/__dsh_remote/devices' });
+    assert.equal(listNoCert.status, 403);
+
     // 5) WebSocket 反代（mTLS + cookie + 流）
     const ws = new WebSocket(`wss://127.0.0.1:${port}/api/remote.mux`, [], {
       servername: fqdn,
