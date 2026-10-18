@@ -12,7 +12,7 @@
 |---|---|
 | 域名 | 一个可管理 DNS 的域名（推荐 `relay.example.com`） |
 | VPS | 公网 IPv4，开放 **80/tcp、443/tcp、8443/tcp**；1 vCPU / 1 GB 足够（单用户） |
-| 主机 | 跑 DSH 的 Mac；`dsh` CLI 可用；Node 24（DSH 自带运行时） |
+| 主机 | 跑 DSH 的 Mac；`dsh` CLI 可用；Node 24（DSH 自带运行时）；`openssl`（签发 P-256 设备证书用，macOS/Linux 默认有） |
 | 证书 | 两个名字：`relay.example.com`（relay 控制面）与 `<hostId>.relay.example.com`（主机插件） |
 | DNS API | 推荐 Cloudflare / 阿里云等，供 acme.sh 做 **DNS-01**（80 端口被 relay 的 301 占用，不能 HTTP-01） |
 

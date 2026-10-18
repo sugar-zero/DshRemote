@@ -21,7 +21,7 @@ docs/                  # ADMIN-API.md / DEPLOY.md / POC-REPORT.md
 | 端到端 POC `node poc/run-poc.js`（配对→mTLS→relay→DSH UI/WS） | ✅ PASS |
 | 真实 DSH 内入口 & 配对弹窗（截图验证） | ✅ PASS（`../mockups/live-pairing.png`） |
 | B2 生产部署文档（域名/DNS-01/acme.sh/运维/安全红线） | ✅ `docs/DEPLOY.md` |
-| 手机 WebView mTLS 真机验证 | ⏳ 需 Xcode + iPhone（本机无 Xcode） |
+| WebView mTLS | ✅ macOS WKWebView 已验证；⏳ iOS 真机需 Xcode |
 | 推送（host/relay 链路） | ✅ 已实现 + 测试（App 原生 mTLS 请求待真机） |
 | 原生 CSR / Android 编译 | ⏳ 下一里程碑 |
 
@@ -32,6 +32,7 @@ cd dsh-remoteService
 npm install
 npm test                 # 54 tests
 node poc/run-poc.js      # 端到端 POC（需要 dsh CLI；使用独立临时 DSH_HOME，安全）
+npm run poc:webview      # macOS WKWebView 客户端证书 POC（无需 Xcode）
 ```
 
 POC 细节与已知限制见 [`docs/POC-REPORT.md`](docs/POC-REPORT.md)；生产部署见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。

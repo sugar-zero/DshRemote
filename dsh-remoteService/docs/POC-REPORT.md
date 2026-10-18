@@ -9,11 +9,11 @@
 
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
-| 1 | WebView mTLS（iOS/Android 真机） | ⏳ **本机无法验证**（无 Xcode/设备） | App 源码 + `modules/dsh-mtls` 骨架 + 构建/验收步骤见 `dsh-remoteApp/README.md`；需在用户 Mac 上 `npx expo run:ios --device` 验证 |
+| 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机/Secure Enclave 身份来源待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
 | 2 | relay TLS 透传 + SNI 路由 | ✅ **通过** | `packages/relay` 27 项测试（真实 ClientHello 捕获/分片、端到端 `tls.connect` → relay → 自签 TLS server、token 拒绝、未知 SNI 销毁、并发流、CLOSE 帧、控制面 TLS） |
 | 3 | 主机插件反代后 DSH UI 全功能 | ✅ **通过** | `poc/run-poc.js`：真实 `dsh web` 实例 + 插件 + relay，`GET /` 200（37,865 bytes DSH HTML），WebSocket `/api/remote.mux` 101 升级成功 |
 | 4 | 配对 + 桌面确认 + 设备证书 | ✅ **通过** | POC：`/pairing/start` → App CSR → `/__dsh_remote/pair` pending（SAS）→ 桌面 `/pairing/approve` → 设备证书 → mTLS 访问 |
-| 5 | 证书（B2 生产形态） | ✅ 开发自签通过；⏳ 生产 DNS-01 以文档 + acme.sh 为准（插件已实现**证书文件热加载**） | `docs/DEPLOY.md` §3；`lib/service.js` 的 `#watchCertFiles` |
+| 5 | 证书（B2 生产形态） | ✅ 开发自签通过；设备 EC(P-256) CSR 已支持（openssl 签发，适配 Secure Enclave/Keystore）；⏳ 生产 DNS-01 以文档 + acme.sh 为准（插件已实现**证书文件热加载**） | `docs/DEPLOY.md` §3；`lib/identity.js`（forge RSA + openssl EC 两条路径）；`#watchCertFiles` |
 | 6 | 安全断言 | ✅ **通过** | 无客户端证书/不受信 CA/已撤销设备 → 403；伪造 `Host`/`X-Forwarded-For`/`X-Real-IP`/`Origin` 不影响身份；`/connect` 被 deny；配对错误密钥限速（10 次后 429） |
 | 7 | 客户端 UI：入口 / 配对弹窗 / 桌面确认 | ✅ **通过（真实 DSH 截图）** | 入口在账号行正上方；配对弹窗含真实二维码/备用码/指纹/SAS；`pending` 时显示「待确认的配对请求」+设备名/SAS+「拒绝/允许配对」，点击允许后设备写入并刷新（截图见下） |
 | 8 | App 源码/TS 检查 | ✅ 通过（未编译原生） | `npx tsc --noEmit` exit 0；`expo config` 通过；autolinking 识别 `dsh-mtls`；协议自测 14/14 |
@@ -22,8 +22,9 @@
 
 ```bash
 cd dsh-remoteService
-npm test              # 54 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
-node poc/run-poc.js   # 需要 dsh CLI 在 PATH；约 15–25s
+npm test                 # 54 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
+node poc/run-poc.js      # 端到端：配对→设备 mTLS→relay→DSH UI/WS；需要 dsh CLI 在 PATH
+npm run poc:webview      # macOS WKWebView 客户端证书 POC（Swift/WebKit；无需 Xcode）
 ```
 
 最近一次运行（节选）：
@@ -67,8 +68,8 @@ POC 使用独立临时 `$DSH_HOME`（不会碰用户的真实 DSH 数据），�
 
 ## 5. 尚未完成 / 下一步
 
-1. **POC-1 真机 WebView mTLS**（阻塞在环境）：需要用户 Mac 安装 Xcode + iPhone，按 `dsh-remoteApp/README.md` 构建；验证 `WKNavigationDelegate` 客户端证书挑战 + Android `onReceivedClientCertRequest`。
-2. **App 原生密钥/CSR**：当前 POC 用 PKCS#12 手动导入验证链路；MVP 实现 Secure Enclave/Keystore 生成密钥 + CSR。
+1. **iOS 真机 WebView mTLS**：macOS WKWebView 已验证同一 delegate 机制；剩余用 Xcode + iPhone 验证 Secure Enclave/Keychain 身份来源与 App 集成（Android 同理）。
+2. **App 原生密钥/CSR**：host 侧已支持 P-256 EC CSR（openssl 签发）；App 侧仍需实现 Secure Enclave/Keystore 生成密钥 + PKCS#10 编码（下一里程碑）。
 3. **生产证书自动化**：当前按 `DEPLOY.md` 用 acme.sh 手工/定时签发；可加 relay 侧 ACME DNS-01 helper（B2 仍要求 DNS 凭据只在主机）。
 4. **推送**：✅ host/relay 零内容推送链路 + 测试；⏳ App 原生 mTLS HTTP 客户端（`requestWithClientCert`）与 EAS/APNs 凭据（真机里程碑）。
 5. **client UI 桌面确认按钮**：✅ 已补齐（pending 卡片 + 允许/拒绝 + 刷新 + 测试）。
