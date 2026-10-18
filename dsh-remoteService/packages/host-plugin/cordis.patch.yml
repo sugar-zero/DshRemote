@@ -1,0 +1,6 @@
+# dsh-remote-service —— Host 插件挂载声明
+# 安装到 profile 后，Host 半加载本插件；Web 半通过 dsh.client 打进浏览器插件名册。
+- insert:
+    - id: remote-service
+      name: dsh-remote-service
+      config: {}

@@ -1,0 +1,9 @@
+{
+  "name": "dsh-remote-protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DSH remote access shared protocol: pairing URI/SAS, relay control messages, stream framing",
+  "main": "index.js",
+  "exports": { ".": "./index.js", "./package.json": "./package.json" }
+}

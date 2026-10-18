@@ -1,0 +1,20 @@
+// dsh-mtls/android/build.gradle
+//
+// POC local Expo module (auto-linked by Expo Autolinking from `modules/`).
+// Requires an Android dev-client build (`npx expo run:android`) — not available
+// in Expo Go. NOT built on this machine; see app README.
+plugins {
+  id 'com.android.library'
+  id 'expo-module-gradle-plugin'
+}
+
+group = 'com.dsh.remote.mtls'
+version = '0.1.0'
+
+android {
+  namespace 'com.dsh.remote.mtls'
+  defaultConfig {
+    versionCode 1
+    versionName '0.1.0'
+  }
+}
