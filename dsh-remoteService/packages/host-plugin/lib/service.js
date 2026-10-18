@@ -164,6 +164,18 @@ export class RemoteService {
     this.#watchCertFiles(config);
   }
 
+  /**
+   * 撤销设备后立即断开其活跃连接（远端 tunnel API 与本地管理 API 共用）。
+   * @param {string} deviceId
+   * @returns {number}
+   */
+  disconnectDevice(deviceId) {
+    if (!this.listener || typeof this.listener.disconnectDevice !== 'function') return 0;
+    const device = this.devices.get(deviceId);
+    if (!device) return 0;
+    return this.listener.disconnectDevice(device.serial);
+  }
+
   /** B2 生产证书续期：acme.sh/certbot 覆盖 cert/key 后自动重建 TLS 监听。 */
   #watchCertFiles(config) {
     this.#unwatchCertFiles();
