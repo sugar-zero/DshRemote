@@ -18,6 +18,15 @@ Docker 镜像已用真实容器验证：`npm run poc:docker`（构建镜像 → 
 # 检查 DNS（含泛解析）、relay /healthz 里的 hostId、8443 端口、relay 证书、主机子域证书
 ```
 
+本地/staging 演练（不检查 DNS，覆盖端口）：
+
+```bash
+CHECK_DEPLOY_SKIP_DNS=1 RELAY_HTTP_PORT=18080 RELAY_DATA_PORT=18443 \
+  ./scripts/check-deploy.sh 127.0.0.1 h_local 18444
+```
+
+部署前先跑产物静态校验：`npm run validate:artifacts`（shell/compose/plist/JSON/Node 入口）。
+
 快速检查（部署后）：
 
 ```bash

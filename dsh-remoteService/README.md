@@ -33,6 +33,7 @@ npm install
 npm test                 # 58 tests
 node poc/run-poc.js      # 端到端 POC（需要 dsh CLI；使用独立临时 DSH_HOME，安全）
 npm run poc:docker       # Docker relay 端到端（需 docker/colima；含真实 host 插件 + mTLS）
+npm run validate:artifacts  # 部署产物静态校验（shell/compose/plist/JSON）
 npm run bench            # relay 数据面吞吐/延迟基线
 npm run poc:webview      # macOS WKWebView 客户端证书 POC（无需 Xcode）
 npm run poc:csr          # Swift P-256 CSR → host 签发 → openssl 校验（无需 Xcode）

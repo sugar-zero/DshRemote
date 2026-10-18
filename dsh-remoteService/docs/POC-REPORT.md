@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.19 | 部署产物校验 + 失败演练 | ✅ `npm run validate:artifacts`（shell 语法/compose/plist/JSON/Node 入口）；`check-deploy.sh` 支持本地/Staging 端口覆盖与 `CHECK_DEPLOY_SKIP_DNS=1`，失败分支演练正确返回非零并逐项报告 | `scripts/validate-artifacts.sh`、`scripts/check-deploy.sh` |
 | 1.18 | Docker relay 端到端 | ✅ 实际构建镜像（node:24-alpine，非 root uid=100）→ 容器 dev 模式 → 真实 RemoteService 连接 → 设备 mTLS 请求经容器 relay 到 host `/__dsh_remote/status` 200；容器 healthz/token CLI 均验证 | `poc/docker-e2e/`、`npm run poc:docker` |
 | 1.17 | 原生源码一致性检查 | ✅ `dsh-remoteApp`: `npm run check:native`（JS bridge 方法、模块名、Secure Enclave/KeyStore/客户端证书关键 API、括号平衡）全部通过；不替代真机编译 | `dsh-remoteApp/scripts/check-native-sources.mjs` |
 | 1.16 | App 主机诊断 | ✅ host `GET /__dsh_remote/status`（mTLS）：版本/域名/证书到期/relay 连接/设备数；App 设备页展示（host 测试覆盖 200 + 无证书 403） | `packages/host-plugin/lib/server.js`、`dsh-remoteApp/src/lib/devices.ts`、`DevicesScreen` |
@@ -43,6 +44,7 @@ npm run poc:webview      # macOS WKWebView + URLSession 客户端证书 POC（Sw
 npm run poc:csr          # Swift P-256 CSR → host CA 签发 → openssl 校验（无需 Xcode）
 npm run bench            # relay 数据面吞吐/延迟基线（本地）
 npm run poc:docker       # Docker relay 容器 + 真实 host 插件 + mTLS 端到端（需 docker/colima）
+npm run validate:artifacts  # shell/compose/plist/JSON/Node 入口静态校验
 ```
 
 最近一次运行（节选）：
