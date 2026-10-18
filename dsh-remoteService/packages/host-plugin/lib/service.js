@@ -176,6 +176,15 @@ export class RemoteService {
     return this.listener.disconnectDevice(device.serial);
   }
 
+  /**
+   * 手动/监听触发的证书热加载：重新执行 listen 配置（含 TLS 证书、connector）。
+   * 供 acme.sh/certbot 覆盖文件后的 watcher 与运维脚本调用。
+   */
+  async reloadTls() {
+    await this.#apply();
+    return this.status();
+  }
+
   /** B2 生产证书续期：acme.sh/certbot 覆盖 cert/key 后自动重建 TLS 监听。 */
   #watchCertFiles(config) {
     this.#unwatchCertFiles();
@@ -186,7 +195,7 @@ export class RemoteService {
       clearTimeout(timer);
       timer = setTimeout(() => {
         this.log('TLS 证书文件已更新，重新加载远程监听');
-        this.#apply().catch((error) => this.log(`cert reload failed: ${error.message}`));
+        this.reloadTls().catch((error) => this.log(`cert reload failed: ${error.message}`));
       }, 2000);
       timer.unref?.();
     };
