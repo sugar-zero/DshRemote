@@ -74,6 +74,10 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': '关闭后中继断开，手机将无法访问这台电脑。',
       'sw.requireApproval': '新设备配对需要本机确认',
       'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
+      'sw.pushEnabled': '推送提醒',
+      'sw.pushEnabledNote': '一轮任务结束/出错时，通过 relay 发一条不含内容的通用提醒。推送通道由 relay 配置（默认 Expo）。',
+      'field.pushCooldown': '同会话推送冷却（秒）',
+      'field.pushCooldownHint': '默认 30 秒，避免连续轮次刷屏',
 
       'field.relayUrl': '中继地址',
       'field.relayUrlHint': 'wss://relay.example.com:8443',
@@ -223,6 +227,10 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': 'Disabling disconnects the relay; the phone can no longer reach this computer.',
       'sw.requireApproval': 'Require confirmation on this computer for new pairings',
       'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
+      'sw.pushEnabled': 'Push notifications',
+      'sw.pushEnabledNote': 'Send a content-free generic reminder through the relay when a turn completes or fails. The relay configures the provider (Expo by default).',
+      'field.pushCooldown': 'Per-session push cooldown (seconds)',
+      'field.pushCooldownHint': 'Default 30s, to avoid notification spam across turns',
 
       'field.relayUrl': 'Relay URL',
       'field.relayUrlHint': 'wss://relay.example.com:8443',
@@ -485,6 +493,8 @@ window.__ModuleLoader__.load({
         tlsCertFile: stringOrPrevious(certValue, prev.tlsCertFile || ''),
         tlsKeyFile: stringOrPrevious(firstDefined(config.tlsKeyFile, tls.keyFile), prev.tlsKeyFile || ''),
         requireApproval: pickRequireApproval(status),
+        pushEnabled: config.pushEnabled !== undefined ? config.pushEnabled !== false : (prev.pushEnabled !== undefined ? prev.pushEnabled : true),
+        pushCooldownSeconds: stringOrPrevious(config.pushCooldownSeconds, prev.pushCooldownSeconds !== undefined ? String(prev.pushCooldownSeconds) : '30'),
         tlsCertFileConfigured,
         tlsKeyFileConfigured,
         hostTokenConfigured,
@@ -1325,6 +1335,11 @@ window.__ModuleLoader__.load({
         const hostToken = draft.hostToken.trim();
         if (hostToken !== '') patch.hostToken = hostToken;
         if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
+        if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
+        const cooldown = Number.parseInt(String(draft.pushCooldownSeconds), 10);
+        if (Number.isFinite(cooldown) && cooldown >= 0 && String(cooldown) !== String(baseline.pushCooldownSeconds)) {
+          patch.pushCooldownSeconds = cooldown;
+        }
         if (Object.keys(patch).length === 0) {
           showFlash('good', t('msg.noChanges'));
           return;
@@ -1514,6 +1529,20 @@ window.__ModuleLoader__.load({
             disabled,
             label: t('sw.requireApproval'),
             onChange: (value) => setDraft({ ...draft, requireApproval: value }),
+          })),
+        h(Row, { label: t('sw.pushEnabled'), note: t('sw.pushEnabledNote') },
+          h(Toggle, {
+            checked: draft.pushEnabled,
+            disabled,
+            label: t('sw.pushEnabled'),
+            onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
+          })),
+        h('div', { 'data-ra-grid': '' },
+          h(Field, {
+            label: t('field.pushCooldown'),
+            value: draft.pushCooldownSeconds,
+            placeholder: t('field.pushCooldownHint'),
+            onChange: (value) => setDraft({ ...draft, pushCooldownSeconds: value }),
           })),
         h('div', { 'data-ra-actions': '' },
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },

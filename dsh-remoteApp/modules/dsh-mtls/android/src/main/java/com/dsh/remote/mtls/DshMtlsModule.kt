@@ -6,7 +6,8 @@
 //
 // JS surface (modules/dsh-mtls/src/index.ts) is identical to iOS:
 //   setClientIdentity / getClientIdentity / clearClientIdentity
-//   importP12 / generateCsr (AndroidKeyStore P-256 + PKCS#10) / installCertificate / getDiagnostics
+//   importP12 / generateCsr (AndroidKeyStore P-256 + PKCS#10) / installCertificate
+//   requestWithClientCert (push token / device list) / getDiagnostics
 //   <DshMtlsWebView url clientIdentityLabel ... />
 //
 // Android realities the next milestone must handle (documented, not hidden):
@@ -92,6 +93,14 @@ class DshMtlsModule : Module() {
       val alias = label ?: DshMtlsIdentityStore.configuredLabel
         ?: throw DshMtlsIdentityException("没有可用的设备身份 alias。")
       DshMtlsIdentityStore.installCertificate(context, certPem, alias)
+    }
+
+    // MARK: - Authenticated HTTPS (client certificate)
+
+    AsyncFunction("requestWithClientCert") { options: Map<String, Any?> ->
+      val context = appContext.reactContext
+        ?: throw DshMtlsIdentityException("React context 不可用，无法发起 mTLS 请求。")
+      DshMtlsNetwork.request(context, options)
     }
 
     // MARK: - Diagnostics

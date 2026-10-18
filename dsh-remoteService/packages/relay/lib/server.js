@@ -105,6 +105,8 @@ class Relay {
     this.hosts = new Map();
     /** @type {Set<net.Socket>} 数据面未关闭 socket（close() 时强制断） */
     this.dataSockets = new Set();
+    /** @type {Map<string, number>} IP → 当前数据面连接数（DoS 兜底） */
+    this.ipConnections = new Map();
 
     this.dataPort = config.dataPort;
     this.controlPort = config.controlPort;
@@ -541,8 +543,22 @@ class Relay {
       socket.destroy();
       return;
     }
+    const ip = socket.remoteAddress ?? 'unknown';
+    const ipCount = this.ipConnections.get(ip) ?? 0;
+    if (ipCount >= this.config.limits.maxConnectionsPerIp
+      || this.dataSockets.size >= this.config.limits.maxDataConnections) {
+      this.logger.warn(`data: dropping connection from ${formatPeer(socket)}: connection limit reached`);
+      socket.destroy();
+      return;
+    }
+    this.ipConnections.set(ip, ipCount + 1);
     this.dataSockets.add(socket);
-    socket.on('close', () => this.dataSockets.delete(socket));
+    socket.on('close', () => {
+      this.dataSockets.delete(socket);
+      const remaining = (this.ipConnections.get(ip) ?? 1) - 1;
+      if (remaining <= 0) this.ipConnections.delete(ip);
+      else this.ipConnections.set(ip, remaining);
+    });
     socket.on('error', (err) => this.logger.debug(`data: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
 
     const remote = formatPeer(socket);
