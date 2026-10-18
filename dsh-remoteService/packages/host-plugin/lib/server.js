@@ -1,4 +1,5 @@
 import {
+  AUDIT_PATH,
   DEVICE_REVOKE_PATH_PREFIX,
   DEVICES_PATH,
   PAIR_PATH,
@@ -78,6 +79,13 @@ export function createRemoteServer({
     devices.touch(peer.serial);
     trackDeviceSocket(req.socket, peer.serial);
 
+    if (pathname === AUDIT_PATH) {
+      if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
+      const requested = Number(new URL(req.url, 'https://localhost').searchParams.get('limit') ?? 50);
+      const limit = Number.isFinite(requested) ? Math.max(1, Math.min(200, Math.trunc(requested))) : 50;
+      sendJson(res, 200, { ok: true, data: { entries: audit.tail(limit) } });
+      return;
+    }
     if (pathname === STATUS_PATH) {
       if (req.method !== 'GET') { sendError(res, 405, 'method-not-allowed', '仅支持 GET'); return; }
       const config = getConfig();

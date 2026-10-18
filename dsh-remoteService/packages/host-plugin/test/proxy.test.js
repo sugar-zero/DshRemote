@@ -47,8 +47,8 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     const fqdn = 'h_test.relay.test';
     const devCert = loadOrCreateDevServerCert(fqdn);
     const config = { hostId: 'h_test', relayDomain: 'relay.test', hostName: 'Test Mac', requireApproval: false };
-    const pairing = new PairingManager({ identity, ca, devices, audit: { append() {} }, getConfig: () => config });
-    const audit = { append() {} };
+    const audit = { append() {}, tail: () => [{ action: 'device-auth', result: 'ok', ts: 1 }] };
+    const pairing = new PairingManager({ identity, ca, devices, audit, getConfig: () => config });
     const proxy = new DshProxy({
       getUpstream: () => ({ protocol: 'http:', host: '127.0.0.1', port: upstreamPort }),
       authenticatedUrl: () => `http://127.0.0.1:${upstreamPort}/?token=test-token`,
@@ -191,6 +191,17 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     assert.equal(statusJson.data.devices.active, 2);
     assert.equal(statusJson.data.version, '0.1.0-test');
     assert.equal(statusJson.data.relayConnected, true);
+    const auditRes = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/__dsh_remote/audit?limit=5',
+    });
+    assert.equal(auditRes.status, 200);
+    const auditJson = JSON.parse(auditRes.body);
+    assert.ok(Array.isArray(auditJson.data.entries));
+    assert.equal(auditJson.data.entries[0].action, 'device-auth');
+    const auditNoCert = await tlsRequestNoClientCert({ port, servername: fqdn, caPem: devCert.certPem, path: '/__dsh_remote/audit' });
+    assert.equal(auditNoCert.status, 403);
+
     const statusNoCert = await tlsRequestNoClientCert({
       port, servername: fqdn, caPem: devCert.certPem, path: '/__dsh_remote/status',
     });

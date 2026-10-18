@@ -3,6 +3,7 @@
  *
  * 端点（docs/ADMIN-API.md §2）：
  *   GET  /__dsh_remote/status                   → 主机状态（证书到期/relay 连接/版本/设备数）
+ *   GET  /__dsh_remote/audit?limit=N            → 最近安全审计（mTLS 设备可读）
  *   GET  /__dsh_remote/devices                  → 已配对设备列表（含 current）
  *   POST /__dsh_remote/devices/:id/revoke       → 撤销设备（立即断链 + 拒绝续期）
  *
@@ -10,6 +11,14 @@
  */
 import { isDshMtlsAvailable, requestWithClientCert } from '../../modules/dsh-mtls/src';
 import type { StoredConnection } from './store';
+
+export interface AuditEntry {
+  ts?: number;
+  action: string;
+  result?: string;
+  deviceId?: string;
+  hash?: string;
+}
 
 export interface HostStatus {
   hostId: string;
@@ -51,6 +60,15 @@ function parseEnvelope<T>(body: string): T {
 
 export function canManageRemoteDevices(): boolean {
   return isDshMtlsAvailable;
+}
+
+export async function fetchAudit(connection: StoredConnection, limit = 10): Promise<AuditEntry[]> {
+  const response = await requestWithClientCert({
+    url: `${hostBase(connection)}/__dsh_remote/audit?limit=${encodeURIComponent(String(limit))}`,
+    method: 'GET',
+  });
+  if (response.status !== 200) throw new Error(`读取审计失败：HTTP ${response.status}`);
+  return parseEnvelope<{ entries: AuditEntry[] }>(response.body).entries ?? [];
 }
 
 export async function fetchHostStatus(connection: StoredConnection): Promise<HostStatus> {
