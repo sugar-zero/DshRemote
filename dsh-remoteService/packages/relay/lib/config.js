@@ -10,6 +10,12 @@
 import { readFileSync } from 'node:fs';
 
 /** 公开配置默认值。 */
+export const RELAY_PUSH_DEFAULTS = Object.freeze({
+  endpoint: 'https://exp.host/--/api/v2/push/send',
+  title: 'DSH',
+  body: '有任务需要你',
+});
+
 export const RELAY_DEFAULTS = Object.freeze({
   dataPort: 443,
   controlPort: 8443,
@@ -190,6 +196,7 @@ export function normalizeConfig(raw = {}) {
 
   return {
     domain: normalizeDomain(input.domain),
+    push: normalizePush(input.push),
     dataPort: normalizePort(input.dataPort, 'dataPort', RELAY_DEFAULTS.dataPort),
     controlPort: normalizePort(input.controlPort, 'controlPort', RELAY_DEFAULTS.controlPort),
     httpPort: normalizePort(input.httpPort, 'httpPort', RELAY_DEFAULTS.httpPort),
@@ -208,4 +215,28 @@ export function normalizeConfig(raw = {}) {
       openTimeoutMs: normalizeTiming(input.openTimeoutMs, 'openTimeoutMs', RELAY_TIMINGS.openTimeoutMs),
     },
   };
+}
+
+
+/**
+ * 规范化 push 配置；`push: false` 或 `enabled:false` 关闭推送。
+ * @param {unknown} raw
+ */
+export function normalizePush(raw) {
+  if (raw === false) return { enabled: false };
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const endpoint = input.endpoint === undefined ? RELAY_PUSH_DEFAULTS.endpoint : String(input.endpoint);
+  let url;
+  try {
+    url = new URL(endpoint);
+  } catch {
+    throw new Error(`invalid push.endpoint: ${JSON.stringify(endpoint)}`);
+  }
+  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('push.endpoint must be http(s)');
+  const accessToken = input.accessToken === undefined || input.accessToken === null || input.accessToken === ''
+    ? undefined
+    : String(input.accessToken);
+  const title = input.title === undefined ? RELAY_PUSH_DEFAULTS.title : String(input.title).slice(0, 80);
+  const body = input.body === undefined ? RELAY_PUSH_DEFAULTS.body : String(input.body).slice(0, 200);
+  return { enabled: input.enabled !== false, endpoint, accessToken, title, body };
 }

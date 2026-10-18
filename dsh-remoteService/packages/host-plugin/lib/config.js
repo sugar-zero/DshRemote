@@ -14,13 +14,17 @@ export const DEFAULT_CONFIG = Object.freeze({
   tlsKeyFile: '',          // 对应私钥
   requireApproval: true,   // 桌面确认后设备才拿到证书
   listenPort: 0,           // 0 = 随机 loopback 端口
-  denyPrefixes: ['/connect', '/oauth', '/api/remote-access', '/__dsh_remote'],
+  maxRequestBytes: 256 * 1024 * 1024, // 远程代理请求体上限（默认 256 MiB）
+  denyPrefixes: ['/connect', '/oauth', '/open-in-app', '/api/remote-access', '/__dsh_remote'],
+  pushEnabled: true,
+  pushCooldownSeconds: 30,
   upstream: { protocol: 'http', host: '127.0.0.1' },
 });
 
 const ALLOWED_KEYS = new Set([
   'enabled', 'hostName', 'relayUrl', 'relayDomain', 'hostId', 'hostToken',
   'relayTlsInsecure', 'tlsCertFile', 'tlsKeyFile', 'requireApproval', 'listenPort', 'denyPrefixes',
+  'pushEnabled', 'pushCooldownSeconds', 'maxRequestBytes',
 ]);
 
 /** 加载配置（不存在时返回默认值）。 */

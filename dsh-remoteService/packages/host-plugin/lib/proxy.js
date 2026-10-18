@@ -29,11 +29,23 @@ function hashOf(value) {
  * - 不信任任何客户端 Host/Origin/Forwarded 头；统一重写 Host 并注入本机浏览器 cookie。
  * - deny 前缀（/connect、/oauth、/api/remote-access、/__dsh_remote 等）绝不外发。
  */
+const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024 * 1024;
+
+/** 远程响应安全头（DSH 本身未设置；由主机插件统一补）。 */
+const SECURITY_RESPONSE_HEADERS = Object.freeze({
+  'x-content-type-options': 'nosniff',
+  'referrer-policy': 'no-referrer',
+  'x-frame-options': 'DENY',
+  'permissions-policy': 'camera=(), microphone=(), geolocation=()',
+  'strict-transport-security': 'max-age=31536000; includeSubDomains',
+});
+
 export class DshProxy {
-  constructor({ getUpstream, authenticatedUrl, denyPrefixes = [], audit, log = () => {} }) {
+  constructor({ getUpstream, authenticatedUrl, denyPrefixes = [], getMaxRequestBytes, audit, log = () => {} }) {
     this.getUpstream = getUpstream;
     this.authenticatedUrl = authenticatedUrl;
     this.denyPrefixes = denyPrefixes.map(String);
+    this.getMaxRequestBytes = getMaxRequestBytes;
     this.audit = audit;
     this.log = log;
     this.cookieHeader = '';
@@ -119,6 +131,14 @@ export class DshProxy {
 
   async handle(req, res, device) {
     const target = this.upstreamTarget();
+    const maxBytes = Number(this.getMaxRequestBytes?.() ?? DEFAULT_MAX_REQUEST_BYTES) || DEFAULT_MAX_REQUEST_BYTES;
+    const declaredBytes = Number(req.headers['content-length'] ?? 0);
+    if (Number.isFinite(declaredBytes) && declaredBytes > maxBytes) {
+      this.audit?.append({ deviceId: device?.id, action: 'proxy-reject', resource: 'body-too-large', result: 'denied' });
+      res.writeHead(413, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('payload too large');
+      return;
+    }
     if (this.isDenied(req.url)) {
       this.audit?.append({ deviceId: device?.id, action: 'proxy-deny', resource: req.url, result: 'denied' });
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
@@ -157,8 +177,11 @@ export class DshProxy {
           if (value === undefined) continue;
           headers[name] = value;
         }
+        Object.assign(headers, SECURITY_RESPONSE_HEADERS);
         const contentType = String(upRes.headers['content-type'] ?? '');
-        if (contentType.includes('text/html')) headers['cache-control'] = 'no-store';
+        let pathname = '/';
+        try { pathname = new URL(req.url ?? '/', 'https://localhost').pathname; } catch { /* ignore */ }
+        if (contentType.includes('text/html') || pathname.startsWith('/api/')) headers['cache-control'] = 'no-store';
         headers['x-dsh-remote-device'] = device?.id ?? 'unknown';
         res.writeHead(upRes.statusCode ?? 502, headers);
         upRes.pipe(res);

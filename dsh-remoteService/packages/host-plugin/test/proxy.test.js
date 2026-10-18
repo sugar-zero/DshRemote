@@ -26,6 +26,7 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
         return;
       }
       if (req.url === '/connect') { res.writeHead(200); res.end('LEAK'); return; }
+      if (req.url.startsWith('/api/')) { res.writeHead(200, { 'content-type': 'application/json' }); res.end('{"ok":true}'); return; }
       res.writeHead(200, { 'content-type': 'text/html; charset=utf-8' });
       res.end('<html><body>DSH-REMOTE-TEST</body></html>');
     });
@@ -50,7 +51,8 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     const proxy = new DshProxy({
       getUpstream: () => ({ protocol: 'http:', host: '127.0.0.1', port: upstreamPort }),
       authenticatedUrl: () => `http://127.0.0.1:${upstreamPort}/?token=test-token`,
-      denyPrefixes: ['/connect', '/oauth', '/api/remote-access', '/__dsh_remote'],
+      denyPrefixes: ['/connect', '/oauth', '/open-in-app', '/api/remote-access', '/__dsh_remote'],
+      getMaxRequestBytes: () => 4 * 1024 * 1024,
       audit,
     });
     remote = createRemoteServer({
@@ -97,6 +99,11 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     assert.equal(last.headers['x-forwarded-for'], undefined);
     assert.equal(last.headers['x-real-ip'], undefined);
     assert.equal(last.headers.origin, undefined);
+    assert.equal(ok.headers['x-content-type-options'], 'nosniff');
+    assert.equal(ok.headers['x-frame-options'], 'DENY');
+    assert.equal(ok.headers['referrer-policy'], 'no-referrer');
+    assert.match(ok.headers['strict-transport-security'] ?? '', /max-age=31536000/);
+    assert.equal(ok.headers['cache-control'], 'no-store');
 
     // 4) deny list 不命中上游
     const before = seen.length;
@@ -106,6 +113,27 @@ test('remote TLS server: mTLS gate, header stripping, cookie injection, deny lis
     });
     assert.equal(denied.status, 403);
     assert.equal(seen.length, before, 'denied path must not reach upstream');
+
+    const deniedLocal = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/open-in-app/open',
+    });
+    assert.equal(deniedLocal.status, 403);
+
+    // 请求体上限（Content-Length 超限直接 413）
+    const tooLarge = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/',
+      headers: { 'Content-Length': String(8 * 1024 * 1024) },
+    });
+    assert.equal(tooLarge.status, 413);
+
+    const apiRes = await tlsRequest({
+      port, servername: fqdn, caPem: devCert.certPem,
+      certPem: signed.certPem, keyPem: deviceCsr.privateKeyPem, path: '/api/test',
+    });
+    assert.equal(apiRes.status, 200);
+    assert.equal(apiRes.headers['cache-control'], 'no-store');
 
     // 5) WebSocket 反代（mTLS + cookie + 流）
     const ws = new WebSocket(`wss://127.0.0.1:${port}/api/remote.mux`, [], {

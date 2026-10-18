@@ -63,6 +63,7 @@ const HELP = `dsh-remote-relay — 自托管盲中继 (DSH remote access, 方案
 环境变量（覆盖 config 文件，被命令行参数覆盖）:
   RELAY_DOMAIN RELAY_DEV RELAY_DATA_PORT RELAY_CONTROL_PORT RELAY_HTTP_PORT
   RELAY_DATA_HOST RELAY_TOKENS_FILE RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
+  RELAY_PUSH_ENDPOINT RELAY_PUSH_ACCESS_TOKEN RELAY_PUSH_TITLE RELAY_PUSH_BODY
 
 示例:
   # 生产（控制面用 relay.example.com 的 Let's Encrypt 证书，端口 80 留给 301）
@@ -178,6 +179,13 @@ function applyEnv(config) {
   if (env.RELAY_DATA_HOST) config.dataHost = env.RELAY_DATA_HOST;
   if (env.RELAY_TOKENS_FILE) config.tokensFile = env.RELAY_TOKENS_FILE;
   if (env.RELAY_LOG_LEVEL) config.logLevel = env.RELAY_LOG_LEVEL;
+  if (env.RELAY_PUSH_ENDPOINT || env.RELAY_PUSH_ACCESS_TOKEN || env.RELAY_PUSH_TITLE || env.RELAY_PUSH_BODY) {
+    config.push = { ...(config.push && typeof config.push === 'object' ? config.push : {}) };
+    if (env.RELAY_PUSH_ENDPOINT) config.push.endpoint = env.RELAY_PUSH_ENDPOINT;
+    if (env.RELAY_PUSH_ACCESS_TOKEN) config.push.accessToken = env.RELAY_PUSH_ACCESS_TOKEN;
+    if (env.RELAY_PUSH_TITLE) config.push.title = env.RELAY_PUSH_TITLE;
+    if (env.RELAY_PUSH_BODY) config.push.body = env.RELAY_PUSH_BODY;
+  }
   if (env.RELAY_TLS_CERT_FILE || env.RELAY_TLS_KEY_FILE) {
     config.tls = { ...(config.tls ?? {}) };
     if (env.RELAY_TLS_CERT_FILE) config.tls.certFile = env.RELAY_TLS_CERT_FILE;
