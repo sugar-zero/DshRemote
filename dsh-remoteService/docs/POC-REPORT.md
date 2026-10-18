@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.6 | URLSession 客户端证书（App 原生 HTTP） | ✅ **已验证**（同一 `npm run poc:webview` 中 URLSession 以客户端证书 POST 成功，服务器确认 `CN=dsh-poc-device`）；用途：push token 注册/`pair/status` | `poc/webview-mtls/urlsession-mtls.swift` |
 | 1.5 | 设备密钥 + PKCS#10 CSR（P-256） | ✅ **Swift 生成器已验证**：`npm run poc:csr`（Secure Enclave 优先、软件回退）→ host 插件真实设备 CA（openssl 路径）签发 → openssl 校验 CSR 自签名/证书链/公钥一致；iOS 源码在 `dsh-remoteApp/modules/dsh-mtls/ios/DSHMTLSCsr.swift` | `poc/native-csr/`；host 侧 `lib/identity.js` 支持 forge(RSA) + openssl(EC) 两条签发路径 |
 | 2 | relay TLS 透传 + SNI 路由 | ✅ **通过** | `packages/relay` 27 项测试（真实 ClientHello 捕获/分片、端到端 `tls.connect` → relay → 自签 TLS server、token 拒绝、未知 SNI 销毁、并发流、CLOSE 帧、控制面 TLS） |
 | 3 | 主机插件反代后 DSH UI 全功能 | ✅ **通过** | `poc/run-poc.js`：真实 `dsh web` 实例 + 插件 + relay，`GET /` 200（37,865 bytes DSH HTML），WebSocket `/api/remote.mux` 101 升级成功 |
@@ -25,7 +26,7 @@
 cd dsh-remoteService
 npm test                 # 54 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
 node poc/run-poc.js      # 端到端：配对→设备 mTLS→relay→DSH UI/WS；需要 dsh CLI 在 PATH
-npm run poc:webview      # macOS WKWebView 客户端证书 POC（Swift/WebKit；无需 Xcode）
+npm run poc:webview      # macOS WKWebView + URLSession 客户端证书 POC（Swift/WebKit；无需 Xcode）
 npm run poc:csr          # Swift P-256 CSR → host CA 签发 → openssl 校验（无需 Xcode）
 ```
 
@@ -71,7 +72,7 @@ POC 使用独立临时 `$DSH_HOME`（不会碰用户的真实 DSH 数据），�
 ## 5. 尚未完成 / 下一步
 
 1. **iOS 真机 WebView mTLS**：macOS WKWebView + Swift CSR 均已独立验证；剩余用 Xcode + iPhone 验证 Secure Enclave/Keychain 身份来源与 App 集成。
-2. **App 原生密钥/CSR**：✅ iOS Swift 生成器 + `installCertificate` 已实现并通过独立 POC 验证；⏳ 需 Xcode 编译 + 真机 Keychain/Secure Enclave 验收；Android（Keystore+BouncyCastle）待实现。
+2. **App 原生密钥/CSR + 原生 mTLS HTTP**：✅ iOS Swift 生成器 + `installCertificate` + `requestWithClientCert`（URLSession）已实现并独立验证；⏳ 需 Xcode 编译 + 真机 Keychain/Secure Enclave 验收；Android（Keystore+BouncyCastle）待实现。
 3. **生产证书自动化**：当前按 `DEPLOY.md` 用 acme.sh 手工/定时签发；可加 relay 侧 ACME DNS-01 helper（B2 仍要求 DNS 凭据只在主机）。
 4. **推送**：✅ host/relay 零内容推送链路 + 测试；⏳ App 原生 mTLS HTTP 客户端（`requestWithClientCert`）与 EAS/APNs 凭据（真机里程碑）。
 5. **client UI 桌面确认按钮**：✅ 已补齐（pending 卡片 + 允许/拒绝 + 刷新 + 测试）。

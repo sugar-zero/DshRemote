@@ -35,7 +35,7 @@ DSH 已有约六成底座（Web 传输/会话/审批/插件/入口/自托管链�
 | B2 生产部署文档（域名/DNS-01/证书/运维） | ✅ [`dsh-remoteService/docs/DEPLOY.md`](dsh-remoteService/docs/DEPLOY.md) |
 | WebView mTLS | ✅ macOS WKWebView 已验证（同一 iOS API）；⏳ iOS 真机待 Xcode |
 | 推送 host/relay 链路 / 安全加固 | ✅ 已实现 + 测试 |
-| 原生 Secure Enclave CSR（iOS 源码 + POC 验证） | ✅ `npm run poc:csr` 通过；⏳ Xcode 编译/真机 |
+| 原生 Secure Enclave CSR + mTLS HTTP（iOS 源码 + POC） | ✅ `npm run poc:csr` / `poc:webview`（含 URLSession）通过；⏳ Xcode 编译/真机 |
 | Android CSR / 原生 mTLS HTTP 客户端 | ⏳ 下一阶段 |
 
 快速验收：`cd dsh-remoteService && npm install && npm test && node poc/run-poc.js`

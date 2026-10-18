@@ -12,6 +12,7 @@
 //   importP12(base64, password, label?) — POC dev helper (see DSHMTLSIdentityStore)
 //   generateCsr(commonName)             — P-256 密钥（Secure Enclave 优先）+ PKCS#10 CSR
 //   installCertificate(certPem,label)   — 安装主机签发的证书并关联设备私钥
+//   requestWithClientCert(options)       — 用设备身份发 HTTPS 请求（push token / pair status）
 //   getDiagnostics()                    — label / presence / subject / expiry
 
 import ExpoModulesCore
@@ -57,6 +58,16 @@ public final class DSHMTLSModule: Module {
     AsyncFunction("installCertificate") { (certPem: String, label: String?) -> [String: Any?] in
       let resolvedLabel = label ?? DSHMTLSIdentityStore.shared.configuredLabel ?? "com.dsh.remote.device"
       return try DSHMTLSIdentityStore.shared.installCertificate(certPem: certPem, label: resolvedLabel)
+    }
+
+    // MARK: - Authenticated HTTPS (client certificate)
+
+    AsyncFunction("requestWithClientCert") { (options: [String: Any]) -> [String: Any] in
+      guard let url = options["url"] as? String else { throw DSHMTLSNetworkError.invalidURL }
+      let method = (options["method"] as? String) ?? "GET"
+      let headers = (options["headers"] as? [String: String]) ?? [:]
+      let body = options["body"] as? String
+      return try DSHMTLSNetwork.request(urlString: url, method: method, headers: headers, body: body)
     }
 
     // MARK: - Diagnostics

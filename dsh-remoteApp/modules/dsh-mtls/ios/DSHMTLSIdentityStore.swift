@@ -93,11 +93,11 @@ final class DSHMTLSIdentityStore {
     guard
       let items = importedItems as? [[String: Any]],
       let first = items.first,
-      let identity = first[kSecImportItemIdentity as String] as? SecIdentity
+      let identityRef = first[kSecImportItemIdentity as String]
     else {
       throw DSHMTLSIdentityError.missingIdentityInP12
     }
-
+    let identity = identityRef as! SecIdentity
     let chain = (first[kSecImportItemCertChain as String] as? [SecCertificate]) ?? []
     try persist(identity: identity, chain: chain, label: label)
     configuredLabel = label
@@ -185,8 +185,8 @@ final class DSHMTLSIdentityStore {
     ]
     var result: CFTypeRef?
     let status = SecItemCopyMatching(query as CFDictionary, &result)
-    guard status == errSecSuccess else { return nil }
-    return result as? SecIdentity
+    guard status == errSecSuccess, let result else { return nil }
+    return result as! SecIdentity
   }
 
   /// Certificate chain for `URLCredential(identity:certificates:persistence:)`.

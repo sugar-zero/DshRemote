@@ -19,8 +19,9 @@ fi
 echo "==> 生成测试 CA / 服务器证书 / 客户端证书+PKCS#12"
 node generate-certs.mjs
 
-echo "==> 编译 Swift WKWebView mTLS 测试"
+echo "==> 编译 Swift WKWebView / URLSession mTLS 测试"
 swiftc -O -swift-version 5 wk-mtls.swift -o "$BUILD/wk-mtls" 2>/dev/null
+swiftc -O -swift-version 5 urlsession-mtls.swift -o "$BUILD/urlsession-mtls" 2>/dev/null
 
 echo "==> 启动要求客户端证书的 HTTPS 服务"
 node server.mjs > "$BUILD/server.log" 2>&1 &
@@ -46,6 +47,19 @@ case "$RESULT" in
     ;;
   *)
     echo "❌ WKWebView mTLS POC FAIL" >&2
+    exit 1
+    ;;
+esac
+
+echo "==> 验证 URLSession 客户端证书（App 原生 HTTP：push token / pair status）"
+RESULT2=$("$BUILD/urlsession-mtls" "https://127.0.0.1:$PORT/__dsh_remote/push-token" "$BUILD/client.p12" "poc-pass" "$BUILD/ca.pem")
+echo "    $RESULT2"
+case "$RESULT2" in
+  *"STATUS: 200"*"MTLS OK: dsh-poc-device"*)
+    echo "✅ URLSession mTLS POC PASS：原生 HTTP 客户端证书可用"
+    ;;
+  *)
+    echo "❌ URLSession mTLS POC FAIL" >&2
     exit 1
     ;;
 esac
