@@ -10,19 +10,12 @@
 //   getClientIdentity()                 — current label
 //   clearClientIdentity()               — forget label (identity stays in Keychain)
 //   importP12(base64, password, label?) — POC dev helper (see DSHMTLSIdentityStore)
-//   generateCsr(commonName)             — NEXT MILESTONE (throws for now)
+//   generateCsr(commonName)             — P-256 密钥（Secure Enclave 优先）+ PKCS#10 CSR
+//   installCertificate(certPem,label)   — 安装主机签发的证书并关联设备私钥
 //   getDiagnostics()                    — label / presence / subject / expiry
 
 import ExpoModulesCore
 import WebKit
-
-/// Thrown by `generateCsr` until the Secure Enclave key + CSR milestone lands.
-final class DSHMTLSCsrNotImplementedException: Exception {
-  override public var reason: String {
-    "POC: 原生 CSR 生成尚未实现。设备身份需要手动导入（importP12，见 README），" +
-      "下一里程碑将使用 Secure Enclave 生成 P-256 密钥并输出 PKCS#10 CSR。"
-  }
-}
 
 public final class DSHMTLSModule: Module {
   public func definition() -> ModuleDefinition {
@@ -53,12 +46,17 @@ public final class DSHMTLSModule: Module {
       )
     }
 
-    // MARK: - Next milestone
+    // MARK: - Device identity: Secure Enclave key + CSR + certificate install
 
-    AsyncFunction("generateCsr") { (_ commonName: String) -> [String: Any] in
-      // TODO(next milestone): SecKeyCreateRandomKey (P-256, Secure Enclave) +
-      // DER-encode and sign a PKCS#10 CSR; return { csrPem, label }.
-      throw DSHMTLSCsrNotImplementedException()
+    AsyncFunction("generateCsr") { (commonName: String) -> [String: Any] in
+      let label = "com.dsh.remote.device.\(UUID().uuidString)"
+      let result = try DSHMTLSCsr.generate(commonName: commonName, keyLabel: label)
+      return ["csrPem": result.csrPem, "label": result.keyLabel]
+    }
+
+    AsyncFunction("installCertificate") { (certPem: String, label: String?) -> [String: Any?] in
+      let resolvedLabel = label ?? DSHMTLSIdentityStore.shared.configuredLabel ?? "com.dsh.remote.device"
+      return try DSHMTLSIdentityStore.shared.installCertificate(certPem: certPem, label: resolvedLabel)
     }
 
     // MARK: - Diagnostics

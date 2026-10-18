@@ -48,7 +48,9 @@ import {
 import {
   DshMtlsUnavailableError,
   generateCsr as nativeGenerateCsr,
+  installCertificate as nativeInstallCertificate,
   requestWithClientCert,
+  setClientIdentity as nativeSetClientIdentity,
 } from '../../modules/dsh-mtls/src';
 
 // ---------------------------------------------------------------------------
@@ -685,6 +687,17 @@ export async function persistPairedDevice(params: {
     caPem: device.caPem,
     storedAt: Date.now(),
   });
+  // 原生 CSR 流程：把主机签发的证书装回 Keychain 并关联设备私钥（label=certRef）。
+  if (params.certRef) {
+    try {
+      await nativeInstallCertificate(device.certPem, params.certRef);
+      await nativeSetClientIdentity(params.certRef);
+      connection.certRef = params.certRef;
+    } catch (error) {
+      // 配对本身已成功；证书安装失败时让诊断页/重新配对处理，不丢失主机侧记录。
+      console.warn('[dsh-remote] installCertificate failed:', error);
+    }
+  }
   return connection;
 }
 
