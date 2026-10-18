@@ -25,7 +25,7 @@ CHECK_DEPLOY_SKIP_DNS=1 RELAY_HTTP_PORT=18080 RELAY_DATA_PORT=18443 \
   ./scripts/check-deploy.sh 127.0.0.1 h_local 18444
 ```
 
-部署前先跑产物静态校验：`npm run validate:artifacts`（shell/compose/plist/JSON/Node 入口）。
+部署前先跑产物静态校验：`npm run validate:artifacts`；本地演练 `npm run poc:deploy`（真 relay + 真 host + `check-deploy.sh` 全绿分支）。
 
 快速检查（部署后）：
 
