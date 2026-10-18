@@ -137,6 +137,18 @@ export class RemoteService {
         audit: this.audit,
         getConfig: () => this.config,
         savePushToken: (entry) => this.#savePushToken(entry),
+        getStatus: () => ({
+          tls: this.tlsInfo
+            ? {
+                subject: this.tlsInfo.subject,
+                notAfter: this.tlsInfo.notAfter,
+                dev: this.tlsInfo.dev,
+                valid: this.tlsInfo.valid,
+              }
+            : null,
+          relayConnected: Boolean(this.connector?.isConnected()),
+          version: VERSION,
+        }),
         log: this.log,
       });
       this.listener = runtime;

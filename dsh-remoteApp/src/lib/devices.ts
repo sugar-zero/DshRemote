@@ -2,6 +2,7 @@
  * 主机侧设备管理（通过 mTLS 隧道 API）。
  *
  * 端点（docs/ADMIN-API.md §2）：
+ *   GET  /__dsh_remote/status                   → 主机状态（证书到期/relay 连接/版本/设备数）
  *   GET  /__dsh_remote/devices                  → 已配对设备列表（含 current）
  *   POST /__dsh_remote/devices/:id/revoke       → 撤销设备（立即断链 + 拒绝续期）
  *
@@ -9,6 +10,16 @@
  */
 import { isDshMtlsAvailable, requestWithClientCert } from '../../modules/dsh-mtls/src';
 import type { StoredConnection } from './store';
+
+export interface HostStatus {
+  hostId: string;
+  hostName: string;
+  domain: string;
+  tls: { subject?: string; notAfter?: string; dev?: boolean; valid?: boolean } | null;
+  relayConnected: boolean | null;
+  version: string | null;
+  devices: { total: number; active: number };
+}
 
 export interface RemoteDevice {
   id: string;
@@ -40,6 +51,15 @@ function parseEnvelope<T>(body: string): T {
 
 export function canManageRemoteDevices(): boolean {
   return isDshMtlsAvailable;
+}
+
+export async function fetchHostStatus(connection: StoredConnection): Promise<HostStatus> {
+  const response = await requestWithClientCert({
+    url: `${hostBase(connection)}/__dsh_remote/status`,
+    method: 'GET',
+  });
+  if (response.status !== 200) throw new Error(`读取主机状态失败：HTTP ${response.status}`);
+  return parseEnvelope<HostStatus>(response.body);
 }
 
 export async function fetchRemoteDevices(connection: StoredConnection): Promise<RemoteDevice[]> {
