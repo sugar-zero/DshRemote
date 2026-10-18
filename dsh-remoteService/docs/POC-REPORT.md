@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.15 | TLS 证书热加载 | ✅ 模拟 acme.sh 覆盖 cert/key 后调用热加载：监听重建、notAfter/端口更新、无需重启进程（测试覆盖；生产由文件 watcher 自动触发） | `RemoteService.reloadTls()`、`test/service.test.js`、`#watchCertFiles` |
 | 1.14 | 撤销设备立即断链 | ✅ host 跟踪设备 serial → 活跃 TLS/WS socket；本地管理 API 与远端 tunnel `revoke` 都会立即销毁连接（测试：keep-alive 连接在撤销后关闭） | `packages/host-plugin/lib/server.js`、`test/proxy.test.js` |
 | 1.13 | 推送端到端集成 | ✅ `session/event(turn/end)` → RemoteService notifier → connector → **真 relay push** → mock Expo endpoint；断言标题/正文/`{kind}` 且零会话内容（HTTP 200） | `packages/host-plugin/test/push-e2e.test.js` |
 | 1.12 | relay 数据面基准 | ✅ 2000 req / 32 并发：**10,912 req/s**，p50 2.03ms / p95 4.06ms / p99 34.21ms，0 错误（本机 loopback，仅作基线） | `poc/bench-relay.js`、`npm run bench` |
@@ -33,7 +34,7 @@
 
 ```bash
 cd dsh-remoteService
-npm test                 # 57 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
+npm test                 # 58 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
 node poc/run-poc.js      # 端到端：配对→设备 mTLS→relay→DSH UI/WS；需要 dsh CLI 在 PATH
 npm run poc:webview      # macOS WKWebView + URLSession 客户端证书 POC（Swift/WebKit；无需 Xcode）
 npm run poc:csr          # Swift P-256 CSR → host CA 签发 → openssl 校验（无需 Xcode）
