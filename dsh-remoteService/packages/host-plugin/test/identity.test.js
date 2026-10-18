@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { X509Certificate } from 'node:crypto';
-import { withTempHome, makeCsr } from './helpers.js';
+import { withTempHome, makeCsr, makeEcCsr } from './helpers.js';
 
 test('host identity is stable across reloads; device CA signs CSR', async () => {
   const home = withTempHome();
@@ -22,6 +22,20 @@ test('host identity is stable across reloads; device CA signs CSR', async () => 
     assert.equal(leaf.checkIssued(caCert), true);
     assert.equal(leaf.verify(caCert.publicKey), true);
     assert.equal(leaf.serialNumber.toUpperCase(), signed.serial);
+
+    // EC(P-256) CSR：forge 不支持，改走 openssl；供 Secure Enclave/Keystore 设备使用
+    const ec = makeEcCsr('iPhone-EC');
+    try {
+      const parsedEc = identityMod.parseDeviceCsr(ec.csrPem);
+      assert.equal(parsedEc.keyType, 'ec');
+      const signedEc = identityMod.signDeviceCertificate({ ca, csrPem: ec.csrPem, deviceId: 'd_ec01', commonName: 'iPhone-EC', days: 1 });
+      const ecLeaf = new X509Certificate(signedEc.certPem);
+      assert.equal(ecLeaf.checkIssued(caCert), true);
+      assert.equal(ecLeaf.verify(caCert.publicKey), true);
+      assert.equal(ecLeaf.serialNumber.toUpperCase(), signedEc.serial);
+    } finally {
+      ec.cleanup();
+    }
   } finally {
     home.cleanup();
   }

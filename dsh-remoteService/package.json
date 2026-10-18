@@ -10,7 +10,8 @@
   "scripts": {
     "test": "node scripts/run-tests.js",
     "relay": "node packages/relay/bin/relay.js",
-    "poc": "node poc/run-poc.js"
+    "poc": "node poc/run-poc.js",
+    "poc:webview": "bash poc/webview-mtls/run.sh"
   },
   "engines": {
     "node": ">=22"

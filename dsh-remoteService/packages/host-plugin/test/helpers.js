@@ -1,4 +1,5 @@
-import { mkdtempSync, rmSync } from 'node:fs';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import tls from 'node:tls';
@@ -30,6 +31,24 @@ export function makeCsr(commonName = 'test-device') {
     csrPem: forge.pki.certificationRequestToPem(csr),
     privateKeyPem: forge.pki.privateKeyToPem(keys.privateKey),
     publicKey: keys.publicKey,
+  };
+}
+
+/** 用 openssl 生成 EC(P-256) 设备密钥 + CSR（模拟 Secure Enclave/Keystore 设备）。 */
+export function makeEcCsr(commonName = 'ec-device') {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-remote-ec-csr-'));
+  const keyPath = join(dir, 'device.key');
+  const csrPath = join(dir, 'device.csr');
+  execFileSync('openssl', [
+    'req', '-new', '-newkey', 'ec', '-pkeyopt', 'ec_paramgen_curve:P-256',
+    '-nodes', '-subj', `/CN=${commonName}`, '-keyout', keyPath, '-out', csrPath,
+  ], { stdio: 'pipe', timeout: 15_000 });
+  const csrPem = readFileSync(csrPath, 'utf8');
+  const privateKeyPem = readFileSync(keyPath, 'utf8');
+  return {
+    csrPem,
+    privateKeyPem,
+    cleanup() { rmSync(dir, { recursive: true, force: true }); },
   };
 }
 
