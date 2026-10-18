@@ -182,6 +182,24 @@ curl -b /tmp/dsh.cookies -X POST http://127.0.0.1:3080/api/remote-access/config 
 | 主机休眠 | 远程不可用；桌面「防止睡眠」/常开设备（Codex 同样要求） |
 | 日志 | relay 不记内容；主机 audit.jsonl 只记动作/资源/哈希，0600 |
 
+## 6.1 推送提醒（可选，零正文）
+
+本仓库实现了「host 插件触发 → relay → APNs/FCM/Expo」的**内容无关**推送链路（POC 先接 Expo Push）：
+
+1. 在 Expo 项目里为 App 配置 EAS projectId（App 侧 `EXPO_PUBLIC_EAS_PROJECT_ID`），并上传 APNs/FCM 凭据到 Expo（Expo 文档步骤）。
+2. relay 配置（`relay.json` 或环境变量）：
+   ```json
+   { "push": { "enabled": true, "endpoint": "https://exp.host/--/api/v2/push/send",
+               "title": "DSH", "body": "有任务需要你" } }
+   ```
+   也可用 `RELAY_PUSH_ENDPOINT / RELAY_PUSH_ACCESS_TOKEN / RELAY_PUSH_TITLE / RELAY_PUSH_BODY`。
+3. 主机插件设置（管理 API 或后续 UI）：`pushEnabled: true`（默认）、`pushCooldownSeconds: 30`。
+   生效条件：手机在 App 内成功注册 push token（`POST /__dsh_remote/push-token`，mTLS）。
+4. 触发：DSH 一轮结束/出错时，host 插件只发 `kind=attention`；relay 只发通用标题/正文，**不含会话名、消息、文件路径**。手机收到后自行连回来看详情。
+
+> 安全边界：relay 只按 hostId 存不透明 token（内存，最多 20 台/主机），不存内容；推送 payload 不含任何业务信息；日志不含 token 明文。
+> 当前状态：host/relay 链路与测试已完成；App 侧 JS 已接入 expo-notifications，但**原生 mTLS 请求（`requestWithClientCert`）与 EAS/APNs 凭据仍需在真机里程碑完成**。未完成前推送会返回 "native transport unavailable"，不打断主流程。
+
 ---
 
 ## 7. 安全红线（部署时逐条确认）
@@ -193,7 +211,7 @@ curl -b /tmp/dsh.cookies -X POST http://127.0.0.1:3080/api/remote-access/config 
 - [ ] 手机/中继不持有 DSH launch token 或 30 天 cookie
 - [ ] 配对一次一密（≤120s、单次）+ 桌面 SAS 确认；QR 里无长期 token
 - [ ] 设备可撤销；丢手机走撤销流程
-- [ ] 推送只用通用可见文案（不含内容）；日志/崩溃报告不含 token/正文
+- [ ] 推送只用通用可见文案（不含内容）；relay token 仅内存、日志不含 token；日志/崩溃报告不含 token/正文
 - [ ] relay 与主机不共享 `$DSH_HOME`；relay 容器非 root/最小权限
 - [ ] 802/8443 防火墙最小放行；relay 控制面证书有效（不要 `--dev` 上公网）
 

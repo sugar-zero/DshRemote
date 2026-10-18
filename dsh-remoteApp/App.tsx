@@ -16,12 +16,14 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { PairingScreen } from './src/screens/PairingScreen';
 import { WebViewScreen } from './src/screens/WebViewScreen';
 import { DevicesScreen } from './src/screens/DevicesScreen';
 import { clearAll, loadConnection, type StoredConnection } from './src/lib/store';
+import { configureNotificationHandler, enablePushForConnection } from './src/lib/notifications';
 import { colors, spacing, typography } from './src/theme';
 
 type Route = 'loading' | 'pairing' | 'webview' | 'devices';
@@ -52,6 +54,30 @@ export default function App() {
     setConnection(paired);
     setRoute('webview');
   }, []);
+
+  // POC：通知权限/推送 token 注册；原生 mTLS 客户端未实现时只打日志，不打断主流程。
+  useEffect(() => {
+    configureNotificationHandler();
+  }, []);
+
+  useEffect(() => {
+    if (!connection) return undefined;
+    let cancelled = false;
+    enablePushForConnection(connection)
+      .then((result) => {
+        if (cancelled) return;
+        console.log(`[dsh-remote] push ${result.ok ? 'registered' : `unavailable: ${result.reason ?? 'unknown'}`}`);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) console.log(`[dsh-remote] push setup failed: ${String(error)}`);
+      });
+    // 点击通知时当前设计保持 WebView 常驻；后续可在此聚焦并刷新。
+    const subscription = Notifications.addNotificationResponseReceivedListener(() => {});
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, [connection]);
 
   const handleCloseWebView = useCallback(() => {
     // The shell has no home screen: "back" from the WebView returns to pairing

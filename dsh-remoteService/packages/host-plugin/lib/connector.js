@@ -27,6 +27,9 @@ export class RelayConnector {
     this.connected = false;
     this.lastError = null;
     this.streams = new Map();
+    /** @type {Map<string, {deviceId:string, provider:string, token:string}>} */
+    this.pushTokens = new Map();
+    this.onPushResult = undefined;
     this.closed = false;
     this.retryMs = 1000;
     this.heartbeatTimer = undefined;
@@ -59,6 +62,25 @@ export class RelayConnector {
 
   isConnected() {
     return this.connected;
+  }
+
+  /** 注册/更新设备推送 token；已连接时立即上报 relay，未连接时等 ready 后补发。 */
+  registerPushToken(entry) {
+    if (!entry?.deviceId || !entry?.token) return false;
+    this.pushTokens.set(String(entry.deviceId), {
+      deviceId: String(entry.deviceId),
+      provider: String(entry.provider ?? 'expo'),
+      token: String(entry.token),
+    });
+    if (this.connected) this.#send({ t: RELAY_MSG.PUSH_REGISTER, ...this.pushTokens.get(String(entry.deviceId)) });
+    return true;
+  }
+
+  /** 请求 relay 发一条"需要关注"提醒（内容无关）。 */
+  sendPush({ kind = 'attention' } = {}) {
+    if (!this.connected) return false;
+    this.#send({ t: RELAY_MSG.PUSH_SEND, kind: String(kind).slice(0, 32) });
+    return true;
   }
 
   #scheduleReconnect() {
@@ -125,6 +147,9 @@ export class RelayConnector {
       this.log(`relay ready: ${msg.hostname ?? this.hostId}`);
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = setInterval(() => this.#send({ t: RELAY_MSG.HOST_HEARTBEAT }), 10_000);
+      for (const entry of this.pushTokens.values()) {
+        this.#send({ t: RELAY_MSG.PUSH_REGISTER, ...entry });
+      }
       return;
     }
     if (msg.t === RELAY_MSG.ERROR) {
@@ -134,6 +159,11 @@ export class RelayConnector {
     }
     if (msg.t === RELAY_MSG.HOST_OPEN) {
       this.#openStream(msg.streamId, msg.sni);
+      return;
+    }
+    if (msg.t === RELAY_MSG.PUSH_RESULT) {
+      this.onPushResult?.(msg);
+      this.audit?.append({ action: 'push-result', result: msg.ok ? 'ok' : 'failed' });
       return;
     }
     if (msg.t === RELAY_MSG.HOST_CLOSE) {

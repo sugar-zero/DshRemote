@@ -247,6 +247,23 @@ curl -sI http://relay.example.com/  # 301 Location: https://relay.example.com/
 
 ---
 
+## 6.1 推送（可选）
+
+relay 接收 host 控制面的两类 push 消息（均需已通过 host.hello 鉴权）：
+
+```text
+host → relay: {t:'push.register', deviceId, provider:'expo', token}
+host → relay: {t:'push.send', kind:'attention'}
+relay → host: {t:'push.result', action:'register'|'send', ok, delivered, failed}
+```
+
+- token 只存内存、按 hostId 隔离（每主机最多 20 台）；relay 重启后由 App 下次打开重新注册。
+- 发送内容**固定为通用标题/正文 + `{kind}`**，绝不含会话名/消息/文件路径。
+- 配置：`relay.json` 的 `push: {enabled,endpoint,accessToken,title,body}` 或环境变量 `RELAY_PUSH_*`；默认 endpoint 为 Expo Push API。
+- 当前 provider 仅支持 `expo`（APNs/FCM 直连为后续里程碑）；`/healthz` 的 `pushTokens` 字段为当前注册设备数。
+
+---
+
 ## 7. 日志与隐私
 
 - 会记录：hostId、来源 IP:port、streamId、字节数（debug）、错误码、在线/离线、心跳超时、token 校验失败（不含 token 值）。

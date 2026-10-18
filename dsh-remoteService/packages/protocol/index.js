@@ -139,6 +139,7 @@ export const RELAY_MSG = Object.freeze({
   HOST_CLOSE: 'host.close',
   PUSH_REGISTER: 'push.register',
   PUSH_SEND: 'push.send',
+  PUSH_RESULT: 'push.result',
   HOST_STATUS: 'host.status',
   ERROR: 'error',
 });

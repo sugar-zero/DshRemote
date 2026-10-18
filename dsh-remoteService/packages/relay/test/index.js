@@ -13,3 +13,4 @@ import './tokens.test.js';
 import './control.test.js';
 import './http.test.js';
 import './data-plane.test.js';
+import './push.test.js';

@@ -22,7 +22,7 @@
 
 ```bash
 cd dsh-remoteService
-npm test              # 48 tests, 0 fail（protocol + host-plugin + relay + client UI smoke）
+npm test              # 54 tests, 0 fail（protocol + host-plugin + relay + client UI smoke + push）
 node poc/run-poc.js   # 需要 dsh CLI 在 PATH；约 15–25s
 ```
 
@@ -70,10 +70,10 @@ POC 使用独立临时 `$DSH_HOME`（不会碰用户的真实 DSH 数据），�
 1. **POC-1 真机 WebView mTLS**（阻塞在环境）：需要用户 Mac 安装 Xcode + iPhone，按 `dsh-remoteApp/README.md` 构建；验证 `WKNavigationDelegate` 客户端证书挑战 + Android `onReceivedClientCertRequest`。
 2. **App 原生密钥/CSR**：当前 POC 用 PKCS#12 手动导入验证链路；MVP 实现 Secure Enclave/Keystore 生成密钥 + CSR。
 3. **生产证书自动化**：当前按 `DEPLOY.md` 用 acme.sh 手工/定时签发；可加 relay 侧 ACME DNS-01 helper（B2 仍要求 DNS 凭据只在主机）。
-4. **推送**：host 插件已留 `/__dsh_remote/push-token` 与 relay push 控制消息；App 接入 expo-notifications + relay 零正文推送待做。
+4. **推送**：✅ host/relay 零内容推送链路 + 测试；⏳ App 原生 mTLS HTTP 客户端（`requestWithClientCert`）与 EAS/APNs 凭据（真机里程碑）。
 5. **client UI 桌面确认按钮**：✅ 已补齐（pending 卡片 + 允许/拒绝 + 刷新 + 测试）。
 6. **生产部署**：需要用户提供 VPS + 域名（或按 `DEPLOY.md` 自行部署）；relay 控制面必须用真实证书（`--dev` 仅本机）。
-7. **加固收尾**：HTTP 响应安全头、body/限流参数可配置、审计 UI、Android 编译、换机/撤销演练。
+7. **加固收尾**：✅ 已加远程响应安全头（nosniff/frame/referrer/HSTS）、请求体上限、`/open-in-app` deny；⏳ Android 编译、换机/撤销演练、CSP 评估。
 
 ## 6. 已知限制（POC 级别）
 

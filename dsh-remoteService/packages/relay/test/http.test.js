@@ -50,7 +50,7 @@ test('GET /healthz returns 200 JSON with domain and online hosts', async () => {
     const response = await request(relay.httpPort, { path: '/healthz', hostHeader: 'relay.test' });
     assert.equal(response.status, 200);
     assert.match(response.headers['content-type'], /application\/json/);
-    assert.deepEqual(JSON.parse(response.body), { ok: true, domain: 'relay.test', hosts: [] });
+    assert.deepEqual(JSON.parse(response.body), { ok: true, domain: 'relay.test', hosts: [], pushTokens: 0 });
   } finally {
     await relay.close();
   }

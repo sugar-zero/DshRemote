@@ -95,6 +95,16 @@ interface NativeDshMtlsModule {
   /** Generate a P-256 key pair + PKCS#10 CSR (next milestone; throws until implemented). */
   generateCsr(commonName: string): Promise<CsrResult>;
   getDiagnostics(): Promise<DshMtlsDiagnostics>;
+  /**
+   * POC: 用配置好的设备证书发一条 HTTPS 请求（原生 URLSession/OkHttp 客户端证书）。
+   * 下一里程碑实现；未实现时 JavaScript 侧优雅降级。
+   */
+  requestWithClientCert?(options: {
+    url: string;
+    method: string;
+    headers?: Record<string, string>;
+    body?: string;
+  }): Promise<{ status: number; headers?: Record<string, string>; body: string }>;
 }
 
 const nativeModule = requireOptionalNativeModule<NativeDshMtlsModule>(DSH_MTLS_MODULE_NAME);
@@ -154,6 +164,25 @@ export async function getDiagnostics(): Promise<DshMtlsDiagnostics> {
     };
   }
   return nativeModule.getDiagnostics();
+}
+
+/** POC：用设备证书发一条 HTTPS 请求（原生实现缺失时抛 DshMtlsUnavailableError）。 */
+export async function requestWithClientCert(options: {
+  url: string;
+  method?: string;
+  headers?: Record<string, string>;
+  body?: string;
+}): Promise<{ status: number; headers?: Record<string, string>; body: string }> {
+  const module = requireModule();
+  if (typeof module.requestWithClientCert !== 'function') {
+    throw new DshMtlsUnavailableError('原生 mTLS HTTP 客户端尚未实现（requestWithClientCert）；POC 阶段可用 PKCS#12 手动导入后由 WebView 验证 mTLS。');
+  }
+  return module.requestWithClientCert({
+    url: options.url,
+    method: options.method ?? 'GET',
+    headers: options.headers,
+    body: options.body,
+  });
 }
 
 export interface DshMtlsWebViewMessageEvent {

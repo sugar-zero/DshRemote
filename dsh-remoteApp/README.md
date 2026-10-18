@@ -26,7 +26,7 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 | **iOS 原生编译**（Swift / pod install / Xcode） | ❌ **未执行** —— 开发机只有 Command Line Tools，没有 Xcode |
 | **Android 原生编译** | ❌ **未执行** —— 没有 Android SDK |
 | **原生 CSR / Secure Enclave 密钥生成** | ⏳ 下一里程碑（当前 POC 用手动 PKCS#12 导入验证 mTLS 链路） |
-| 推送（expo-notifications 接入 token 注册） | ⏳ 下一里程碑（已装依赖、留了接入点） |
+| 推送（expo-notifications + 注册到 host） | ✅ JS 已接入（`src/lib/notifications.ts`）；⏳ 等原生 `requestWithClientCert` + EAS/APNs 凭据 |
 
 > 因此请不要把本目录当作"已构建、已验证"的产物。原生部分需要在你自己的 Mac（Xcode）上按下面步骤编译，并按「POC 验收清单」逐条验证。
 

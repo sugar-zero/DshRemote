@@ -57,7 +57,7 @@ test('rejects host.hello with a bad token, then accepts the right token', async 
     assert.equal(ready.hostname, 'poc.relay.test');
     assert.equal(ready.dataPort, relay.dataPort);
     assert.deepEqual(relay.onlineHostIds(), ['poc']);
-    assert.deepEqual(relay.health(), { ok: true, domain: 'relay.test', hosts: ['poc'] });
+    assert.deepEqual(relay.health(), { ok: true, domain: 'relay.test', hosts: ['poc'], pushTokens: 0 });
     good.close();
   } finally {
     await relay.close();

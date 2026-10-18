@@ -10,6 +10,7 @@ import { PairingManager } from './pairing.js';
 import { DshProxy } from './proxy.js';
 import { RelayConnector } from './connector.js';
 import { createRemoteServer } from './server.js';
+import { createPushNotifier } from './push.js';
 
 const VERSION = '0.1.0';
 
@@ -21,6 +22,17 @@ export class RemoteService {
     this.log = (message) => {
       try { console.log(`[dsh-remote] ${message}`); } catch { /* ignore */ }
     };
+    this.pushTokens = new Map();
+    this.pushNotifier = createPushNotifier({
+      getConfig: () => this.config ?? {},
+      getConnector: () => this.connector,
+      audit: { append: (entry) => this.audit?.append(entry) },
+      log: this.log,
+    });
+    if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
+      ctx.effect(() => ctx.on('session/event', (session, event) => this.pushNotifier.onSessionEvent(session, event)), 'dsh-remote-service: push triggers');
+      ctx.effect(() => ctx.on('session/disposed', (session) => this.pushNotifier.reset(session?.id)), 'dsh-remote-service: push reset');
+    }
     this.ready = this.#init().catch((error) => {
       this.lastError = error.message;
       this.log(`init failed: ${error.stack ?? error.message}`);
@@ -34,6 +46,16 @@ export class RemoteService {
     this.ca = loadOrCreateDeviceCa();
     this.devices = new DeviceStore();
     this.audit = new AuditLog();
+    const storedPush = readJson(paths.pushTokens(), { version: 1, tokens: [] });
+    for (const entry of Array.isArray(storedPush.tokens) ? storedPush.tokens : []) {
+      if (entry?.deviceId && entry?.token) {
+        this.pushTokens.set(String(entry.deviceId), {
+          deviceId: String(entry.deviceId),
+          provider: String(entry.provider ?? 'expo'),
+          token: String(entry.token),
+        });
+      }
+    }
     this.pairing = new PairingManager({
       identity: this.identity,
       ca: this.ca,
@@ -46,6 +68,7 @@ export class RemoteService {
       getUpstream: () => this.#upstream(),
       authenticatedUrl: () => this.#authenticatedUrl(),
       denyPrefixes: this.config.denyPrefixes,
+      getMaxRequestBytes: () => this.config.maxRequestBytes,
       audit: this.audit,
       log: this.log,
     });
@@ -135,6 +158,7 @@ export class RemoteService {
       log: this.log,
     });
     this.connector.start();
+    for (const entry of this.pushTokens.values()) this.connector.registerPushToken(entry);
     this.lastError = tlsError;
     this.log(`remote server on 127.0.0.1:${this.listenPort}${dev ? ' (dev self-signed TLS)' : ''}`);
     this.#watchCertFiles(config);
@@ -179,6 +203,12 @@ export class RemoteService {
   }
 
   #savePushToken(entry) {
+    this.pushTokens.set(String(entry.deviceId), {
+      deviceId: String(entry.deviceId),
+      provider: String(entry.provider ?? 'expo'),
+      token: String(entry.token),
+    });
+    this.connector?.registerPushToken(entry);
     const file = paths.pushTokens();
     const stored = readJson(file, { version: 1, tokens: [] });
     const tokens = Array.isArray(stored.tokens) ? stored.tokens : [];
@@ -224,6 +254,9 @@ export class RemoteService {
         hostId: config.hostId ?? '',
         hostName: config.hostName ?? '',
         requireApproval: Boolean(config.requireApproval),
+        pushEnabled: config.pushEnabled !== false,
+        pushCooldownSeconds: Number(config.pushCooldownSeconds ?? 30),
+        maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         relayTlsInsecure: Boolean(config.relayTlsInsecure),
         listenPort: config.listenPort ?? 0,
         tlsCertFile: config.tlsCertFile ? 'configured' : '',

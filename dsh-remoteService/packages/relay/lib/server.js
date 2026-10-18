@@ -29,6 +29,7 @@ import {
 import { MAX_CLIENT_HELLO_BYTES, parseClientHello } from './sni.js';
 import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
+import { createPushService } from './push.js';
 
 /** 控制面单帧上限（流帧由主机侧切成合理大小；给 32 MiB 余量）。 */
 const MAX_CONTROL_PAYLOAD = 32 * 1024 * 1024;
@@ -98,6 +99,7 @@ class Relay {
       tokensFile: config.tokensFile,
       logger: config.logger,
     });
+    this.pushService = createPushService({ ...config.push, logger: config.logger });
 
     /** @type {Map<string, any>} hostId → host */
     this.hosts = new Map();
@@ -217,6 +219,7 @@ class Relay {
       ok: true,
       domain: this.config.domain,
       hosts: [...this.hosts.keys()].sort(),
+      pushTokens: this.pushService.totalCount(),
     };
   }
 
@@ -356,6 +359,25 @@ class Relay {
       case RELAY_MSG.HOST_CLOSE:
         this.handleHostCloseMessage(conn.host, msg);
         return;
+      case RELAY_MSG.PUSH_REGISTER: {
+        try {
+          const result = this.pushService.register(conn.host.hostId, {
+            deviceId: msg.deviceId,
+            provider: msg.provider,
+            token: msg.token,
+          });
+          this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'register', ok: true, ...result });
+        } catch (error) {
+          this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'register', ok: false, code: error.code ?? 'push-register-failed', message: error.message });
+        }
+        return;
+      }
+      case RELAY_MSG.PUSH_SEND: {
+        this.pushService.send(conn.host.hostId, { kind: msg.kind })
+          .then((result) => this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'send', ok: true, ...result }))
+          .catch((error) => this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'send', ok: false, message: error.message }));
+        return;
+      }
       default:
         this.logger.debug(`control: ignoring unsupported message type ${JSON.stringify(String(msg.t))}`);
     }

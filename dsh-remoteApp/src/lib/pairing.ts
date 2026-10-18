@@ -30,6 +30,7 @@ import {
   isBase64UrlOfLength,
   pairStatusUrl,
   pairUrl,
+  pushTokenUrl,
   type PairedDeviceData,
   type PairingUri,
   type PairRequestBody,
@@ -47,6 +48,7 @@ import {
 import {
   DshMtlsUnavailableError,
   generateCsr as nativeGenerateCsr,
+  requestWithClientCert,
 } from '../../modules/dsh-mtls/src';
 
 // ---------------------------------------------------------------------------
@@ -694,14 +696,20 @@ export async function registerPushToken(options: {
   host: string;
   token: string;
   provider?: PushTokenRequestBody['provider'];
-  transport?: PairingTransport;
+  /** 注入原生 mTLS 传输的测试替身；缺省走 dsh-mtls 原生模块。 */
+  requestWithCert?: typeof requestWithClientCert;
   signal?: AbortSignal;
 }): Promise<void> {
-  // TODO(next milestone): route this through the native mTLS HTTP client.
-  throw new PairingError(
-    'unsupported',
-    `推送 token 注册需要原生 mTLS 传输（${options.host}，provider=${options.provider ?? 'expo'}），POC 阶段尚未实现。`,
-  );
+  const request = options.requestWithCert ?? requestWithClientCert;
+  const response = await request({
+    url: pushTokenUrl(options.host),
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ provider: options.provider ?? 'expo', token: options.token }),
+  });
+  if (response.status !== 200) {
+    throw new PairingError('http', `推送 token 注册失败：HTTP ${response.status}`, { status: response.status });
+  }
 }
 
 // ---------------------------------------------------------------------------
