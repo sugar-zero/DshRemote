@@ -13,13 +13,15 @@
  * (see `src/lib/store.ts`). The device private key never enters JS.
  */
 
-import { useCallback, useEffect, useState } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { PairingScreen } from './src/screens/PairingScreen';
+import { LockScreen } from './src/screens/LockScreen';
+import { isAppLockEnabled } from './src/lib/appLock';
 import { WebViewScreen } from './src/screens/WebViewScreen';
 import { DevicesScreen } from './src/screens/DevicesScreen';
 import { clearAll, loadConnection, type StoredConnection } from './src/lib/store';
@@ -31,6 +33,8 @@ type Route = 'loading' | 'pairing' | 'webview' | 'devices';
 export default function App() {
   const [route, setRoute] = useState<Route>('loading');
   const [connection, setConnection] = useState<StoredConnection | null>(null);
+  const [locked, setLocked] = useState(false);
+  const lockEnabledRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -58,6 +62,35 @@ export default function App() {
   // POC：通知权限/推送 token 注册；原生 mTLS 客户端未实现时只打日志，不打断主流程。
   useEffect(() => {
     configureNotificationHandler();
+  }, []);
+
+  // App 锁：启动/回前台时按设置要求生物识别；WebView 常驻但被 LockScreen 覆盖。
+  useEffect(() => {
+    let cancelled = false;
+    isAppLockEnabled().then((enabled) => {
+      if (cancelled) return;
+      lockEnabledRef.current = enabled;
+      if (enabled) setLocked(true);
+    });
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && lockEnabledRef.current) setLocked(true);
+    });
+    return () => {
+      cancelled = true;
+      subscription.remove();
+    };
+  }, []);
+
+  // 设置页可能改变 App 锁开关：回到 active 时刷新一次。
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      isAppLockEnabled().then((enabled) => {
+        lockEnabledRef.current = enabled;
+        if (!enabled) setLocked(false);
+      }).catch(() => {});
+    });
+    return () => subscription.remove();
   }, []);
 
   useEffect(() => {
@@ -129,7 +162,7 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      {renderRoute()}
+      {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : renderRoute()}
     </SafeAreaProvider>
   );
 }
