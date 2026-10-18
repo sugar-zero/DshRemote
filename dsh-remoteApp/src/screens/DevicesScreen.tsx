@@ -60,9 +60,11 @@ import {
 } from '../lib/appLock';
 import {
   canManageRemoteDevices,
+  fetchAudit,
   fetchHostStatus,
   fetchRemoteDevices,
   revokeRemoteDevice,
+  type AuditEntry,
   type HostStatus,
   type RemoteDevice,
 } from '../lib/devices';
@@ -119,15 +121,17 @@ export function DevicesScreen({
   const [remoteDevicesError, setRemoteDevicesError] = useState<string | null>(null);
   const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
   const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
+  const [auditEntries, setAuditEntries] = useState<AuditEntry[] | null>(null);
 
   useEffect(() => {
     if (!canManageRemoteDevices()) return undefined;
     let cancelled = false;
-    Promise.all([fetchRemoteDevices(connection), fetchHostStatus(connection)])
-      .then(([devices, status]) => {
+    Promise.all([fetchRemoteDevices(connection), fetchHostStatus(connection), fetchAudit(connection, 10)])
+      .then(([devices, status, audit]) => {
         if (cancelled) return;
         setRemoteDevices(devices);
         setHostStatus(status);
+        setAuditEntries(audit);
         setRemoteDevicesError(null);
       })
       .catch((error: unknown) => { if (!cancelled) setRemoteDevicesError(error instanceof Error ? error.message : String(error)); });

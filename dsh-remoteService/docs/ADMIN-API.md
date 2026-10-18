@@ -132,6 +132,14 @@ Body：`{ "provider": "expo" | "apns" | "fcm", "token": "..." }`
 } }
 ```
 
+### GET `/__dsh_remote/audit?limit=N`（要求 mTLS）
+返回最近安全审计（设备认证/配对/撤销等事件；`limit` 1–200，默认 50）：
+```json
+{ "ok": true, "data": { "entries": [
+  { "ts": 0, "action": "device-auth", "result": "ok", "deviceId": "d_xxx" }
+] } }
+```
+
 ### GET `/__dsh_remote/devices`（要求 mTLS）
 返回已配对设备列表（App 设备管理用）：
 ```json
