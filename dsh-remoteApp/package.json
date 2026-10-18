@@ -13,7 +13,9 @@
     "prebuild": "expo prebuild",
     "prebuild:clean": "expo prebuild --clean",
     "doctor": "expo-doctor",
-    "check:native": "node scripts/check-native-sources.mjs"
+    "check:native": "node scripts/check-native-sources.mjs",
+    "check:ios-env": "bash scripts/check-ios-env.sh",
+    "check:android-env": "bash scripts/check-android-env.sh"
   },
   "dependencies": {
     "expo": "~58.0.14",

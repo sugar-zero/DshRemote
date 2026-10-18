@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.21 | 真机环境检查 + 验收手册 | ✅ `dsh-remoteApp`: `npm run check:ios-env` / `check:android-env` 如实报告本机缺失 Xcode/Android SDK 并给出修复命令；`docs/ACCEPTANCE.md` 覆盖构建/配对/mTLS/推送/生物识别/撤销/证书轮换验收步骤 | `dsh-remoteApp/scripts/check-*-env.sh`、`dsh-remoteApp/docs/ACCEPTANCE.md` |
 | 1.20 | check-deploy 成功/失败路径演练 | ✅ `npm run poc:deploy`：进程内真 relay（WSS 控制面 + TLS 透传）+ 真 host 插件 → `check-deploy.sh` 五项全绿；失败路径（无效端口/域名）已验证非零退出并逐项报告 | `poc/check-deploy-local.js` |
 | 1.19 | 部署产物校验 + 失败演练 | ✅ `npm run validate:artifacts`（shell 语法/compose/plist/JSON/Node 入口）；`check-deploy.sh` 支持本地/Staging 端口覆盖与 `CHECK_DEPLOY_SKIP_DNS=1`，失败分支演练正确返回非零并逐项报告 | `scripts/validate-artifacts.sh`、`scripts/check-deploy.sh` |
 | 1.18 | Docker relay 端到端 | ✅ 实际构建镜像（node:24-alpine，非 root uid=100）→ 容器 dev 模式 → 真实 RemoteService 连接 → 设备 mTLS 请求经容器 relay 到 host `/__dsh_remote/status` 200；容器 healthz/token CLI 均验证 | `poc/docker-e2e/`、`npm run poc:docker` |
