@@ -27,6 +27,8 @@ enum DSHMTLSIdentityError: Error, LocalizedError {
   case importFailed(OSStatus)
   case missingIdentityInP12
   case keychainWriteFailed(OSStatus)
+  case certificateParseFailed
+  case missingPrivateKey(OSStatus)
 
   var errorDescription: String? {
     switch self {
@@ -38,6 +40,10 @@ enum DSHMTLSIdentityError: Error, LocalizedError {
       return "POC: PKCS#12 中没有可用的 SecIdentity（需要同时包含证书与私钥）。"
     case .keychainWriteFailed(let status):
       return "POC: 写入 Keychain 失败（status=\(status)）。"
+    case .certificateParseFailed:
+      return "主机返回的设备证书不是合法 PEM/DER。"
+    case .missingPrivateKey(let status):
+      return "找不到与设备证书匹配的私钥（status=\(status)）。请重新配对或重新导入身份。"
     }
   }
 }
@@ -96,6 +102,53 @@ final class DSHMTLSIdentityStore {
     try persist(identity: identity, chain: chain, label: label)
     configuredLabel = label
     return diagnostics(label: label)
+  }
+
+  /// 安装主机签发的设备证书：证书入 Keychain → 用同 label 的私钥组成 SecIdentity。
+  /// 设备私钥由 `DSHMTLSCsr.generate` 生成并以 label 存在 Keychain（Secure Enclave 优先）。
+  func installCertificate(certPem: String, label: String) throws -> [String: Any?] {
+    guard let der = Self.der(fromPem: certPem),
+          let certificate = SecCertificateCreateWithData(nil, der as CFData) else {
+      throw DSHMTLSIdentityError.certificateParseFailed
+    }
+    let certQuery: [String: Any] = [
+      kSecClass as String: kSecClassCertificate,
+      kSecValueRef as String: certificate,
+      kSecAttrLabel as String: label,
+      kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    ]
+    let certStatus = SecItemAdd(certQuery as CFDictionary, nil)
+    if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
+      throw DSHMTLSIdentityError.keychainWriteFailed(certStatus)
+    }
+    var identity: SecIdentity?
+    let identityStatus = SecIdentityCreateWithCertificate(nil, certificate, &identity)
+    guard identityStatus == errSecSuccess, let identity else {
+      throw DSHMTLSIdentityError.missingPrivateKey(identityStatus)
+    }
+    if self.identity(label: label) == nil {
+      let identityQuery: [String: Any] = [
+        kSecValueRef as String: identity,
+        kSecAttrLabel as String: label,
+        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+      ]
+      let identityAddStatus = SecItemAdd(identityQuery as CFDictionary, nil)
+      if identityAddStatus != errSecSuccess && identityAddStatus != errSecDuplicateItem {
+        throw DSHMTLSIdentityError.keychainWriteFailed(identityAddStatus)
+      }
+    }
+    let encodedChain = [certificate].map { certificate -> String in
+      (SecCertificateCopyData(certificate) as Data).base64EncodedString()
+    }
+    UserDefaults.standard.set(encodedChain, forKey: certificateChainKeyPrefix + label)
+    configuredLabel = label
+    return diagnostics(label: label)
+  }
+
+  /// PEM → DER（只接受单证书 PEM；忽略头尾行）。
+  static func der(fromPem pem: String) -> Data? {
+    let lines = pem.components(separatedBy: .newlines).filter { !$0.hasPrefix("-----") }
+    return Data(base64Encoded: lines.joined())
   }
 
   private func persist(identity: SecIdentity, chain: [SecCertificate], label: String) throws {

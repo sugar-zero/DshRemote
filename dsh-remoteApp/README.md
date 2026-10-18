@@ -24,9 +24,11 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 | 本地 Expo Module 被 Autolinking 识别 | ✅ `expo-modules-autolinking search` 能找到 `dsh-mtls` |
 | 协议解析运行时自测（Node） | ✅ 14/14 通过 |
 | WKWebView 客户端证书机制（macOS 同 API） | ✅ 已验证（`dsh-remoteService`: `npm run poc:webview`） |
+| P-256 CSR 生成（Swift，Secure Enclave 同款 API） | ✅ 生成→host 签发→openssl 链/公钥校验通过（`npm run poc:csr`） |
 | **iOS 原生编译**（Swift / pod install / Xcode） | ❌ **未执行** —— 开发机只有 Command Line Tools，没有 Xcode |
 | **Android 原生编译** | ❌ **未执行** —— 没有 Android SDK |
-| **原生 CSR / Secure Enclave 密钥生成** | ⏳ 下一里程碑（host 侧已支持 P-256 EC CSR；App 侧实现密钥+PKCS#10） |
+| **原生 CSR / Secure Enclave 密钥生成（iOS）** | ✅ 已实现（`modules/dsh-mtls/ios/DSHMTLSCsr.swift`：P-256、Secure Enclave 优先/软件回退、PKCS#10；证书通过 `installCertificate` 装回 Keychain）；⏳ 未在 Xcode 编译 |
+| **Android CSR** | ⏳ 下一里程碑（Keystore + BouncyCastle） |
 | 推送（expo-notifications + 注册到 host） | ✅ JS 已接入（`src/lib/notifications.ts`）；⏳ 等原生 `requestWithClientCert` + EAS/APNs 凭据 |
 
 > 因此请不要把本目录当作"已构建、已验证"的产物。原生部分需要在你自己的 Mac（Xcode）上按下面步骤编译，并按「POC 验收清单」逐条验证。

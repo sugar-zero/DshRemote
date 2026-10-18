@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  DSH 远程主机的常驻 Web 实例（launchd，用户级）。
+  1) 把下面 3 处占位替换成你的实际路径：
+       <YOU>         → 你的用户名
+       DSH_BIN       → `which dsh` 的输出（如 /Users/you/.nvm/versions/node/v24.16.0/bin/dsh）
+       DSH_HOME      → 你的 $DSH_HOME（默认 /Users/you/.dsh）
+  2) cp 到 ~/Library/LaunchAgents/com.dsh.web.plist
+  3) launchctl load -w ~/Library/LaunchAgents/com.dsh.web.plist
+  4) 日志：/tmp/dsh-web.out.log /tmp/dsh-web.err.log
+  注意：不要同时运行 Desktop App 与这个实例共享同一个 $DSH_HOME（二选一）。
+-->
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.dsh.web</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/zsh</string>
+    <string>-lc</string>
+    <string>exec DSH_BIN --profile web --no-open --port 3080</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>DSH_HOME</key>
+    <string>/Users/<YOU>/.dsh</string>
+  </dict>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>KeepAlive</key>
+  <true/>
+  <key>ThrottleInterval</key>
+  <integer>5</integer>
+  <key>StandardOutPath</key>
+  <string>/tmp/dsh-web.out.log</string>
+  <key>StandardErrorPath</key>
+  <string>/tmp/dsh-web.err.log</string>
+</dict>
+</plist>

@@ -95,6 +95,8 @@ interface NativeDshMtlsModule {
   /** Generate a P-256 key pair + PKCS#10 CSR (next milestone; throws until implemented). */
   generateCsr(commonName: string): Promise<CsrResult>;
   getDiagnostics(): Promise<DshMtlsDiagnostics>;
+  /** 安装主机签发的设备证书（与 generateCsr 产生的私钥 label 关联）。 */
+  installCertificate?(certPem: string, label?: string): Promise<P12ImportResult>;
   /**
    * POC: 用配置好的设备证书发一条 HTTPS 请求（原生 URLSession/OkHttp 客户端证书）。
    * 下一里程碑实现；未实现时 JavaScript 侧优雅降级。
@@ -148,6 +150,15 @@ export async function importClientIdentityFromP12(
  */
 export async function generateCsr(commonName: string): Promise<CsrResult> {
   return requireModule().generateCsr(commonName);
+}
+
+/** 安装主机签发的设备证书并关联设备私钥（label 来自 generateCsr 的返回值）。 */
+export async function installCertificate(certPem: string, label?: string): Promise<P12ImportResult> {
+  const module = requireModule();
+  if (typeof module.installCertificate !== 'function') {
+    throw new DshMtlsUnavailableError('原生模块未实现 installCertificate（需要重新构建 dev client）。');
+  }
+  return module.installCertificate(certPem, label);
 }
 
 /** Diagnostics for the Devices/debug screen. Never returns key material. */

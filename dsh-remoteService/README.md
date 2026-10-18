@@ -33,6 +33,7 @@ npm install
 npm test                 # 54 tests
 node poc/run-poc.js      # 端到端 POC（需要 dsh CLI；使用独立临时 DSH_HOME，安全）
 npm run poc:webview      # macOS WKWebView 客户端证书 POC（无需 Xcode）
+npm run poc:csr          # Swift P-256 CSR → host 签发 → openssl 校验（无需 Xcode）
 ```
 
 POC 细节与已知限制见 [`docs/POC-REPORT.md`](docs/POC-REPORT.md)；生产部署见 [`docs/DEPLOY.md`](docs/DEPLOY.md)。

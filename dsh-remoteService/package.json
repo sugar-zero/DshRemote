@@ -11,7 +11,8 @@
     "test": "node scripts/run-tests.js",
     "relay": "node packages/relay/bin/relay.js",
     "poc": "node poc/run-poc.js",
-    "poc:webview": "bash poc/webview-mtls/run.sh"
+    "poc:webview": "bash poc/webview-mtls/run.sh",
+    "poc:csr": "bash poc/native-csr/run.sh"
   },
   "engines": {
     "node": ">=22"

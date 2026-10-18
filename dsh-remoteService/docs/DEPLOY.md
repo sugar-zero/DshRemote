@@ -156,6 +156,24 @@ curl -b /tmp/dsh.cookies -X POST http://127.0.0.1:3080/api/remote-access/config 
   -d '{"enabled":true,"relayUrl":"wss://relay.example.com:8443","relayDomain":"relay.example.com","hostId":"h_ab12cd34","hostToken":"<TOKEN>","hostName":"Jiayu 的 Mac","tlsCertFile":"/Users/you/.dsh/remote-access/certs/fullchain.pem","tlsKeyFile":"/Users/you/.dsh/remote-access/certs/privkey.pem","requireApproval":true}'
 ```
 
+### 4.4 macOS 常驻（launchd，推荐远程主机形态）
+
+模板见 `../deploy/launchd/com.dsh.web.plist`：
+
+```bash
+# 1) 确认 dsh 的绝对路径
+which dsh
+# 2) 编辑模板里的 <YOU> / DSH_BIN / DSH_HOME 后安装
+cp ../deploy/launchd/com.dsh.web.plist ~/Library/LaunchAgents/com.dsh.web.plist
+launchctl load -w ~/Library/LaunchAgents/com.dsh.web.plist
+# 3) 状态与日志
+launchctl list | grep com.dsh.web
+tail -f /tmp/dsh-web.err.log
+```
+
+> 该实例固定 `127.0.0.1:3080`，远程访问插件只 bind loopback，因此无需也不应把它改成公网监听。
+> **不要**同时运行 Desktop App 与这个实例共享同一个 `$DSH_HOME`。
+
 ---
 
 ## 5. 手机 App 配对
