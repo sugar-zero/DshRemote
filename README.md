@@ -1,10 +1,11 @@
 # DSH Remote Access（远程访问）方案评估
 
 > 目标：给 DeepSeek Harness 增加「手机 App 远程访问 + 可自托管服务端 + 强安全 + 账号上方入口」能力，模仿 Codex 那一类体验。
-> 本仓库当前阶段：**方案已确认（B2 + 自托管 relay + 自有域名），POC 已通过，进入 MVP 实现**。
+> 本仓库当前阶段：**方案已确认（B2 + 自托管 relay + 自有域名），POC + MVP 代码/文档/测试完成，等待真机与生产上线验收**。
 
 ## 先读这一个文件
 
+- **[STATUS.md](STATUS.md)** —— 当前状态 / 可自验命令 / 剩余 3 项人工验收清单（先读这个）
 - **[docs/remote-access-evaluation.zh.md](docs/remote-access-evaluation.zh.md)** —— 完整方案评估（一页结论 / 现状盘点 / 6 个方案对比 / 推荐架构 B / 安全设计 / 入口 UI / 工作量 / 决策清单）
 
 ## 配套材料
@@ -28,7 +29,7 @@ DSH 已有约六成底座（Web 传输/会话/审批/插件/入口/自托管链�
 | 项 | 状态 |
 |---|---|
 | 服务端 monorepo（protocol / host 插件 / relay / 客户端 UI） | ✅ 实现在 [`dsh-remoteService/`](dsh-remoteService) |
-| 测试 `npm test` | ✅ 45/45 |
+| 测试 `npm test` | ✅ 58/58 |
 | 本地端到端 POC（真实 `dsh web` + relay + 设备 mTLS + UI/WS） | ✅ PASS，见 [`docs/POC-REPORT.md`](dsh-remoteService/docs/POC-REPORT.md) |
 | 真实 DSH 入口 & 配对弹窗截图 | ✅ [`mockups/live-pairing.png`](mockups/live-pairing.png) |
 | 手机 App 源码（Expo/RN + mTLS 原生模块骨架） | ✅ [`dsh-remoteApp/`](dsh-remoteApp)（原生未编译，需 Xcode） |
@@ -36,6 +37,9 @@ DSH 已有约六成底座（Web 传输/会话/审批/插件/入口/自托管链�
 | WebView mTLS | ✅ macOS WKWebView 已验证（同一 iOS API）；⏳ iOS 真机待 Xcode |
 | 真机验收手册/环境检查 | ✅ `dsh-remoteApp/docs/ACCEPTANCE.md` + `npm run check:ios-env` / `check:android-env` |
 | 推送 host/relay 链路 / 安全加固 | ✅ 已实现 + 测试 |
+| Docker relay 端到端（真实容器 + host + mTLS） | ✅ `npm run poc:docker` |
+| 部署自检成功/失败双路径 | ✅ `npm run poc:deploy` / `check-deploy.sh` |
+| 真机环境检查 / prebuild / 验收手册 | ✅ `dsh-remoteApp` check:* / prebuild / [`docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) |
 | 原生 Secure Enclave CSR + mTLS HTTP（iOS 源码 + POC） | ✅ `npm run poc:csr` / `poc:webview`（含 URLSession）通过；⏳ Xcode 编译/真机 |
 | Android CSR（源码） | ✅ Keystore P-256 + PKCS#10 源码；⏳ 无 SDK 未编译 |
 | Android 原生 mTLS HTTP（源码） | ✅ HttpsURLConnection + KeyManager；⏳ 无 SDK 未编译 |
