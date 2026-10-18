@@ -6,7 +6,7 @@
 //
 // JS surface (modules/dsh-mtls/src/index.ts) is identical to iOS:
 //   setClientIdentity / getClientIdentity / clearClientIdentity
-//   importP12 / generateCsr (next milestone) / getDiagnostics
+//   importP12 / generateCsr (AndroidKeyStore P-256 + PKCS#10) / installCertificate / getDiagnostics
 //   <DshMtlsWebView url clientIdentityLabel ... />
 //
 // Android realities the next milestone must handle (documented, not hidden):
@@ -24,10 +24,6 @@ import android.content.Intent
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
-
-/** Thrown by `generateCsr` until the AndroidKeyStore key + CSR milestone lands. */
-class DshMtlsCsrNotImplementedException :
-  CodedException("POC: 原生 CSR 生成尚未实现。下一里程碑将在 AndroidKeyStore 内生成 P-256 密钥并输出 PKCS#10 CSR。")
 
 /** Thrown when the POC cannot import/install a client identity. */
 class DshMtlsIdentityException(message: String) : CodedException(message)
@@ -83,13 +79,19 @@ class DshMtlsModule : Module() {
       )
     }
 
-    // MARK: - Next milestone
+    // MARK: - Device identity: AndroidKeyStore key + CSR + certificate install
 
-    AsyncFunction("generateCsr") { _: String ->
-      // TODO(next milestone): KeyPairGenerator.getInstance(KEY_ALGORITHM_EC,
-      // "AndroidKeyStore") + KeyGenParameterSpec (P-256, PURPOSE_SIGN) and a
-      // small DER PKCS#10 encoder (or BouncyCastle) to return { csrPem, label }.
-      throw DshMtlsCsrNotImplementedException()
+    AsyncFunction("generateCsr") { commonName: String ->
+      val result = DshMtlsCsr.generate(commonName)
+      mapOf("csrPem" to result.csrPem, "label" to result.alias)
+    }
+
+    AsyncFunction("installCertificate") { certPem: String, label: String? ->
+      val context = appContext.reactContext
+        ?: throw DshMtlsIdentityException("React context 不可用，无法安装设备证书。")
+      val alias = label ?: DshMtlsIdentityStore.configuredLabel
+        ?: throw DshMtlsIdentityException("没有可用的设备身份 alias。")
+      DshMtlsIdentityStore.installCertificate(context, certPem, alias)
     }
 
     // MARK: - Diagnostics
