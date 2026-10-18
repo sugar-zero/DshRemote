@@ -14,7 +14,8 @@
     "poc:webview": "bash poc/webview-mtls/run.sh",
     "poc:csr": "bash poc/native-csr/run.sh",
     "bench": "node poc/bench-relay.js",
-    "poc:docker": "bash poc/docker-e2e/run.sh"
+    "poc:docker": "bash poc/docker-e2e/run.sh",
+    "validate:artifacts": "bash scripts/validate-artifacts.sh"
   },
   "engines": {
     "node": ">=22"

@@ -8,6 +8,10 @@ set -uo pipefail
 DOMAIN="${1:?usage: check-deploy.sh <relay-domain> <hostId> [control-port]}"
 HOST_ID="${2:?usage: check-deploy.sh <relay-domain> <hostId> [control-port]}"
 CONTROL_PORT="${3:-8443}"
+# 本地/staging 演练可覆盖端口并跳过 DNS（生产保持默认 80/443）：
+HTTP_PORT="${RELAY_HTTP_PORT:-80}"
+DATA_PORT="${RELAY_DATA_PORT:-443}"
+SKIP_DNS="${CHECK_DEPLOY_SKIP_DNS:-0}"
 HOST_FQDN="${HOST_ID}.${DOMAIN}"
 FAIL=0
 WARN=0
@@ -23,25 +27,27 @@ echo "host fqdn    : $HOST_FQDN"
 echo
 
 echo "[1/5] DNS"
-if need dig; then
+if [ "$SKIP_DNS" = "1" ]; then
+  warn "CHECK_DEPLOY_SKIP_DNS=1：跳过 DNS 检查（仅本地/staging 演练）"
+elif need dig; then
   RELAY_A=$(dig +short "$DOMAIN" A | head -1)
   HOST_A=$(dig +short "$HOST_FQDN" A | head -1)
   [ -n "$RELAY_A" ] && ok "A $DOMAIN -> $RELAY_A" || bad "A $DOMAIN 未解析"
-  [ -n "$HOST_A" ] && ok "A $HOST_FQDN -> $HOST_A（泛解析）" || bad "A $HOST_FQDN 未解析（检查 *.DOMAIN 泛解析）"
+  [ -n "$HOST_A" ] && ok "A ${HOST_FQDN} -> ${HOST_A}（泛解析）" || bad "A ${HOST_FQDN} 未解析（检查 *.DOMAIN 泛解析）"
   [ -n "$RELAY_A" ] && [ -n "$HOST_A" ] && [ "$RELAY_A" != "$HOST_A" ] && warn "relay 与主机子域解析到不同 IP"
 fi
 
-echo "[2/5] relay /healthz"
+echo "[2/5] relay /healthz (port ${HTTP_PORT})"
 if need curl; then
-  HEALTH=$(curl -fsS --max-time 8 "http://$DOMAIN/healthz" 2>/dev/null || true)
+  HEALTH=$(curl -fsS --max-time 8 "http://$DOMAIN:${HTTP_PORT}/healthz" 2>/dev/null || true)
   if [ -z "$HEALTH" ]; then
-    bad "GET http://$DOMAIN/healthz 失败（80 端口/防火墙？）"
+    bad "GET http://$DOMAIN:${HTTP_PORT}/healthz 失败（端口/防火墙？）"
   elif printf '%s' "$HEALTH" | grep -q '"ok":true'; then
     ok "healthz: $HEALTH"
     if printf '%s' "$HEALTH" | grep -q "\"$HOST_ID\""; then
       ok "hostId $HOST_ID 在线"
     else
-      bad "healthz 里没有 $HOST_ID：主机插件未连接/ token 不对/ hostId 不一致"
+      bad "healthz 里没有 ${HOST_ID}：主机插件未连接/ token 不对/ hostId 不一致"
     fi
   else
     bad "healthz 响应异常: $HEALTH"
@@ -55,7 +61,7 @@ else
   warn "跳过（无 nc）"
 fi
 
-echo "[4/5] relay 控制面证书（$DOMAIN:$CONTROL_PORT）"
+echo "[4/5] relay 控制面证书（${DOMAIN}:${CONTROL_PORT}）"
 if need openssl; then
   CERT=$(echo | openssl s_client -connect "$DOMAIN:$CONTROL_PORT" -servername "$DOMAIN" 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null || true)
   if [ -z "$CERT" ]; then
@@ -65,9 +71,9 @@ if need openssl; then
   fi
 fi
 
-echo "[5/5] 主机子域证书（$HOST_FQDN:443，经 relay 透传到主机插件）"
+echo "[5/5] 主机子域证书（$HOST_FQDN:${DATA_PORT}，经 relay 透传到主机插件）"
 if need openssl; then
-  CERT2=$(echo | openssl s_client -connect "$DOMAIN:443" -servername "$HOST_FQDN" 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null || true)
+  CERT2=$(echo | openssl s_client -connect "$DOMAIN:${DATA_PORT}" -servername "$HOST_FQDN" 2>/dev/null | openssl x509 -noout -subject -enddate 2>/dev/null || true)
   if [ -z "$CERT2" ]; then
     bad "无法完成 TLS 握手（主机插件未运行/证书未配置/relay 未路由）"
   else
@@ -78,10 +84,10 @@ fi
 
 echo
 if [ "$FAIL" -eq 0 ]; then
-  echo "✅ 自检通过（warnings: $WARN）"
+  echo "✅ 自检通过（warnings: ${WARN}）"
   echo "下一步：手机 App 扫码配对 → 打开 https://$HOST_FQDN/"
 else
-  echo "❌ 自检失败项: $FAIL（warnings: $WARN）"
+  echo "❌ 自检失败项: ${FAIL}（warnings: ${WARN}）"
   echo "排障见 docs/DEPLOY.md §8。"
   exit 1
 fi
