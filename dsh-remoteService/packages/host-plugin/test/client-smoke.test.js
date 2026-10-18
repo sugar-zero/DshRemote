@@ -7,7 +7,10 @@
  *   2. apply 通过 ctx.slots.inject 注册 sidebar.footer.action 与 settings.section；
  *   3. 加载/注册阶段没有任何网络请求（组件 useEffect 才拉数据）；
  *   4. 样式只注入一次、locale 字典 zh/en 键集合一致；
- *   5. 各页面组件顶层渲染不抛错（hooks 用 no-op stub）。
+ *   5. 各页面组件顶层渲染不抛错（hooks 用 no-op stub）；
+ *   6. pending 配对（requireApproval）渲染 + 允许/拒绝按钮 POST 的 URL/body 正确，
+ *      确认后刷新 /status 并显示 toast；
+ *   7. 设置页初值优先读 status.config.*，密钥字段只拿到 configured 布尔。
  * 另跑 `node --check client.js` 保证浏览器直载的语法有效。
  * ============================================================================
  */
@@ -23,15 +26,19 @@ const CLIENT_SOURCE = readFileSync(CLIENT_PATH, 'utf8');
 
 /* ────────────────────────── fake React ────────────────────────── */
 
+function withChildrenProps(props, children) {
+  const nextProps = { ...(props || {}) };
+  if (children.length === 1) nextProps.children = children[0];
+  else if (children.length > 1) nextProps.children = children;
+  return nextProps;
+}
+
 function createFakeReact() {
   const noop = () => {};
-  const fakeReact = {
+  return {
     createElement(type, props, ...children) {
       // 贴近 React：children 也挂到 props.children（Section/Btn 这类靠它渲染）。
-      const nextProps = { ...(props || {}) };
-      if (children.length === 1) nextProps.children = children[0];
-      else if (children.length > 1) nextProps.children = children;
-      return { type, props: nextProps, children };
+      return { type, props: withChildrenProps(props, children), children };
     },
     Fragment: Symbol('react.fragment'),
     useState(initial) {
@@ -46,14 +53,152 @@ function createFakeReact() {
       return { current: initial };
     },
   };
-  return fakeReact;
+}
+
+/**
+ * 有状态 fake React：只保留 hooks 状态、不执行 effect（避免测试里自动轮询/自动配对）。
+ * 用于直接 mount PairingDialog，点击按钮后手动 re-render 校验 toast/状态切换。
+ */
+function createStatefulRenderer() {
+  const slots = [];
+  let cursor = 0;
+  let Component = null;
+  let componentProps = null;
+  const react = {
+    createElement(type, props, ...children) {
+      return { type, props: withChildrenProps(props, children), children };
+    },
+    Fragment: Symbol('react.fragment'),
+    useState(initial) {
+      const index = cursor;
+      cursor += 1;
+      if (!(index in slots)) slots[index] = { value: typeof initial === 'function' ? initial() : initial };
+      const slot = slots[index];
+      return [slot.value, (next) => {
+        slot.value = typeof next === 'function' ? next(slot.value) : next;
+      }];
+    },
+    useRef(initial) {
+      const index = cursor;
+      cursor += 1;
+      if (!(index in slots)) slots[index] = { value: { current: initial } };
+      return slots[index].value;
+    },
+    useMemo(factory) {
+      cursor += 1;
+      return factory();
+    },
+    useCallback(callback) {
+      cursor += 1;
+      return callback;
+    },
+    useEffect() {
+      cursor += 1;
+    },
+    useLayoutEffect() {
+      cursor += 1;
+    },
+  };
+  return {
+    react,
+    mount(component, props) {
+      Component = component;
+      componentProps = props;
+      return this.render();
+    },
+    render() {
+      cursor = 0;
+      return Component(componentProps);
+    },
+  };
+}
+
+/* ────────────────────────── 元素树工具 ────────────────────────── */
+
+function walkTree(node, visit, depth = 0) {
+  if (depth > 80) throw new Error('render tree too deep (possible render loop)');
+  if (node === null || node === undefined || node === true || node === false) return;
+  if (Array.isArray(node)) {
+    for (const child of node) walkTree(child, visit, depth + 1);
+    return;
+  }
+  if (typeof node !== 'object') return;
+  visit(node);
+  if (typeof node.type === 'function') {
+    walkTree(node.type(node.props), visit, depth + 1);
+    return;
+  }
+  for (const child of node.children || []) walkTree(child, visit, depth + 1);
+}
+
+function collectText(node) {
+  const parts = [];
+  walkTree(node, (element) => {
+    for (const child of element.children || []) {
+      if (typeof child === 'string' || typeof child === 'number') parts.push(String(child));
+    }
+  });
+  return parts.join(' | ');
+}
+
+function findAll(node, predicate) {
+  const found = [];
+  walkTree(node, (element) => {
+    if (predicate(element)) found.push(element);
+  });
+  return found;
+}
+
+async function flushAsync() {
+  for (let i = 0; i < 30; i += 1) await Promise.resolve();
+  await new Promise((resolve) => setImmediate(resolve));
+  for (let i = 0; i < 30; i += 1) await Promise.resolve();
+}
+
+function createFakeTimers() {
+  let nextId = 1;
+  const scheduled = [];
+  return {
+    scheduled,
+    setTimeout(callback, ms) {
+      const id = nextId;
+      nextId += 1;
+      scheduled.push({ id, callback, ms, kind: 'timeout' });
+      return id;
+    },
+    clearTimeout() {},
+    setInterval(callback, ms) {
+      const id = nextId;
+      nextId += 1;
+      scheduled.push({ id, callback, ms, kind: 'interval' });
+      return id;
+    },
+    clearInterval() {},
+  };
+}
+
+function makeT(dictionaries) {
+  return (key, params) => {
+    let text = dictionaries.zh[key] !== undefined
+      ? dictionaries.zh[key]
+      : (dictionaries.en[key] !== undefined ? dictionaries.en[key] : key);
+    if (params) {
+      for (const [name, value] of Object.entries(params)) text = text.replaceAll(`{${name}}`, String(value));
+    }
+    return text;
+  };
 }
 
 /* ────────────────────────── fake 浏览器/模块环境 ────────────────────────── */
 
-function loadBundle() {
+function loadBundle(options = {}) {
   const fetchCalls = [];
   const appendedStyles = [];
+  const defaultFetch = (...args) => {
+    fetchCalls.push(args);
+    return Promise.reject(new Error('network access is not allowed at load time'));
+  };
+  const timers = options.timers || createFakeTimers();
   const documentStub = {
     head: {
       appendChild(element) {
@@ -93,20 +238,17 @@ function loadBundle() {
       },
     },
     document: documentStub,
-    fetch(...args) {
-      fetchCalls.push(args);
-      return Promise.reject(new Error('network access is not allowed at load time'));
-    },
+    fetch: options.fetchImpl || defaultFetch,
     console,
-    setTimeout,
-    clearTimeout,
-    setInterval,
-    clearInterval,
+    setTimeout: timers.setTimeout,
+    clearTimeout: timers.clearTimeout,
+    setInterval: timers.setInterval,
+    clearInterval: timers.clearInterval,
   };
   vm.runInNewContext(CLIENT_SOURCE, sandbox, { filename: CLIENT_PATH });
 
   assert.ok(captured, 'client.js 必须通过 window.__ModuleLoader__.load 注册工厂');
-  return { captured, fetchCalls, appendedStyles };
+  return { captured, fetchCalls, appendedStyles, timers };
 }
 
 /* ────────────────────────── fake ctx / slots / locale ────────────────────────── */
@@ -149,13 +291,7 @@ function createFakeCtx(options = {}) {
       bind() {
         return (key, params) => {
           const dictionaries = localeRegistrations.length > 0 ? localeRegistrations[0].dictionaries : { zh: {}, en: {} };
-          let text = dictionaries.zh && dictionaries.zh[key] !== undefined
-            ? dictionaries.zh[key]
-            : (dictionaries.en && dictionaries.en[key] !== undefined ? dictionaries.en[key] : key);
-          if (params) {
-            for (const [name, value] of Object.entries(params)) text = text.replaceAll(`{${name}}`, String(value));
-          }
-          return text;
+          return makeT(dictionaries)(key, params);
         };
       },
     };
@@ -163,6 +299,20 @@ function createFakeCtx(options = {}) {
   }
 
   return { ctx, injected, registered, effects, localeRegistrations };
+}
+
+/** factory + apply + t 一次性准备好；reactImpl 可换成有状态 hooks（见 createStatefulRenderer）。 */
+function setupClientWithReact(reactImpl, options = {}) {
+  const bundle = loadBundle(options);
+  const clientModule = bundle.captured.factory(() => reactImpl);
+  const context = createFakeCtx();
+  clientModule.apply(context.ctx);
+  const dictionaries = context.localeRegistrations[0].dictionaries;
+  return { ...bundle, clientModule, context, dictionaries, t: makeT(dictionaries) };
+}
+
+function setupClient(options = {}) {
+  return setupClientWithReact(createFakeReact(), options);
 }
 
 /* ────────────────────────── tests ────────────────────────── */
@@ -186,6 +336,7 @@ test('工厂执行不抛错，只 require react，不发起网络请求', () => 
   const clientModule = captured.factory(fakeRequire);
   assert.equal(typeof clientModule.apply, 'function', 'client 工厂应返回 apply(ctx)');
   assert.ok(Array.isArray(clientModule.inject), 'client 工厂应声明 inject 依赖');
+  assert.equal(typeof clientModule.__test, 'object', '应暴露 __test 供 smoke 测试直接渲染组件');
   assert.deepEqual(requireCalls, ['react'], 'client.js 只允许 require("react")');
   assert.equal(fetchCalls.length, 0, '注册阶段不应发起任何 fetch');
   assert.equal(appendedStyles.length, 0, '样式应在 apply 里注入，而不是工厂顶层');
@@ -241,34 +392,182 @@ test('ctx.locale 缺失时回退内置字典，仍能完成注册', () => {
 });
 
 test('各页面组件顶层渲染不抛错（hook stub）', () => {
-  const { captured } = loadBundle();
-  const clientModule = captured.factory(() => createFakeReact());
-  const { ctx, registered, localeRegistrations } = createFakeCtx();
-  clientModule.apply(ctx);
-
-  const dictionaries = localeRegistrations[0].dictionaries;
-  const t = (key, params) => {
-    let text = dictionaries.zh[key] !== undefined ? dictionaries.zh[key] : key;
-    if (params) {
-      for (const [name, value] of Object.entries(params)) text = text.replaceAll(`{${name}}`, String(value));
-    }
-    return text;
-  };
-
-  // 浅渲染：把元素树里的函数组件继续调用下去，覆盖各组件顶层逻辑。
-  function renderTree(node, depth = 0) {
-    if (depth > 40) throw new Error('render tree too deep (possible render loop)');
-    if (node === null || node === undefined || node === false || node === true) return null;
-    if (Array.isArray(node)) return node.map((child) => renderTree(child, depth + 1));
-    if (typeof node === 'string' || typeof node === 'number') return node;
-    if (typeof node.type === 'function') return renderTree(node.type(node.props), depth + 1);
-    return (node.children || []).map((child) => renderTree(child, depth + 1));
-  }
+  const { context, t, clientModule } = setupClient();
+  const registered = context.registered;
 
   const entry = registered[0].component;
   const settings = registered[1].component;
   assert.ok(entry({ t, wide: true }), '侧栏入口（宽）应返回元素');
-  assert.doesNotThrow(() => renderTree(entry({ t, wide: true })), '侧栏入口（宽）渲染树');
-  assert.doesNotThrow(() => renderTree(entry({ t, wide: false })), '侧栏入口（窄）渲染树');
-  assert.doesNotThrow(() => renderTree(settings({ t })), '设置页渲染树');
+  assert.doesNotThrow(() => walkTree(entry({ t, wide: true }), () => {}), '侧栏入口（宽）渲染树');
+  assert.doesNotThrow(() => walkTree(entry({ t, wide: false }), () => {}), '侧栏入口（窄）渲染树');
+  assert.doesNotThrow(() => walkTree(settings({ t }), () => {}), '设置页渲染树');
+  assert.doesNotThrow(() => walkTree(clientModule.__test.draftFromStatus(null), () => {}));
+});
+
+test('pending 配对：渲染设备/SAS/允许拒绝，允许后 POST 正确 body 并刷新状态', async () => {
+  const calls = [];
+  const inactiveStatus = {
+    enabled: true,
+    relay: { url: 'wss://relay.example.com:8443', connected: true },
+    host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt', domain: 'h_ab12cd34.relay.example.com' },
+    pairing: { active: false },
+    devices: [{ id: 'd_1', name: 'iPhone 15 Pro', platform: 'ios', lastSeenAt: Date.now(), revokedAt: null }],
+  };
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/pairing/approve')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { status: 'paired' } }; } };
+    }
+    if (String(url).includes('/status')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: inactiveStatus }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data: {} }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  const pendingStatus = {
+    enabled: true,
+    relay: { url: 'wss://relay.example.com:8443', connected: true },
+    host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: {
+      active: true,
+      status: 'pending',
+      pairingId: 'p_pending01',
+      expiresAt: Date.now() + 90_000,
+      requiresApproval: true,
+      sas: 'K7QM-3F9D',
+      code: 'K7QM3F9DT2XA',
+      pendingDevice: { name: 'iPhone 15 Pro', platform: 'ios' },
+    },
+    devices: [],
+  };
+
+  const tree = renderer.mount(clientModule.__test.PairingDialog, {
+    t,
+    initialStatus: pendingStatus,
+    onClose() {},
+    onStatus() {},
+  });
+  const text = collectText(tree);
+  assert.match(text, /待确认的配对请求/);
+  assert.match(text, /iPhone 15 Pro/);
+  assert.match(text, /iOS/);
+  assert.match(text, /K7QM-3F9D/);
+  assert.match(text, /允许配对/);
+  assert.match(text, /拒绝/);
+  assert.equal(
+    findAll(tree, (element) => typeof element.props.src === 'string' && element.props.src.includes('qr.svg')).length,
+    0,
+    'pending 状态不应再显示二维码',
+  );
+
+  const allowButton = findAll(tree, (element) => element.props['data-ra-action'] === 'pair-allow');
+  assert.equal(allowButton.length, 1, '应有「允许配对」按钮');
+  allowButton[0].props.onClick();
+  await flushAsync();
+
+  const approveCall = calls.find((call) => call.url.includes('/pairing/approve'));
+  assert.ok(approveCall, '允许后应 POST /pairing/approve');
+  assert.equal(approveCall.url, '/api/remote-access/pairing/approve');
+  assert.equal(approveCall.options.method, 'POST');
+  assert.equal(approveCall.options.credentials, 'include');
+  assert.deepEqual(JSON.parse(approveCall.options.body), { pairingId: 'p_pending01', approve: true });
+  assert.ok(calls.some((call) => call.url.includes('/status')), '确认后应刷新 status/设备列表');
+
+  const refreshed = renderer.render();
+  assert.match(collectText(refreshed), /设备已加入/, '允许后应显示成功 toast（并刷新为无活跃配对）');
+});
+
+test('pending 配对：拒绝后 POST approve:false 并显示已拒绝', async () => {
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/pairing/approve')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { status: 'denied' } }; } };
+    }
+    if (String(url).includes('/status')) {
+      return {
+        ok: true,
+        status: 200,
+        async json() {
+          return { ok: true, data: { enabled: true, relay: { connected: true }, pairing: { active: false }, devices: [] } };
+        },
+      };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data: {} }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  const pendingStatus = {
+    enabled: true,
+    host: { id: 'h_ab12cd34', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: {
+      active: true,
+      status: 'pending',
+      pairingId: 'p_pending02',
+      expiresAt: Date.now() + 90_000,
+      requiresApproval: true,
+      sas: 'Q7XM-9F2D',
+      pendingDevice: { name: 'Pixel 9', platform: 'android' },
+    },
+    devices: [],
+  };
+  const tree = renderer.mount(clientModule.__test.PairingDialog, {
+    t,
+    initialStatus: pendingStatus,
+    onClose() {},
+    onStatus() {},
+  });
+  assert.match(collectText(tree), /Pixel 9/);
+  assert.match(collectText(tree), /Android/);
+
+  const denyButton = findAll(tree, (element) => element.props['data-ra-action'] === 'pair-deny');
+  assert.equal(denyButton.length, 1, '应有「拒绝」按钮');
+  denyButton[0].props.onClick();
+  await flushAsync();
+
+  const approveCall = calls.find((call) => call.url.includes('/pairing/approve'));
+  assert.ok(approveCall, '拒绝后应 POST /pairing/approve');
+  assert.deepEqual(JSON.parse(approveCall.options.body), { pairingId: 'p_pending02', approve: false });
+  assert.match(collectText(renderer.render()), /已拒绝/);
+});
+
+test('设置页初值优先读 status.config（密钥字段只有 configured 布尔）', () => {
+  const { clientModule } = setupClient();
+  const draft = clientModule.__test.draftFromStatus({
+    enabled: true, // 生效状态
+    relay: { url: 'wss://effective.example:8443', connected: true },
+    host: { id: 'h_effective', name: 'Effective Name', domain: 'h_effective.relay.example.com', tls: { certFile: '/dev/cert.pem', valid: true } },
+    pairing: { active: true, requiresApproval: false },
+    devices: [],
+    config: {
+      enabled: false,
+      relayUrl: 'wss://cfg.example:8443',
+      relayDomain: 'relay.example.com',
+      hostId: 'h_cfg',
+      hostName: 'Cfg Name',
+      requireApproval: true,
+      relayTlsInsecure: false,
+      listenPort: 0,
+      tlsCertFile: 'configured',
+      tlsKeyFileConfigured: true,
+      hostTokenConfigured: true,
+    },
+  });
+
+  assert.equal(draft.enabled, false, 'enabled 以 config.enabled 为准');
+  assert.equal(draft.relayUrl, 'wss://cfg.example:8443');
+  assert.equal(draft.relayDomain, 'relay.example.com');
+  assert.equal(draft.hostId, 'h_cfg');
+  assert.equal(draft.hostName, 'Cfg Name');
+  assert.equal(draft.requireApproval, true);
+  assert.equal(draft.tlsCertFile, '', 'configured 哨兵不能当作路径回显');
+  assert.equal(draft.tlsCertFileConfigured, true);
+  assert.equal(draft.tlsKeyFileConfigured, true);
+  assert.equal(draft.hostTokenConfigured, true);
+  assert.equal(draft.hostToken, '', 'hostToken 永远不进入 draft 初始值');
+
+  const legacy = clientModule.__test.draftFromStatus(null, { relayUrl: 'wss://typed.example' });
+  assert.equal(legacy.relayUrl, 'wss://typed.example', '无 status 时保留上次编辑值');
+  assert.equal(legacy.tlsCertFileConfigured, false);
 });
