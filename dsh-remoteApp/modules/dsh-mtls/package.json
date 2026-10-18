@@ -1,0 +1,14 @@
+{
+  "name": "dsh-mtls",
+  "version": "0.1.0",
+  "description": "DSH Remote native mTLS WebView + device identity (POC skeleton)",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "private": true,
+  "license": "UNLICENSED",
+  "peerDependencies": {
+    "expo": "*",
+    "react": "*",
+    "react-native": "*"
+  }
+}

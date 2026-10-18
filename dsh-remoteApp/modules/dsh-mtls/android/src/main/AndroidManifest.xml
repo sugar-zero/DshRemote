@@ -1,0 +1,4 @@
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+  <!-- The mTLS WebView only loads https://<hostId>.<relayDomain>/. The app
+       manifest already holds INTERNET; no extra permissions are required here. -->
+</manifest>

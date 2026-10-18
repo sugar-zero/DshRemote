@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<title>DSH 远程访问 - 入口与配对 UI 稿</title>
+<style>
+  *{box-sizing:border-box;margin:0;padding:0}
+  html,body{height:100%}
+  body{
+    font-family:"PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    background:#101114;color:#e8eaef;display:flex;align-items:center;justify-content:center;
+  }
+  .window{width:1380px;height:880px;border-radius:14px;overflow:hidden;display:flex;
+    background:#17181c;box-shadow:0 30px 80px rgba(0,0,0,.55),0 0 0 1px #2a2c33;position:relative}
+  /* ============ sidebar ============ */
+  .sidebar{width:296px;flex:0 0 296px;background:#1d1e23;border-right:1px solid #26282f;display:flex;flex-direction:column}
+  .brand{height:56px;display:flex;align-items:center;gap:10px;padding:0 16px;border-bottom:1px solid #26282f}
+  .brand .logo{width:20px;height:20px;border-radius:6px;background:linear-gradient(135deg,#38bdf8,#4f46e5);
+    display:flex;align-items:center;justify-content:center;font-size:12px;font-weight:800;color:#fff}
+  .brand .name{font-size:15px;font-weight:600;letter-spacing:.2px}
+  .brand .ver{margin-left:auto;font-size:10px;color:#6d7380;border:1px solid #333640;border-radius:6px;padding:2px 5px}
+  .newbtn{margin:12px 12px 4px;height:38px;border-radius:9px;background:#262933;display:flex;align-items:center;
+    gap:8px;padding:0 12px;font-size:13.5px;color:#cfd3db;border:1px solid #30343e}
+  .newbtn kbd{margin-left:auto;font-size:10px;color:#7d8491;background:#1b1c21;border:1px solid #333744;
+    border-radius:5px;padding:1px 5px;font-family:inherit}
+  .section-label{padding:16px 16px 6px;font-size:11px;color:#6d7380;letter-spacing:.4px}
+  .sessions{flex:1;overflow:hidden;padding:2px 8px}
+  .srow{display:flex;align-items:center;gap:9px;padding:8px 9px;border-radius:8px;font-size:13px;color:#b7bcc6}
+  .srow .dot{width:6px;height:6px;border-radius:50%;background:#3d414c;flex:none}
+  .srow.on{background:#262a33;color:#eef0f4}
+  .srow.on .dot{background:#4d7cfe}
+  .srow .t{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .srow .time{margin-left:auto;font-size:10.5px;color:#6d7380;flex:none}
+  /* ============ footer：入口 + 账号行 ============ */
+  .foot{border-top:1px solid #26282f;padding:10px 10px 12px}
+  .remote-row{
+    display:flex;align-items:center;gap:10px;padding:9px 10px;border-radius:9px;
+    background:linear-gradient(180deg,#232735,#1f2230);
+    border:1px solid #34405f;cursor:pointer;margin-bottom:8px;
+    box-shadow:0 0 0 1px rgba(77,124,254,.08),0 6px 18px rgba(0,0,0,.25);
+  }
+  .remote-row .ico{width:30px;height:30px;border-radius:8px;background:#2b3450;display:flex;align-items:center;justify-content:center;font-size:15px;flex:none}
+  .remote-row .txt{display:flex;flex-direction:column;gap:2px;min-width:0}
+  .remote-row .t1{font-size:13px;font-weight:600;color:#eef1f7}
+  .remote-row .t2{font-size:11px;color:#8f97a8;display:flex;align-items:center;gap:5px}
+  .live-dot{width:6px;height:6px;border-radius:50%;background:#22c55e;box-shadow:0 0 6px #22c55e}
+  .remote-row .arrow{margin-left:auto;color:#7c86a0;font-size:14px}
+  .account-row{display:flex;align-items:center;gap:10px;padding:8px 10px;border-radius:9px;cursor:pointer}
+  .avatar{width:30px;height:30px;border-radius:50%;background:linear-gradient(135deg,#5b7cfa,#8b5cf6);
+    display:flex;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff;flex:none}
+  .account-row .an{font-size:13px;color:#dfe3ea;font-weight:500}
+  .account-row .as{font-size:10.5px;color:#6d7380;margin-top:1px}
+  .account-row .more{margin-left:auto;color:#7d8491;font-size:16px;letter-spacing:1px}
+  /* ============ main ============ */
+  .main{flex:1;position:relative;display:flex;align-items:center;justify-content:center;
+    background:radial-gradient(1200px 700px at 50% 30%,#1b1d23,#141519 70%)}
+  .ghost{position:absolute;inset:0;padding:56px 64px;opacity:.28;filter:blur(.4px)}
+  .ghost h1{font-size:22px;font-weight:600;color:#8b93a3;margin-bottom:10px}
+  .ghost .p{height:9px;background:#2c303a;border-radius:5px;margin:12px 0}
+  .ghost .w1{width:62%}.ghost .w2{width:80%}.ghost .w3{width:48%}
+  .ghost .card{margin-top:26px;height:120px;border-radius:12px;background:#20232b;border:1px solid #2b2f39}
+  /* modal */
+  .modal{position:relative;width:760px;border-radius:16px;background:#1e2026;border:1px solid #33363f;
+    box-shadow:0 40px 100px rgba(0,0,0,.65);overflow:hidden}
+  .mhead{display:flex;align-items:center;gap:10px;padding:18px 22px;border-bottom:1px solid #2c2f38}
+  .mhead .mi{width:30px;height:30px;border-radius:8px;background:#2a3350;display:flex;align-items:center;justify-content:center;font-size:15px}
+  .mhead h2{font-size:16px;font-weight:600}
+  .pill{margin-left:8px;font-size:11px;color:#6ee7a8;background:rgba(34,197,94,.12);border:1px solid rgba(34,197,94,.35);
+    border-radius:999px;padding:2px 8px;display:flex;align-items:center;gap:5px}
+  .close{margin-left:auto;color:#8b93a3;font-size:18px;cursor:pointer}
+  .mbody{display:flex;gap:26px;padding:22px}
+  .qrwrap{flex:none;display:flex;flex-direction:column;align-items:center;gap:10px}
+  .qr{width:196px;height:196px;background:#fff;border-radius:12px;padding:10px;display:grid;
+    grid-template-columns:repeat(25,1fr);grid-template-rows:repeat(25,1fr);gap:0}
+  .qr i{display:block}
+  .qr i.b{background:#111318}
+  .qr i.w{background:#fff}
+  .exp{font-size:11.5px;color:#8b93a3}
+  .exp b{color:#e8b45a;font-weight:600}
+  .coldiv{width:1px;background:#2c2f38;align-self:stretch}
+  .instr{flex:1;min-width:0}
+  .step{display:flex;gap:10px;margin-bottom:14px}
+  .num{width:19px;height:19px;border-radius:50%;background:#2b3350;color:#9db4ff;font-size:11px;font-weight:700;
+    display:flex;align-items:center;justify-content:center;flex:none;margin-top:1px}
+  .step .st{font-size:13px;color:#cdd2dc;line-height:1.55}
+  .step .st b{color:#fff;font-weight:600}
+  .step .sub{font-size:11.5px;color:#7d8491;margin-top:3px;line-height:1.5}
+  .code{display:inline-block;font-family:"SF Mono",Menlo,monospace;font-size:15px;letter-spacing:2px;
+    color:#dbe4ff;background:#252a38;border:1px solid #3a4257;border-radius:7px;padding:3px 9px;margin-top:4px}
+  .fp{font-family:"SF Mono",Menlo,monospace;font-size:11px;color:#8b93a3;margin-top:2px}
+  .mfoot{display:flex;align-items:center;gap:10px;padding:14px 22px;border-top:1px solid #2c2f38;background:#1b1d22}
+  .devices{display:flex;align-items:center;gap:8px;font-size:12px;color:#9aa2b1}
+  .devices .d{display:flex;align-items:center;gap:6px;background:#242832;border:1px solid #313643;
+    border-radius:999px;padding:4px 10px;color:#c3c9d4}
+  .devices .d .s{width:5px;height:5px;border-radius:50%;background:#22c55e}
+  .btn{margin-left:auto;border-radius:8px;padding:8px 14px;font-size:12.5px;cursor:pointer;border:1px solid #3a4050;
+    background:#262a34;color:#d5dae4}
+  .btn.primary{background:#3f6df5;border-color:#4f7bff;color:#fff;font-weight:600;
+    box-shadow:0 6px 18px rgba(63,109,245,.35)}
+  .caption{position:absolute;left:50%;transform:translateX(-50%);bottom:26px;font-size:12px;color:#5d6472}
+  .callout{position:absolute;right:26px;bottom:58px;width:300px;font-size:11.5px;line-height:1.6;
+    color:#7d8491;background:#191b20;border:1px solid #2a2d35;border-radius:10px;padding:12px 14px}
+  .callout b{color:#aeb6c5;font-weight:600}
+</style>
+</head>
+<body>
+<div class="window">
+  <!-- sidebar -->
+  <div class="sidebar">
+    <div class="brand"><span class="logo">D</span><span class="name">DeepSeek Harness</span><span class="ver">0.2.1</span></div>
+    <div class="newbtn">＋ 新会话 <kbd>⌘N</kbd></div>
+    <div class="section-label">最近会话</div>
+    <div class="sessions">
+      <div class="srow on"><span class="dot"></span><span class="t">远程访问方案评估</span><span class="time">2m</span></div>
+      <div class="srow"><span class="dot"></span><span class="t">重构 relay 数据面</span><span class="time">1h</span></div>
+      <div class="srow"><span class="dot"></span><span class="t">修复 iOS WebView 证书挑战</span><span class="time">3h</span></div>
+      <div class="srow"><span class="dot"></span><span class="t">DSH 插件打包与发布</span><span class="time">昨天</span></div>
+      <div class="srow"><span class="dot"></span><span class="t">周报：安全评审准备</span><span class="time">周三</span></div>
+    </div>
+    <!-- 账号行上方：新入口 -->
+    <div class="foot">
+      <div class="remote-row">
+        <div class="ico"><svg width="15" height="15" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="2.5" stroke="#a5b4fc" stroke-width="1.8"/><circle cx="12" cy="19" r="1" fill="#a5b4fc"/></svg></div>
+        <div class="txt">
+          <div class="t1">远程访问</div>
+          <div class="t2"><span class="live-dot"></span>中继在线 · 1 台设备</div>
+        </div>
+        <div class="arrow">›</div>
+      </div>
+      <div class="account-row">
+        <div class="avatar">J</div>
+        <div class="txt"><div class="an">User</div><div class="as">DeepSeek 账号</div></div>
+        <div class="more">⋯</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- main -->
+  <div class="main">
+    <div class="ghost">
+      <h1>远程访问方案评估</h1>
+      <div class="p w2"></div><div class="p w1"></div><div class="p w3"></div>
+      <div class="card"></div>
+      <div class="p w1" style="margin-top:26px"></div><div class="p w2"></div>
+    </div>
+
+    <div class="modal">
+      <div class="mhead">
+        <div class="mi"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="7" y="2" width="10" height="20" rx="2.5" stroke="#a5b4fc" stroke-width="1.8"/><circle cx="12" cy="19" r="1" fill="#a5b4fc"/></svg></div>
+        <h2>远程访问</h2>
+        <span class="pill"><span class="live-dot"></span>中继在线</span>
+        <span class="close">✕</span>
+      </div>
+      <div class="mbody">
+        <div class="qrwrap">
+          <div class="qr" id="qr"></div>
+          <div class="exp">二维码有效期 <b id="countdown">01:47</b> · 过期自动刷新</div>
+        </div>
+        <div class="coldiv"></div>
+        <div class="instr">
+          <div class="step"><div class="num">1</div><div><div class="st">手机安装 <b>DSH Remote</b> App</div>
+            <div class="sub">iOS / Android · 无需登录任何账号</div></div></div>
+          <div class="step"><div class="num">2</div><div><div class="st">用 App 扫描左侧二维码</div>
+            <div class="sub">或手动输入配对码 <span class="code">K7QM-3F9D-T2XA</span></div></div></div>
+          <div class="step"><div class="num">3</div><div><div class="st">在手机上核对 <b>主机指纹 / 短码</b> 并确认</div>
+            <div class="sub">两侧显示同一短码即配对成功；B2 模式下中继看不到内容</div>
+            <div class="fp">主机指纹 A3F9 · 62C1 · 8E07 · 4B2D</div></div></div>
+          <div class="step"><div class="num">4</div><div><div class="st">完成 · 手机即获得设备证书</div>
+            <div class="sub">证书保存在 Secure Enclave / Keystore，可随时在此撤销</div></div></div>
+        </div>
+      </div>
+      <div class="mfoot">
+        <div class="devices">
+          <span>已配对：</span>
+          <span class="d"><span class="s"></span>iPhone 15 Pro · 刚刚</span>
+          <span class="d"><span class="s"></span>iPad Air · 3 天前</span>
+        </div>
+        <button class="btn">设备管理</button>
+        <button class="btn">安全设置</button>
+        <button class="btn primary">配对新设备</button>
+      </div>
+    </div>
+
+    <div class="callout"><b>设计说明</b><br>
+      入口占位于账号/设置行<b>正上方</b>（参考 Codex 侧栏风格，位置为设计推断），使用 DSH 现成 <code>sidebar.footer.action</code> 席位，无需改核心。
+      一期可做成横向条；若要独占整行，需约 10–30 行 UI 核心小改。</div>
+    <div class="caption">UI 稿（示意）· 方案 B：盲中继 + 设备 mTLS + WebView 复用现有 DSH UI</div>
+  </div>
+</div>
+
+<script>
+  // 生成一个稳定的伪二维码图案（示意用，不是真码）
+  const qr = document.getElementById('qr');
+  let seed = 20261019;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const N = 25;
+  const inFinder = (r,c) => {
+    const f = (r0,c0) => r>=r0 && r<r0+7 && c>=c0 && c<c0+7;
+    return f(0,0)||f(0,N-7)||f(N-7,0);
+  };
+  for (let r=0;r<N;r++) for (let c=0;c<N;c++) {
+    const el = document.createElement('i');
+    let black;
+    if (inFinder(r,c)) {
+      const f = (r0,c0) => {
+        const rr=r-r0, cc=c-c0;
+        const ring = Math.max(Math.abs(rr-3), Math.abs(cc-3));
+        return ring===3 || ring<=1;
+      };
+      black = f(0,0)||f(0,N-7)||f(N-7,0);
+    } else {
+      black = rnd() > 0.52;
+    }
+    el.className = black ? 'b' : 'w';
+    qr.appendChild(el);
+  }
+  // 简易倒计时
+  let left = 107;
+  const cd = document.getElementById('countdown');
+  setInterval(()=>{ left = left>0 ? left-1 : 120;
+    cd.textContent = String(Math.floor(left/60)).padStart(2,'0')+':'+String(left%60).padStart(2,'0'); }, 1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,57 @@
+# DSH 自托管盲中继（方案 B2）—— 单机 docker compose 部署示例。
+#
+# 目录约定（宿主机，对应容器内 /data）：
+#   ./data/config/relay.json                          relay 配置
+#   ./data/certs/relay.example.com/fullchain.pem      控制面 TLS 证书链（Let's Encrypt）
+#   ./data/certs/relay.example.com/privkey.pem        控制面 TLS 私钥
+#   ./data/tokens.json                                 host token（首次 token create 生成，0600）
+#
+# 使用：
+#   mkdir -p data/{config,certs/relay.example.com}
+#   cp relay.example.json data/config/relay.json && 修改 domain/证书路径
+#   docker compose up -d --build
+#   docker compose exec relay node packages/relay/bin/relay.js token create h_xxx --config /data/config/relay.json
+#
+# 构建上下文是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol）。
+
+name: dsh-remote-relay
+
+services:
+  relay:
+    build:
+      context: ../..
+      dockerfile: packages/relay/Dockerfile
+    image: dsh-remote-relay:0.1.0
+    container_name: dsh-relay
+    restart: unless-stopped
+    ports:
+      - "80:80"       # 只做 301 → https（也是 /healthz 的入口）
+      - "443:443"     # TLS 透传，按 SNI 路由到 <hostId>.<domain>
+      - "8443:8443"   # 控制面 WSS：只给 host 插件连，App 不连
+    environment:
+      # 不在 config 文件里写 domain 时可用环境变量（等价于 relay.json.domain）
+      RELAY_DOMAIN: relay.example.com
+      RELAY_DATA_PORT: "443"
+      RELAY_CONTROL_PORT: "8443"
+      RELAY_HTTP_PORT: "80"
+      RELAY_DATA_HOST: "0.0.0.0"
+      RELAY_TOKENS_FILE: /data/tokens.json
+      RELAY_TLS_CERT_FILE: /data/certs/relay.example.com/fullchain.pem
+      RELAY_TLS_KEY_FILE: /data/certs/relay.example.com/privkey.pem
+      RELAY_LOG_LEVEL: info
+    volumes:
+      - ./data:/data
+    # 容器内以非 root 用户绑定 80/443；Docker 默认 unprivileged_port_start=0，显式声明更稳。
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

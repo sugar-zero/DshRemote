@@ -1,0 +1,76 @@
+{
+  "expo": {
+    "name": "DSH Remote",
+    "slug": "dsh-remote",
+    "version": "0.1.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "scheme": "dshremote",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.dsh.remote",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "package": "com.dsh.remote",
+      "adaptiveIcon": {
+        "backgroundColor": "#0B1220",
+        "foregroundImage": "./assets/android-icon-foreground.png",
+        "backgroundImage": "./assets/android-icon-background.png",
+        "monochromeImage": "./assets/android-icon-monochrome.png"
+      },
+      "permissions": [
+        "CAMERA",
+        "USE_BIOMETRIC"
+      ],
+      "predictiveBackGestureEnabled": false
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "DSH Remote 需要使用相机扫描主机上显示的配对二维码。",
+          "barcodeScannerEnabled": true,
+          "recordAudioAndroid": false
+        }
+      ],
+      "expo-secure-store",
+      [
+        "expo-local-authentication",
+        {
+          "faceIDPermission": "DSH Remote 使用 Face ID 确认是你本人，再展示设备证书与配对信息。"
+        }
+      ],
+      [
+        "expo-notifications",
+        {
+          "color": "#4F8DF7"
+        }
+      ],
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "deploymentTarget": "16.4"
+          },
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ]
+    ],
+    "extra": {
+      "dshRemote": {
+        "relayDomain": "relay.example.com",
+        "useNativeMtlsWebView": false
+      }
+    }
+  }
+}
