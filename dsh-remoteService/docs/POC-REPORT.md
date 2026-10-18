@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.17 | 原生源码一致性检查 | ✅ `dsh-remoteApp`: `npm run check:native`（JS bridge 方法、模块名、Secure Enclave/KeyStore/客户端证书关键 API、括号平衡）全部通过；不替代真机编译 | `dsh-remoteApp/scripts/check-native-sources.mjs` |
 | 1.16 | App 主机诊断 | ✅ host `GET /__dsh_remote/status`（mTLS）：版本/域名/证书到期/relay 连接/设备数；App 设备页展示（host 测试覆盖 200 + 无证书 403） | `packages/host-plugin/lib/server.js`、`dsh-remoteApp/src/lib/devices.ts`、`DevicesScreen` |
 | 1.15 | TLS 证书热加载 | ✅ 模拟 acme.sh 覆盖 cert/key 后调用热加载：监听重建、notAfter/端口更新、无需重启进程（测试覆盖；生产由文件 watcher 自动触发） | `RemoteService.reloadTls()`、`test/service.test.js`、`#watchCertFiles` |
 | 1.14 | 撤销设备立即断链 | ✅ host 跟踪设备 serial → 活跃 TLS/WS socket；本地管理 API 与远端 tunnel `revoke` 都会立即销毁连接（测试：keep-alive 连接在撤销后关闭） | `packages/host-plugin/lib/server.js`、`test/proxy.test.js` |

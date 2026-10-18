@@ -12,8 +12,8 @@
  *    `SecIdentity` looked up in the Keychain by label.
  *  - Android: a WebView subclass whose WebViewClient answers
  *    `WebViewClient.onReceivedClientCertRequest` with the Keystore alias.
- *  - Long-term device private key generation + CSR + Keychain/Keystore install
- *    (next milestone; not implemented here).
+ *  - Device private key generation + PKCS#10 CSR + Keychain/Keystore certificate
+ *    install (iOS Secure Enclave 优先；Android AndroidKeyStore).
  *
  * This wrapper deliberately degrades gracefully when the native module is not
  * linked (Expo Go / web / a build without the module): everything returns
@@ -92,15 +92,12 @@ interface NativeDshMtlsModule {
    * on-device and the certificate is installed from the pairing response.
    */
   importP12(p12Base64: string, password: string, label?: string): Promise<P12ImportResult>;
-  /** Generate a P-256 key pair + PKCS#10 CSR (next milestone; throws until implemented). */
+  /** Generate a P-256 key pair + PKCS#10 CSR (Secure Enclave / AndroidKeyStore). */
   generateCsr(commonName: string): Promise<CsrResult>;
   getDiagnostics(): Promise<DshMtlsDiagnostics>;
   /** 安装主机签发的设备证书（与 generateCsr 产生的私钥 label 关联）。 */
   installCertificate?(certPem: string, label?: string): Promise<P12ImportResult>;
-  /**
-   * POC: 用配置好的设备证书发一条 HTTPS 请求（原生 URLSession/OkHttp 客户端证书）。
-   * 下一里程碑实现；未实现时 JavaScript 侧优雅降级。
-   */
+  /** 用配置好的设备证书发一条 HTTPS 请求（iOS URLSession / Android HttpsURLConnection）。 */
   requestWithClientCert?(options: {
     url: string;
     method: string;
