@@ -13,7 +13,8 @@
     "poc": "node poc/run-poc.js",
     "poc:webview": "bash poc/webview-mtls/run.sh",
     "poc:csr": "bash poc/native-csr/run.sh",
-    "bench": "node poc/bench-relay.js"
+    "bench": "node poc/bench-relay.js",
+    "poc:docker": "bash poc/docker-e2e/run.sh"
   },
   "engines": {
     "node": ">=22"

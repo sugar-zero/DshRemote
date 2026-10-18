@@ -8,6 +8,9 @@
 
 完整步骤见 [`../docs/DEPLOY.md`](../docs/DEPLOY.md)。
 
+Docker 镜像已用真实容器验证：`npm run poc:docker`（构建镜像 → dev 容器 → 真实 host 插件连接 → mTLS 请求）。
+本机 macOS 可用 `colima start` 提供 Docker daemon；生产 VPS 直接 `docker compose up -d --build`。
+
 部署完成后运行自检：
 
 ```bash
