@@ -18,16 +18,32 @@ ok "macOS $(sw_vers -productVersion)"
 
 echo "[1/6] Xcode"
 DEV_DIR=$(xcode-select -p 2>/dev/null || true)
-if [ -z "$DEV_DIR" ]; then
-  bad "xcode-select 未配置"
-elif printf '%s' "$DEV_DIR" | grep -q 'CommandLineTools'; then
-  bad "仅安装了 Command Line Tools（需要完整 Xcode：App Store 安装后执行 sudo xcode-select -s /Applications/Xcode.app/Contents/Developer）"
-elif command -v xcodebuild >/dev/null 2>&1; then
-  VERSION=$(xcodebuild -version 2>/dev/null | head -1 || true)
-  if [ -n "$VERSION" ]; then ok "$VERSION"; else bad "xcodebuild 不可用"; fi
-  if xcodebuild -showsdks 2>/dev/null | grep -q 'iphoneos'; then ok "iPhoneOS SDK 可用"; else bad "缺少 iPhoneOS SDK"; fi
+XCODE_APP="/Applications/Xcode.app"
+if [ -d "$XCODE_APP" ]; then
+  XC_BUILD="$XCODE_APP/Contents/Developer/usr/bin/xcodebuild"
+  if [ -x "$XC_BUILD" ]; then
+    VERSION=$(DEVELOPER_DIR="$XCODE_APP/Contents/Developer" "$XC_BUILD" -version 2>/dev/null | head -1 || true)
+    ok "已安装 ${VERSION}（${XCODE_APP}）"
+  else
+    warn "Xcode.app 存在但 xcodebuild 不可执行"
+  fi
+  if printf '%s' "$DEV_DIR" | grep -q 'CommandLineTools'; then
+    bad "xcode-select 仍指向 Command Line Tools（运行：sudo xcode-select -s /Applications/Xcode.app/Contents/Developer）"
+  else
+    ok "xcode-select: $DEV_DIR"
+  fi
+  if DEVELOPER_DIR="$XCODE_APP/Contents/Developer" "$XC_BUILD" -checkFirstLaunchStatus >/dev/null 2>&1; then
+    ok "Xcode license 已接受"
+  else
+    bad "Xcode license 未接受（运行：sudo xcodebuild -license accept）"
+  fi
+  if DEVELOPER_DIR="$XCODE_APP/Contents/Developer" "$XC_BUILD" -showsdks 2>/dev/null | grep -q 'iphoneos'; then
+    ok "iPhoneOS SDK 可用"
+  else
+    warn "iPhoneOS SDK 未确认（可能 license/首次启动未完成）"
+  fi
 else
-  bad "xcodebuild 不可用"
+  bad "未安装完整 Xcode（App Store 安装后：sudo xcode-select -s /Applications/Xcode.app/Contents/Developer）"
 fi
 
 echo "[2/6] CocoaPods"
@@ -43,14 +59,14 @@ if [ "${IDENTITIES:-0}" -gt 0 ]; then ok "找到 ${IDENTITIES} 个代码签名�
 
 echo "[5/6] 真机/模拟器"
 if command -v xcrun >/dev/null 2>&1; then
-  DEVICES=$(xcrun xctrace list devices 2>/dev/null | grep -iE 'iPhone|iPad' | head -5 || true)
+  DEVICES=$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun xctrace list devices 2>/dev/null | grep -iE 'iPhone|iPad' | head -5 || true)
   if [ -n "$DEVICES" ]; then
     ok "检测到设备："
     printf '%s\n' "$DEVICES" | sed 's/^/       /'
   else
     warn "未检测到已连接的 iPhone/iPad（可先用模拟器验证 UI，但 Secure Enclave mTLS 必须真机）"
   fi
-  BOOTED=$(xcrun simctl list devices booted 2>/dev/null | grep -c 'Booted' || true)
+  BOOTED=$(DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer xcrun simctl list devices booted 2>/dev/null | grep -c 'Booted' || true)
   [ "${BOOTED:-0}" -gt 0 ] && ok "有 ${BOOTED} 个已启动模拟器" || warn "没有已启动模拟器"
 else
   bad "xcrun 不可用"
