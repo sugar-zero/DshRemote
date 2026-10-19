@@ -77,12 +77,22 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 
 ## 待人工执行（需要外部环境）
 
-### A. iOS 真机验收（需 Mac 安装完整 Xcode + iPhone）
+### A. iOS 真机验收（Xcode 已安装，待完成系统授权 + CocoaPods + 连接设备）
+
+当前已检测到：Xcode 27.1（`/Applications/Xcode.app`）、iOS 原生工程已由 `expo prebuild` 生成。
+仍需在 Mac 终端执行（需要管理员密码）：
+
+```bash
+sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+sudo xcodebuild -license accept
+brew install cocoapods        # 或 sudo gem install cocoapods
+```
+
+连接 iPhone（USB + 信任此电脑）后：
 
 ```bash
 cd dsh-remoteApp
 npm run check:ios-env                 # 必须先全绿
-npx expo prebuild --platform ios
 npx expo run:ios --device
 ```
 按 [`dsh-remoteApp/docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) 执行并记录：

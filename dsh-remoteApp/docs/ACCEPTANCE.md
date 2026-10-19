@@ -8,6 +8,15 @@
 
 ## 0. 环境就绪检查
 
+> 如果 Xcode 已安装但 `npm run check:ios-env` 仍报错，通常还需要（需管理员密码）：
+>
+> ```bash
+> sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+> sudo xcodebuild -license accept
+> brew install cocoapods        # 或 sudo gem install cocoapods
+> ```
+
+
 ```bash
 cd dsh-remoteApp
 npm install
