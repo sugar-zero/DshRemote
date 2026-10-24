@@ -2,10 +2,13 @@
 import http from 'node:http';
 import zlib from 'node:zlib';
 import { writeFileSync, readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import qrcode from 'qrcode-generator';
 
 const WEB_URL = process.argv[2]; // http://127.0.0.1:65487/?token=...
-const OUT = process.argv[3] || './mockups/local-pairing-qr.png';
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const OUT = process.argv[3] || resolve(SCRIPT_DIR, '../../mockups/local-pairing-qr.png');
 if (!WEB_URL) { console.error('usage: regen-pairing-qr.mjs <dsh-web-url-with-token> [out.png]'); process.exit(2); }
 
 function request(url, options = {}) {
