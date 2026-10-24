@@ -37,7 +37,6 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '    width: min(84vw, 280px) !important; max-width: 280px !important;',
       '    z-index: 9000 !important; transform: translateX(-102%);',
       '    transition: transform 220ms ease;',
-      '    box-shadow: 24px 0 48px rgba(0,0,0,0.35);',
       '    overflow: visible !important;',
       '  }',
       '  html.' + DRAWER_CLASS + ' [class*="_sidebarCol"] { transform: translateX(0) !important; }',
@@ -46,22 +45,20 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '  [class*="_frame"] { display: block !important; }',
       '  [class*="_centerCol"] { width: 100% !important; height: 100% !important; }',
       '  [class*="_rightbarCol"] { display: none !important; }',
-      '  html.' + DRAWER_CLASS + ' [class*="_centerCol"] { filter: brightness(0.72); }',
       '  .dsh-mobile-backdrop {',
-      '    position: fixed; inset: 0; z-index: 8999; background: rgba(0,0,0,0.38);',
+      '    position: fixed; inset: 0; z-index: 8999; background: transparent;',
       '    opacity: 0; pointer-events: none; transition: opacity 200ms ease;',
       '  }',
       '  html.' + DRAWER_CLASS + ' .dsh-mobile-backdrop { opacity: 1; pointer-events: auto; }',
-      '  .dsh-mobile-fab {',
-      '    position: fixed; left: 12px; top: 12px; z-index: 9001;',
-      '    width: 40px; height: 40px; border-radius: 12px;',
-      '    border: 1px solid rgba(255,255,255,0.12);',
-      '    background: rgba(17,26,44,0.94); color: #e6edf7;',
-      '    font-size: 19px; line-height: 1;',
+      '  .dsh-mobile-native-trigger {',
+      '    position: fixed; left: 10px; top: 8px; z-index: 9001;',
+      '    width: 40px; height: 40px; padding: 0; margin: 0;',
+      '    border: 0; background: transparent; color: inherit;',
       '    display: flex; align-items: center; justify-content: center;',
-      '    box-shadow: 0 4px 16px rgba(0,0,0,0.35);',
+      '    cursor: pointer; -webkit-tap-highlight-color: transparent;',
       '  }',
-      '  html.' + DRAWER_CLASS + ' .dsh-mobile-fab { display: none !important; }',
+      '  .dsh-mobile-native-trigger svg { width: 26px; height: 26px; display: block; }',
+      '  html.' + DRAWER_CLASS + ' .dsh-mobile-native-trigger { display: none !important; }',
       '}',
     ].join('\n');
     document.head.appendChild(style);
@@ -69,13 +66,31 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     var backdrop = document.createElement('div');
     backdrop.className = 'dsh-mobile-backdrop';
     var fab = document.createElement('button');
-    fab.className = 'dsh-mobile-fab';
+    fab.className = 'dsh-mobile-native-trigger';
     fab.type = 'button';
     fab.setAttribute('aria-label', '打开侧栏');
-    fab.textContent = '☰';
     fab.style.display = 'none';
     document.body.appendChild(backdrop);
     document.body.appendChild(fab);
+
+    // 使用 DSH 自己的鲸鱼 logo 作为抽屉入口（不另造悬浮汉堡）。
+    function installNativeMark() {
+      if (fab.dataset.nativeMark === '1') return;
+      var source = document.querySelector('[class*="_railMark"]')
+        || document.querySelector('[class*="_brandMark"]')
+        || document.querySelector('[class*="_logoRow"] svg');
+      if (!source) return;
+      var node = source.tagName && source.tagName.toLowerCase() === 'svg'
+        ? source.cloneNode(true)
+        : source.querySelector('svg') && source.querySelector('svg').cloneNode(true);
+      if (!node) return;
+      fab.textContent = '';
+      fab.appendChild(node);
+      fab.dataset.nativeMark = '1';
+    }
+    installNativeMark();
+    setTimeout(installNativeMark, 300);
+    setTimeout(installNativeMark, 1200);
 
     function isMobile() { return window.innerWidth <= 760; }
     function sidebar() { return document.querySelector('[class*="_sidebarCol"]'); }
@@ -101,12 +116,9 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     backdrop.addEventListener('click', function () { closeDrawer(); });
 
     // 侧栏内：
-    //  - 设置/更多等会打开二级弹窗的入口：保持抽屉打开，等用户选完二级内容；
-    //  - 会话/面板等功能项：跳转后自动收起。
-    // 抽屉外的点击（二级弹窗/内容区）：执行动作后再收起。
-    var settingsEntrySelector = '[class*="_footerActions"],[class*="_settingsArea"],[class*="_footArea"],[class*="triggerRow"],[class*="railRow"],[class*="_toggle"]';
-    // 部分 DSH 版本在触摸设备上需要两次点击才打开会话（第一次只聚焦列表）。
-    // 对会话列表项自动补一次 click，让用户实际只需点一次。
+    //  - 工作区/文件夹行：只展开/收起，不关闭抽屉（否则选不了里面的会话）；
+    //  - 会话行：DSH 在触摸端第一次点击只聚焦列表，补一次 click 实现单击打开，然后关闭抽屉；
+    //  - 其它入口（设置/账号/插件等）：先关闭抽屉，让二级页面/弹窗可见。
     var autoTapped = new WeakSet();
     document.addEventListener('click', function (event) {
       if (!isOpen()) return;
@@ -114,19 +126,21 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       if (!target) return;
       var bar = sidebar();
       if (bar && bar.contains(target)) {
-        if (target.closest(settingsEntrySelector)) return;
-        var sessionItem = target.closest('[class*="_listArea"] button,[class*="_listArea"] [role="button"],[class*="_listArea"] [class*="_panelRow"]');
-        if (sessionItem && !autoTapped.has(sessionItem)) {
-          autoTapped.add(sessionItem);
+        if (target.closest('[data-row-key^="workspace:"]')) return; // 文件夹展开/收起，保持抽屉
+        var sessionRow = target.closest('[data-row-key^="session:"]');
+        if (sessionRow && !autoTapped.has(sessionRow)) {
+          autoTapped.add(sessionRow);
           window.setTimeout(function () {
-            try { sessionItem.click(); } catch (e) {}
+            try { sessionRow.click(); } catch (e) {}
           }, 180);
+          window.setTimeout(closeDrawer, 520);
+          return;
         }
-        window.setTimeout(closeDrawer, sessionItem ? 500 : 300);
+        window.setTimeout(closeDrawer, 260);
         return;
       }
-      if (target.closest('.dsh-mobile-fab') || target.closest('.dsh-mobile-backdrop')) return;
-      window.setTimeout(closeDrawer, 300);
+      if (target.closest('.dsh-mobile-native-trigger') || target.closest('.dsh-mobile-backdrop')) return;
+      window.setTimeout(closeDrawer, 260);
     }, true);
 
     // 左边缘右滑打开 / 抽屉上左滑关闭。
