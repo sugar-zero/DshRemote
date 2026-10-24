@@ -16,6 +16,7 @@ package com.dsh.remote.mtls
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.view.ViewGroup.LayoutParams
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
 import android.webkit.WebView
@@ -64,6 +65,9 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
     with(webView.settings) {
       javaScriptEnabled = true
       domStorageEnabled = true
+      // Keep Android's default persistent HTTP cache: returning to the host or
+      // relaunching the app should not re-download the DSH bundle.
+      cacheMode = WebSettings.LOAD_DEFAULT
       setSupportZoom(false)
       builtInZoomControls = false
       displayZoomControls = false
