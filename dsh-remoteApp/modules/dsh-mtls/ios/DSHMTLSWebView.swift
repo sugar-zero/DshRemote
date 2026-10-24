@@ -48,8 +48,14 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
 
   public required init(appContext: AppContext? = nil) {
     let configuration = WKWebViewConfiguration()
-    // The host proxies with its own owner cookie; keep the shell's WebView clean.
-    configuration.websiteDataStore = .nonPersistent()
+    // Persistent store = disk HTTP cache, so returning to the host / relaunching
+    // the app does not re-download the DSH web bundle every time. The WebView is
+    // still scoped to one paired host and the app has its own lock screen.
+    configuration.websiteDataStore = .default()
+    #if DEBUG
+    // Allow Safari Web Inspector on a physical device while tuning load times.
+    configuration.preferences.isInspectable = true
+    #endif
     let contentController = WKUserContentController()
     configuration.userContentController = contentController
     self.webView = WKWebView(frame: .zero, configuration: configuration)

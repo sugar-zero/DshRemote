@@ -177,20 +177,8 @@ export default function App() {
           />
         );
       case 'webview':
-        return connection ? (
-          <WebViewScreen
-            connection={connection}
-            onClose={handleCloseWebView}
-            onOpenDevices={() => setRoute('devices')}
-          />
-        ) : (
-          <HomeScreen
-            connections={connections}
-            onOpen={handleOpenConnection}
-            onOpenDevices={handleOpenDevices}
-            onPairNew={() => setRoute('pairing')}
-          />
-        );
+        // WebView is rendered as a persistent layer below; nothing to overlay.
+        return null;
       case 'devices':
         return connection ? (
           <DevicesScreen
@@ -213,12 +201,44 @@ export default function App() {
   return (
     <SafeAreaProvider>
       <StatusBar style="light" />
-      {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : renderRoute()}
+      <View style={styles.container}>
+        {/*
+         * Keep the WKWebView mounted while the user is on Home/Devices/pairing.
+         * Returning to a host then only reveals the already-loaded page instead
+         * of rebuilding the WebView and re-fetching the whole DSH bundle.
+         */}
+        {connection ? (
+          <View
+            style={styles.webViewLayer}
+            pointerEvents={route === 'webview' && !locked ? 'auto' : 'none'}
+            accessibilityElementsHidden={route !== 'webview' || locked}
+            importantForAccessibility={route === 'webview' && !locked ? 'auto' : 'no-hide-descendants'}
+          >
+            <WebViewScreen
+              key={connection.host}
+              connection={connection}
+              onClose={handleCloseWebView}
+              onOpenDevices={() => setRoute('devices')}
+            />
+          </View>
+        ) : null}
+        {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : route !== 'webview' ? renderRoute() : null}
+      </View>
     </SafeAreaProvider>
   );
 }
 
 const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+  },
+  webViewLayer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+  },
   loadingScreen: {
     flex: 1,
     backgroundColor: colors.background,
