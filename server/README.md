@@ -81,7 +81,7 @@ acme.sh --install-cert -d relay.example.com \
 ```bash
 cd server
 cp .env.example .env
-# 编辑 .env：RELAY_DOMAIN / 端口 / DSH_RELAY_IMAGE
+# 编辑 .env：RELAY_DOMAIN / RELAY_HOST_ID / 端口 / DSH_RELAY_IMAGE
 ```
 
 | 场景 | 使用文件 | 命令 |
@@ -196,17 +196,80 @@ TLS 证书仍由 relay / 主机插件各自持有。
 
 ---
 
-## 5. 创建主机 token
+## 5. 主机 token（容器首次启动自动完成）
+
+不需要再 `docker compose exec` 进容器执行 `token create`。入口脚本
+[`scripts/relay-entrypoint.sh`](scripts/relay-entrypoint.sh) 会在 relay 启动前
+检查 `/data/tokens.json`，并按 `.env` 自动补齐 host token。
+
+### 5.1 必填：RELAY_HOST_ID
+
+```dotenv
+RELAY_HOST_ID=h_ab12cd34
+```
+
+必须与主机插件里的「主机 ID」完全一致。
+
+### 5.2 推荐：显式设置 RELAY_HOST_TOKEN
+
+```dotenv
+RELAY_HOST_TOKEN=<随机字符串>
+```
+
+生成方式（宿主机执行，不需要容器）：
 
 ```bash
-# 本 compose 用环境变量配置 relay，token CLI 会自动读取容器环境
+node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+```
+
+这个值同时填到主机插件「中继主机令牌」，两边一致即可。
+
+### 5.3 不设置 RELAY_HOST_TOKEN 时
+
+容器首次启动会自动生成随机 token：
+
+- 写入 `data/tokens.json`
+- 写入 `data/host-token.txt`（0600）
+- 打印到 relay 启动日志
+
+获取：
+
+```bash
+cd server
+cat data/host-token.txt
+# 或
+docker compose logs relay | grep RELAY_HOST_TOKEN
+```
+
+然后填到主机插件。
+
+### 5.4 已有 token 不会自动轮换
+
+`data/tokens.json` 中已存在该 hostId 时，入口脚本不会覆盖它，避免每次重启
+把主机踢下线。如果 `RELAY_HOST_TOKEN` 与文件中的值不一致，日志会提示，
+但不会自动改。
+
+需要主动轮换时：
+
+```bash
+cd server
 docker compose exec relay \
   node packages/relay/bin/relay.js token create h_ab12cd34
 ```
 
-token 会写入 `data/tokens.json`（0600）。同一 hostId 重复 create 会轮换旧 token。
+### 5.5 验证
 
-把一次性明文 token 填到 **主机插件设置 → 远程访问 → 中继主机令牌**。
+```bash
+docker compose logs relay | head -30
+cat data/tokens.json
+```
+
+relay 的 `/healthz` 里 `hosts` 列表要等主机插件实际连接后才会出现：
+
+```bash
+curl -s http://127.0.0.1:18080/healthz
+# {"ok":true,"domain":"relay.example.com","hosts":["h_ab12cd34"]}
+```
 
 ---
 
