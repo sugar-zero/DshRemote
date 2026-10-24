@@ -152,7 +152,7 @@ export function DevicesScreen({
     let cancelled = false;
     async function load() {
       const [storedCertificate, nativeDiagnostics] = await Promise.all([
-        loadCertificate().catch(() => null),
+        loadCertificate(connection.hostFingerprint).catch(() => null),
         getDiagnostics().catch(() => null),
       ]);
       if (cancelled) return;

@@ -686,7 +686,7 @@ export async function persistPairedDevice(params: {
     certPem: device.certPem,
     caPem: device.caPem,
     storedAt: Date.now(),
-  });
+  }, device.hostFingerprint);
   // 原生 CSR 流程：把主机签发的证书装回 Keychain 并关联设备私钥（label=certRef）。
   if (params.certRef) {
     try {

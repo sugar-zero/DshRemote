@@ -26,6 +26,8 @@ import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
 export const CONNECTION_STORAGE_KEY = 'dshremote.connection.v1';
+/** v2: 多主机列表（每台 host 一条）；首次加载会把 v1 单条迁移过来。 */
+export const CONNECTIONS_STORAGE_KEY = 'dshremote.connections.v2';
 export const CERTIFICATE_STORAGE_KEY = 'dshremote.cert.v1';
 export const DEVICE_NAME_STORAGE_KEY = 'dshremote.deviceName.v1';
 
@@ -119,10 +121,43 @@ function isStoredConnection(value: unknown): value is StoredConnection {
   );
 }
 
-export async function saveConnection(connection: StoredConnection): Promise<void> {
-  await setItem(CONNECTION_STORAGE_KEY, JSON.stringify(connection));
+function connectionIdentity(connection: StoredConnection): string {
+  return `${connection.host}|${connection.deviceId}`;
 }
 
+/** 读取所有已配对主机（兼容旧的单连接 v1 数据）。 */
+export async function loadConnections(): Promise<StoredConnection[]> {
+  const raw = await getItem(CONNECTIONS_STORAGE_KEY);
+  if (raw) {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      if (Array.isArray(parsed)) return parsed.filter(isStoredConnection);
+    } catch {
+      // fall through to legacy
+    }
+  }
+  const legacy = await loadConnection();
+  return legacy ? [legacy] : [];
+}
+
+/** 新增/更新一台已配对主机（同一 host+deviceId 覆盖）。 */
+export async function saveConnection(connection: StoredConnection): Promise<void> {
+  const list = await loadConnections();
+  const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
+  if (index >= 0) list[index] = connection;
+  else list.push(connection);
+  await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
+}
+
+/** 仅移除一台主机（保留其它已配对主机）。 */
+export async function removeConnection(connection: StoredConnection): Promise<void> {
+  const list = await loadConnections();
+  const next = list.filter((item) => connectionIdentity(item) !== connectionIdentity(connection));
+  if (next.length === 0) await deleteItem(CONNECTIONS_STORAGE_KEY);
+  else await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(next));
+}
+
+/** 兼容旧 API：返回最近保存的一台主机。 */
 export async function loadConnection(): Promise<StoredConnection | null> {
   const raw = await getItem(CONNECTION_STORAGE_KEY);
   if (!raw) return null;
@@ -135,7 +170,7 @@ export async function loadConnection(): Promise<StoredConnection | null> {
 }
 
 export async function clearConnection(): Promise<void> {
-  await deleteItem(CONNECTION_STORAGE_KEY);
+  await Promise.all([deleteItem(CONNECTION_STORAGE_KEY), deleteItem(CONNECTIONS_STORAGE_KEY)]);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,44 +193,50 @@ interface CertificateChunkMeta {
   sha256Hint?: string;
 }
 
-function chunkKey(index: number): string {
-  return `${CERTIFICATE_STORAGE_KEY}.chunk.${index}`;
+function certScopeSuffix(scope?: string): string {
+  if (!scope) return '';
+  const safe = scope.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
+  return `.${safe}`;
 }
 
-function metaKey(): string {
-  return `${CERTIFICATE_STORAGE_KEY}.meta`;
+function chunkKey(scope: string | undefined, index: number): string {
+  return `${CERTIFICATE_STORAGE_KEY}${certScopeSuffix(scope)}.chunk.${index}`;
+}
+
+function metaKey(scope: string | undefined): string {
+  return `${CERTIFICATE_STORAGE_KEY}${certScopeSuffix(scope)}.meta`;
 }
 
 /**
  * Store both PEMs as chunked values: `{certPem: string, caPem: string}` JSON is
  * split into <=1400-char pieces to stay inside Android's per-value limit.
  */
-export async function saveCertificate(certificate: StoredCertificate): Promise<void> {
+export async function saveCertificate(certificate: StoredCertificate, scope?: string): Promise<void> {
   const payload = JSON.stringify({
     certPem: certificate.certPem,
     caPem: certificate.caPem,
     storedAt: certificate.storedAt,
   });
-  const previous = await loadCertificateMeta();
+  const previous = await loadCertificateMeta(scope);
   const chunks: string[] = [];
   for (let offset = 0; offset < payload.length; offset += CHUNK_SIZE) {
     chunks.push(payload.slice(offset, offset + CHUNK_SIZE));
   }
-  await Promise.all(chunks.map((chunk, index) => setItem(chunkKey(index), chunk)));
+  await Promise.all(chunks.map((chunk, index) => setItem(chunkKey(scope, index), chunk)));
 
   const meta: CertificateChunkMeta = { chunkCount: chunks.length, storedAt: certificate.storedAt };
-  await setItem(metaKey(), JSON.stringify(meta));
+  await setItem(metaKey(scope), JSON.stringify(meta));
 
   // Remove stale trailing chunks from a previous, longer certificate.
   if (previous) {
     for (let index = chunks.length; index < previous.chunkCount; index += 1) {
-      await deleteItem(chunkKey(index));
+      await deleteItem(chunkKey(scope, index));
     }
   }
 }
 
-async function loadCertificateMeta(): Promise<CertificateChunkMeta | null> {
-  const raw = await getItem(metaKey());
+async function loadCertificateMeta(scope?: string): Promise<CertificateChunkMeta | null> {
+  const raw = await getItem(metaKey(scope));
   if (!raw) return null;
   try {
     const parsed: unknown = JSON.parse(raw);
@@ -207,12 +248,16 @@ async function loadCertificateMeta(): Promise<CertificateChunkMeta | null> {
   }
 }
 
-export async function loadCertificate(): Promise<StoredCertificate | null> {
-  const meta = await loadCertificateMeta();
-  if (!meta) return null;
+export async function loadCertificate(scope?: string): Promise<StoredCertificate | null> {
+  const meta = await loadCertificateMeta(scope);
+  if (!meta) {
+    // 兼容旧版本保存的无 scope 证书（当前主机仍在用）
+    if (scope) return loadCertificate();
+    return null;
+  }
   const parts: string[] = [];
   for (let index = 0; index < meta.chunkCount; index += 1) {
-    const chunk = await getItem(chunkKey(index));
+    const chunk = await getItem(chunkKey(scope, index));
     if (chunk === null) return null; // Corrupted/partial record: treat as absent.
     parts.push(chunk);
   }
@@ -227,14 +272,14 @@ export async function loadCertificate(): Promise<StoredCertificate | null> {
   }
 }
 
-export async function clearCertificate(): Promise<void> {
-  const meta = await loadCertificateMeta();
+export async function clearCertificate(scope?: string): Promise<void> {
+  const meta = await loadCertificateMeta(scope);
   if (meta) {
     for (let index = 0; index < meta.chunkCount; index += 1) {
-      await deleteItem(chunkKey(index));
+      await deleteItem(chunkKey(scope, index));
     }
   }
-  await deleteItem(metaKey());
+  await deleteItem(metaKey(scope));
 }
 
 // ---------------------------------------------------------------------------

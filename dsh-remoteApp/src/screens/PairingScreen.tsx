@@ -56,6 +56,8 @@ type Phase = 'scan' | 'review' | 'pairing' | 'error';
 
 interface PairingScreenProps {
   onPaired: (connection: StoredConnection) => void;
+  /** 已有配对主机时，返回主机列表。 */
+  onCancel?: () => void;
 }
 
 interface ScreenError {
@@ -114,7 +116,7 @@ function formatCountdown(seconds: number): string {
   return `${minutes}:${String(rest).padStart(2, '0')}`;
 }
 
-export function PairingScreen({ onPaired }: PairingScreenProps) {
+export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
   const insets = useSafeAreaInsets();
   const [permission, requestPermission] = useCameraPermissions();
   const [phase, setPhase] = useState<Phase>('scan');
@@ -557,6 +559,11 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
         ]}
         keyboardShouldPersistTaps="handled"
       >
+        {onCancel ? (
+          <TouchableOpacity style={styles.cancelRow} onPress={onCancel}>
+            <Text style={styles.cancelText}>‹ 返回主机列表</Text>
+          </TouchableOpacity>
+        ) : null}
         {phase === 'scan' ? renderScanPhase() : null}
         {phase === 'review' ? renderReviewPhase() : null}
         {phase === 'pairing' ? renderPairingPhase() : null}
@@ -763,4 +770,6 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     lineHeight: 17,
   },
+  cancelRow: { paddingVertical: spacing.sm, marginBottom: spacing.xs },
+  cancelText: { color: colors.accent, fontSize: 14 },
 });
