@@ -38,8 +38,10 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '    z-index: 9000 !important; transform: translateX(-102%);',
       '    transition: transform 220ms ease;',
       '    overflow: visible !important;',
+      '    visibility: hidden; opacity: 0; pointer-events: none;',
+      '    transition: transform 220ms ease, opacity 0s linear 220ms, visibility 0s linear 220ms;',
       '  }',
-      '  html.' + DRAWER_CLASS + ' [class*="_sidebarCol"] { transform: translateX(0) !important; }',
+      '  html.' + DRAWER_CLASS + ' [class*="_sidebarCol"] { transform: translateX(0) !important; visibility: visible; opacity: 1; pointer-events: auto; transition: transform 220ms ease; }',
       // DSH 用 CSS grid（sidebar, center, rightbar）。sidebar 改为 fixed 后会脱离 grid，
       // 导致 center 落到 56px 的第一列（内容被挤成竖排）。手机端直接改成单列布局。
       '  [class*="_frame"] { display: block !important; }',
@@ -51,14 +53,19 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '  }',
       '  html.' + DRAWER_CLASS + ' .dsh-mobile-backdrop { opacity: 1; pointer-events: auto; }',
       '  .dsh-mobile-native-trigger {',
-      '    position: fixed; left: 10px; top: 8px; z-index: 9001;',
-      '    width: 40px; height: 40px; padding: 0; margin: 0;',
+      '    position: static; flex: none; width: 32px; height: 30px; padding: 0; margin: 0 2px 0 0;',
       '    border: 0; background: transparent; color: inherit;',
-      '    display: flex; align-items: center; justify-content: center;',
+      '    display: inline-flex; align-items: center; justify-content: center;',
       '    cursor: pointer; -webkit-tap-highlight-color: transparent;',
       '  }',
-      '  .dsh-mobile-native-trigger svg { width: 26px; height: 26px; display: block; }',
+      '  .dsh-mobile-native-trigger svg { width: 22px; height: 22px; display: block; }',
+      '  .dsh-mobile-native-trigger-fallback {',
+      '    position: fixed !important; left: 10px; top: 8px; z-index: 9001;',
+      '    width: 40px; height: 40px;',
+      '  }',
       '  html.' + DRAWER_CLASS + ' .dsh-mobile-native-trigger { display: none !important; }',
+      // 原生 DSH 的侧栏 toggle 会和鲸鱼入口重叠；保留我们的鲸鱼入口，隐藏同槽位的其它按钮。
+      '  [data-slot="conversation.header.leading"] > :not(.dsh-mobile-native-trigger) { display: none !important; }',
       '}',
     ].join('\n');
     document.head.appendChild(style);
@@ -69,7 +76,6 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     fab.className = 'dsh-mobile-native-trigger';
     fab.type = 'button';
     fab.setAttribute('aria-label', '打开侧栏');
-    fab.style.display = 'none';
     document.body.appendChild(backdrop);
     document.body.appendChild(fab);
 
@@ -92,6 +98,23 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     setTimeout(installNativeMark, 300);
     setTimeout(installNativeMark, 1200);
 
+    // 把鲸鱼入口放进 DSH 原生 header leading 槽，跟随原生标题栏布局，避免悬浮/重叠。
+    function placeTrigger() {
+      var leading = document.querySelector('[data-slot="conversation.header.leading"]');
+      if (!leading) {
+        if (fab.parentElement !== document.body) document.body.appendChild(fab);
+        fab.classList.add('dsh-mobile-native-trigger-fallback');
+        return;
+      }
+      fab.classList.remove('dsh-mobile-native-trigger-fallback');
+      if (fab.parentElement !== leading) leading.appendChild(fab);
+      installNativeMark();
+    }
+    placeTrigger();
+    setTimeout(placeTrigger, 300);
+    setTimeout(placeTrigger, 1200);
+    window.setInterval(placeTrigger, 1000);
+
     function isMobile() { return window.innerWidth <= 760; }
     function sidebar() { return document.querySelector('[class*="_sidebarCol"]'); }
     function isOpen() { return document.documentElement.classList.contains(DRAWER_CLASS); }
@@ -106,8 +129,8 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       document.documentElement.classList.add(DRAWER_CLASS);
     }
     function refresh() {
-      if (!isMobile()) { closeDrawer(); fab.style.display = 'none'; return; }
-      fab.style.display = isOpen() ? 'none' : 'flex';
+      if (!isMobile()) { closeDrawer(); }
+      if (fab.dataset.ready !== '1') fab.dataset.ready = '1';
     }
 
     fab.addEventListener('click', function (event) {
@@ -132,15 +155,15 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
           autoTapped.add(sessionRow);
           window.setTimeout(function () {
             try { sessionRow.click(); } catch (e) {}
-          }, 180);
-          window.setTimeout(closeDrawer, 520);
+          }, 150);
+          closeDrawer();
           return;
         }
-        window.setTimeout(closeDrawer, 260);
+        closeDrawer();
         return;
       }
       if (target.closest('.dsh-mobile-native-trigger') || target.closest('.dsh-mobile-backdrop')) return;
-      window.setTimeout(closeDrawer, 260);
+      closeDrawer();
     }, true);
 
     // 左边缘右滑打开 / 抽屉上左滑关闭。
@@ -167,11 +190,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
 
     // SPA 重渲染时保持注入节点存在。
     var observer = new MutationObserver(function () {
-      if (!document.body.contains(fab)) document.body.appendChild(fab);
-      if (!document.body.contains(backdrop)) document.body.appendChild(backdrop);
+      if (!backdrop.isConnected) document.body.appendChild(backdrop);
+      placeTrigger();
       refresh();
     });
-    observer.observe(document.body, { childList: true, subtree: false });
+    observer.observe(document.body, { childList: true, subtree: true });
   }
 
   if (document.readyState === 'loading') {
