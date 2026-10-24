@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.40 | 禁用页面/输入框自动缩放 | ✅ 三层：注入并重设 viewport（maximum-scale=1, user-scalable=no）；输入框/可编辑区 font-size:16px 防止 iOS 聚焦缩放；原生 WKWebView `maximumZoomScale=1` + 关闭 pinch，Android `setSupportZoom(false)`。Release 已安装 | `mobileWebShell.ts`、`modules/dsh-mtls` |
 | 1.39 | 回退“会话单击”相关改动 | ✅ 按用户要求撤销所有试图让会话一次点击进入的代码：移除自动补第二次 click、React `__reactProps.onClick` 直调、会话行特殊处理；保留手机抽屉、鲸鱼入口、关闭隐藏、工作区/设置行为。会话行恢复 DSH 原生行为 | `mobileWebShell.ts` |
 | 1.37 | 会话单击进入（React handler 直调） | ✅ 真机确认 WKWebView 会拦截合成 click（自动补第二次 click 不生效）。改为从会话行 DOM 的 `__reactProps$*.onClick` 直接调用 DSH 自己的 onOpen，跳过合成事件/信任检查；Chrome 验证一次调用即切换会话。Release 已安装 | `mobileWebShell.ts`、Chrome DOM 验证 |
 | 1.36 | 锤鱼入口并入原生 header + 抽屉彻底关闭 | ✅ 鲸鱼按钮不再 fixed 悬浮，改为插入 DSH `conversation.header.leading` 原生槽位（标题自动右移，不再重叠）；隐藏同槽位原生侧栏 toggle；关闭时 sidebar 同时 visibility/opacity 隐藏，点击会话/设置立即关闭（会话仍自动补第二次 click）；Release 已安装，Home 正常 | `mobileWebShell.ts`、Chrome DOM 验证 |
