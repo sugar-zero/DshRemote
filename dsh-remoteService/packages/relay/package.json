@@ -2,13 +2,20 @@
   "name": "dsh-remote-relay",
   "version": "0.1.0",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "type": "module",
   "description": "自托管盲中继：443 TLS 透传（按 SNI 路由）、80 跳转、8443 控制面",
-  "bin": { "dsh-remote-relay": "./bin/relay.js" },
+  "bin": {
+    "dsh-remote-relay": "./bin/relay.js"
+  },
   "scripts": {
     "start": "node bin/relay.js",
     "test": "node --test test"
   },
-  "dependencies": { "ws": "^8.22.0" },
-  "engines": { "node": ">=22" }
+  "dependencies": {
+    "ws": "^8.22.0"
+  },
+  "engines": {
+    "node": ">=22"
+  }
 }

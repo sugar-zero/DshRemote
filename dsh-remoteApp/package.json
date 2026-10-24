@@ -3,6 +3,7 @@
   "version": "0.1.0",
   "main": "index.ts",
   "private": true,
+  "license": "AGPL-3.0-or-later",
   "description": "DSH Remote — Expo/React Native shell for accessing a DSH host over a blind relay with mTLS device certificates",
   "scripts": {
     "start": "expo start",

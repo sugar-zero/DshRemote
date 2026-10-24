@@ -3,21 +3,33 @@
   "version": "0.1.0",
   "type": "module",
   "description": "DSH 远程访问主机插件：设备配对、mTLS 反向代理、自托管盲中继连接、账号行上方入口",
-  "license": "MIT",
+  "license": "AGPL-3.0-or-later",
   "exports": {
     ".": "./index.js",
     "./client": "./client.js",
     "./locale/*.json": "./locale/*.json",
     "./package.json": "./package.json"
   },
-  "files": ["index.js", "client.js", "lib", "cordis.patch.yml", "locale/*.json", "README.md"],
+  "files": [
+    "index.js",
+    "client.js",
+    "lib",
+    "cordis.patch.yml",
+    "locale/*.json",
+    "README.md"
+  ],
   "dependencies": {
     "node-forge": "^1.4.0",
     "qrcode-generator": "^2.0.4"
   },
-  "engines": { "node": ">=22", "dsh": ">=0.2.0" },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.0"
+  },
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
