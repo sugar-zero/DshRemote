@@ -110,7 +110,7 @@ npx expo prebuild --clean
 npx expo run:ios --device
 
 # 3) 之后日常开发只需启动 Metro + dev client
-npx expo start --dev-client
+npx expo start
 ```
 
 首次签名配置（只需一次）：
@@ -345,7 +345,7 @@ $ node <protocol.ts 编译后的 Node 自测>
 
 | 现象 | 原因/处理 |
 |---|---|
-| 启动报 "No bundle URL present" | Metro 没起：`npx expo start --dev-client`；确认 dev client 与 Metro 同一网络。 |
+| 启动报 "No bundle URL present" | Metro 没起：`npx expo start`；确认 dev client 与 Metro 同一网络。 |
 | "当前构建未链接 mTLS 原生模块" | 用的是 Expo Go。`npx expo run:ios` 构建 dev client。 |
 | WebView 一直 403 | 预期：`react-native-webview` 不带客户端证书，或证书未导入/不被主机 CA 信任。见「POC：手动安装设备证书」。 |
 | `pod install` 失败 / 找不到 DSHMTLS | 先 `npx expo prebuild --clean`；确认 `modules/dsh-mtls/expo-module.config.json` 存在且 podspec 在 `ios/` 下。 |

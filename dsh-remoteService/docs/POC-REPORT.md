@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.31 | 移除 expo-dev-client | ✅ `expo-dev-client` 已从 App 依赖移除，重新 prebuild/pod install 后 Release 构建成功；Release 二进制不再包含 DevLauncher/DevMenu 符号，独立安装启动正常（截图 `mockups/ios-release-dsh-ui.png`）；开发改为 `expo start` + Debug 构建 | `dsh-remoteApp/package.json`、`eas.json`、`/tmp/ios-release-nodev.log` |
 | 1.30 | iOS Release 独立运行 | ✅ `xcodebuild -configuration Release` 构建（JS 内嵌 `main.jsbundle`，无 EXDevLauncher 框架）→ 安装、停止 Metro 后启动：无 Expo 开发菜单/调试界面，直接加载真实桌面 DSH；POC 调试 UI 已 `__DEV__` 隐藏；截图 `mockups/ios-release-dsh-ui.png` | `/tmp/ios-release-build.log`、`mockups/ios-release-dsh-ui.png` |
 | 1.29 | 远程 WebView 隐藏 host 管理页 | ✅ 手机 WebView（`?dsh_mobile=1`）不再注册「远程访问」侧栏/设置入口；`/api/remote-access/*` 的 403 是安全边界（远程设备不能管理主机 relay/配对），避免 DSH 管理页误显示「403 中继离线」 | `packages/host-plugin/client.js`、`test/client-smoke.test.js` |
 | 1.28 | 本地 Docker + iPhone 真机 mTLS 端到端 | ✅ **PASS**：iPhone App 扫码配对（设备 `d_example123`「我的 iPhone」）→ Docker relay(443) → 本机 DSH host → 原生 mTLS WebView 加载 DSH UI；App 顶部显示「已连接 · host.local」与 Keychain 身份；截图 `mockups/ios-mtls-dsh-ui.png` | `poc/serve-iphone-local.mjs`、`mockups/ios-mtls-dsh-ui.png`、设备列表/status |
