@@ -1,0 +1,241 @@
+# DSH Remote · 服务器（relay + nginx 生产部署）
+
+本目录负责 **公网服务器** 的编排与配置，是 DSH Remote 三段式架构中的「中继层」：
+
+```
+iPhone App ──mTLS──► <hostId>.relay.example.com:443 ──► nginx / relay ──透传──► 主机插件
+主机插件   ──WSS───► relay.example.com:8443
+```
+
+- **relay 是盲中继**：443 只按 SNI 转发 TLS 字节，不持有主机子域私钥、看不到明文。
+- **主机插件** 才终止 `<hostId>.relay.example.com` 的 TLS，并校验手机设备证书。
+- **relay 控制面** 自己持有 `relay.example.com` 的证书，供主机插件连接 `wss://relay.example.com:8443`。
+
+> 主机插件、App、协议细节见：
+> - [主机插件 README](../dsh-remoteService/packages/host-plugin/README.md)
+> - [App README](../dsh-remoteApp/README.md)
+> - [服务端 monorepo README](../dsh-remoteService/README.md)
+> - [完整部署指南（DNS/acme.sh/主机侧）](../dsh-remoteService/docs/DEPLOY.md)
+
+---
+
+## 1. 目录
+
+```text
+server/
+├── docker-compose.yml            # relay；可选 standalone nginx
+├── .env.example                  # 复制为 .env
+├── nginx/
+│   ├── host-nginx-stream.conf    # 已有宿主机 nginx：443/8443 L4 透传
+│   └── container-nginx.conf      # 专用服务器：compose 内 nginx
+├── data/                         # git ignore：tokens、relay 配置、证书
+└── certs/                        # git ignore：可选挂载证书
+```
+
+---
+
+## 2. 前置条件
+
+| 项 | 说明 |
+|---|---|
+| 域名 | `relay.example.com` + `*.relay.example.com` 都解析到 VPS |
+| VPS | 公网 IPv4；放行 80/443/8443（按需） |
+| Docker | Docker 24+ / Docker Compose v2 |
+| nginx | 宿主机已有 nginx（推荐），或使用 compose 的 standalone nginx |
+| 证书 | relay 控制面证书 `relay.example.com`；主机子域证书在主机侧签发 |
+| DNS | 建议用 DNS-01（Cloudflare/阿里云等）；80 端口由 nginx 管理，不走 HTTP-01 |
+
+DNS 记录：
+
+```text
+relay.example.com        A  <VPS IP>
+*.relay.example.com      A  <VPS IP>
+```
+
+---
+
+## 3. 准备 relay 控制面证书
+
+在服务器（或能写 DNS API 的机器）上签发 `relay.example.com`：
+
+```bash
+export CF_Token="<cloudflare-token>"   # 只给 Zone.DNS Edit
+acme.sh --issue --dns dns_cf -d relay.example.com --keylength ec-256
+
+mkdir -p data/certs/relay.example.com
+acme.sh --install-cert -d relay.example.com \
+  --fullchain-file "$PWD/data/certs/relay.example.com/fullchain.pem" \
+  --key-file       "$PWD/data/certs/relay.example.com/privkey.pem" \
+  --reloadcmd      "docker restart dsh-relay"
+```
+
+> **不要**用这张证书给 `<hostId>.relay.example.com`。主机子域证书在 DSH 主机侧用
+> `scripts/issue-host-cert.sh` 签发，私钥只留在主机。
+
+---
+
+## 4. 启动 relay
+
+```bash
+cd server
+cp .env.example .env
+# 编辑 .env：RELAY_DOMAIN=relay.example.com
+docker compose up -d relay
+docker compose logs -f relay
+```
+
+relay 只监听宿主机回环地址：
+
+| 宿主机端口 | 容器端口 | 用途 |
+|---|---|---|
+| `127.0.0.1:1443` | 443 | 数据面 TLS 透传（给 nginx） |
+| `127.0.0.1:18443` | 8443 | 控制面 WSS（给 nginx） |
+| `127.0.0.1:18080` | 80 | `/healthz`、301（可选） |
+
+公网 443/8443 由 nginx 接管，**不要**把 relay 端口直接暴露到公网。
+
+### 4.1 已有宿主机 nginx（推荐）
+
+把 [`nginx/host-nginx-stream.conf`](nginx/host-nginx-stream.conf) 复制/安装到 nginx：
+
+```bash
+sudo cp nginx/host-nginx-stream.conf /etc/nginx/dsh-relay-stream.conf
+# 在 /etc/nginx/nginx.conf 的 main 上下文（http 外面）加：
+# include /etc/nginx/dsh-relay-stream.conf;
+```
+
+该文件做了两件事：
+
+1. `443` 用 `ssl_preread` 读取 SNI：
+   - `relay.example.com` / `*.relay.example.com` → `127.0.0.1:1443`（relay）
+   - 其它域名 → `127.0.0.1:4433`（你现有 nginx HTTPS server）
+2. `8443` 纯 TCP 转发到 `127.0.0.1:18443`（relay 控制面）。
+
+因此需要把你现有 nginx 的 HTTPS server 从 `listen 443 ssl;` 改到内部端口：
+
+```nginx
+server {
+    listen 127.0.0.1:4433 ssl;
+    server_name example.com www.example.com;
+    # 原有证书配置不变
+}
+```
+
+检查并重载：
+
+```bash
+nginx -t
+sudo nginx -s reload
+curl -s http://127.0.0.1:18080/healthz
+```
+
+> nginx 必须带 `stream` 模块：`nginx -V 2>&1 | grep -- --with-stream`。
+> 如果 nginx 不能加 stream，改用 HAProxy 或给 relay 单独一个公网 IP。
+
+### 4.2 专用服务器：compose 内 nginx
+
+```bash
+# 先把 nginx/container-nginx.conf 里的 relay.example.com 改成你的域名
+docker compose --profile standalone up -d
+```
+
+此时 nginx 容器占用 80/443/8443，不再需要宿主机 nginx；配置同样只做 L4 透传，
+TLS 证书仍由 relay / 主机插件各自持有。
+
+---
+
+## 5. 创建主机 token
+
+```bash
+# 本 compose 用环境变量配置 relay，token CLI 会自动读取容器环境
+docker compose exec relay \
+  node packages/relay/bin/relay.js token create h_ab12cd34
+```
+
+token 会写入 `data/tokens.json`（0600）。同一 hostId 重复 create 会轮换旧 token。
+
+把一次性明文 token 填到 **主机插件设置 → 远程访问 → 中继主机令牌**。
+
+---
+
+## 6. 主机插件配置
+
+在 DSH 主机侧（不是服务器）填写：
+
+| 字段 | 示例 |
+|---|---|
+| 启用远程访问 | 开 |
+| 中继地址 | `wss://relay.example.com:8443` |
+| 中继域名 | `relay.example.com` |
+| 主机 ID | `h_ab12cd34` |
+| 中继主机令牌 | 第 5 步生成的一次性 token |
+| TLS 证书路径 | `~/.dsh/remote-access/certs/fullchain.pem` |
+| TLS 私钥路径 | `~/.dsh/remote-access/certs/privkey.pem` |
+
+主机子域证书覆盖 `h_ab12cd34.relay.example.com`，由主机侧 DNS-01 签发：
+
+```bash
+CF_Token="<token>" ../dsh-remoteService/scripts/issue-host-cert.sh \
+  h_ab12cd34 relay.example.com dns_cf
+```
+
+> 插件每小时检查证书文件变化，续期后自动重建 TLS 监听，不需要重启 DSH。
+
+---
+
+## 7. 健康检查与排障
+
+```bash
+# relay 自身
+curl -s http://127.0.0.1:18080/healthz
+# 期望：{"ok":true,"domain":"relay.example.com","hosts":["h_ab12cd34"]}
+
+# 主机子域 TLS（应看到主机插件自己的证书）
+openssl s_client -connect relay.example.com:443 \
+  -servername h_ab12cd34.relay.example.com </dev/null 2>/dev/null | openssl x509 -noout -subject
+
+# 控制面
+openssl s_client -connect relay.example.com:8443 -servername relay.example.com </dev/null 2>/dev/null | head -5
+```
+
+| 现象 | 检查 |
+|---|---|
+| App 打不开 / 握手失败 | DNS 泛解析；nginx SNI 映射；relay 是否在线；主机子域证书 |
+| 主机插件显示「中继离线」 | `wss://...:8443` 是否被 nginx TCP 透传；token 是否正确 |
+| 8443 能连但证书错误 | relay 控制面证书路径 / `.env` 的 `RELAY_DOMAIN` |
+| 配对后 401/403 | 设备证书是否签发/撤销；主机插件是否启用 |
+| 证书续期不生效 | relay 重启容器；主机插件等一小时或关闭再启用 |
+| nginx reload 后 443 回落到默认站点 | `stream` 未 include / map 顺序 / 现有 HTTPS server 没改到 4433 |
+
+---
+
+## 8. 升级、备份与安全
+
+```bash
+# 升级 relay
+cd server
+docker compose build --pull relay
+docker compose up -d relay
+
+# 备份（不要提交）
+tar czf dsh-relay-backup-$(date +%F).tgz data/tokens.json data/certs data/config 2>/dev/null || true
+```
+
+安全红线：
+
+- [ ] relay 端口只绑定 `127.0.0.1`（由 nginx 对外）
+- [ ] relay 域名 / 主机子域在 nginx 上 **只做 TCP 透传**，不做 HTTP 反代/HTTPS 终止
+- [ ] 私钥只在对应机器：relay 控制面私钥在服务器；主机子域私钥只在主机
+- [ ] `.env`、`data/`、`certs/`、`*.pem` 永远不进 git
+- [ ] 只放行 80/443/8443（以及 SSH），不直接暴露 Docker 端口
+- [ ] 证书续期：acme.sh cron + relay 重启；主机插件自动热加载
+
+---
+
+## 9. 相关文档
+
+- [完整部署指南](../dsh-remoteService/docs/DEPLOY.md)
+- [管理 API 契约](../dsh-remoteService/docs/ADMIN-API.md)
+- [协议与 relay 细节](../dsh-remoteService/packages/relay/README.md)
+- [主机插件 README](../dsh-remoteService/packages/host-plugin/README.md)
+- [根目录 README](../README.md)

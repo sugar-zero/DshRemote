@@ -1,6 +1,12 @@
-# DSH Remote App（POC）
+# DSH Remote App
 
-DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeScript)**，iOS 优先、Android 同步搭骨架。
+DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 优先、Android 同步搭骨架。
+
+> 相关文档：
+> [根目录总览](../README.md) ·
+> [服务器部署](../server/README.md) ·
+> [主机插件](../dsh-remoteService/packages/host-plugin/README.md) ·
+> [服务端 monorepo](../dsh-remoteService/README.md)
 
 它做四件事：
 
@@ -14,36 +20,19 @@ DSH 远程访问（方案 B2）的手机端外壳：**Expo / React Native (TypeS
 
 ---
 
-## ⚠️ 本仓库的交付状态（先读）
+## 当前状态（2026-10-24）
 
-| 项目 | 状态 |
+| 项 | 状态 |
 |---|---|
-| JS/TS 源码、页面、协议、存储、配对骨架 | ✅ 完成 |
-| TypeScript 检查（`npx tsc --noEmit`） | ✅ 通过（exit 0） |
-| Expo 配置校验（`npx expo config --type public`） | ✅ 通过 |
-| 本地 Expo Module 被 Autolinking 识别 | ✅ `expo-modules-autolinking search` 能找到 `dsh-mtls` |
-| 协议解析运行时自测（Node） | ✅ 14/14 通过 |
-| WKWebView 客户端证书机制（macOS 同 API） | ✅ 已验证（`dsh-remoteService`: `npm run poc:webview`） |
-| P-256 CSR 生成（Swift，Secure Enclave 同款 API） | ✅ 生成→host 签发→openssl 链/公钥校验通过（`npm run poc:csr`） |
-| **iOS 原生编译**（Swift / pod install / Xcode） | ❌ **未执行** —— 开发机只有 Command Line Tools，没有 Xcode |
-| **Android 原生编译** | ❌ **未执行** —— 没有 Android SDK |
-| **原生 CSR / Secure Enclave 密钥生成（iOS）** | ✅ 已实现（`modules/dsh-mtls/ios/DSHMTLSCsr.swift`：P-256、Secure Enclave 优先/软件回退、PKCS#10；证书通过 `installCertificate` 装回 Keychain）；⏳ 未在 Xcode 编译 |
-| **Android CSR / 证书安装** | ✅ 源码：`DshMtlsCsr.kt`（AndroidKeyStore P-256 + 手写 PKCS#10 DER）+ `installCertificate`（`setKeyEntry`）；⏳ 无 Android SDK，未编译验证 |
-| **Expo prebuild（iOS/Android）** | ✅ `npx expo prebuild --platform ios/android --no-install` 成功生成原生工程；autolinking 在两端均识别 `dsh-mtls`（未运行 pod install/编译） |
-| **环境就绪检查** | ✅ `npm run check:ios-env` / `check:android-env`（本机如实报告缺失 Xcode/Android SDK） |
-| **真机验收手册** | ✅ [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)：iOS/Android 构建、配对、mTLS、推送、生物识别、撤销、证书轮换验收清单 |
-| **原生源码一致性检查** | ✅ `npm run check:native`：JS bridge ↔ iOS/Android 方法/模块名/关键 API/括号平衡 |
-| **Android 原生 mTLS HTTP** | ✅ 源码：`DshMtlsNetwork.kt`（HttpsURLConnection + X509ExtendedKeyManager）；⏳ 无 Android SDK，未编译验证 |
-| **App 锁（Face ID / Touch ID / 指纹）** | ✅ 源码：`src/lib/appLock.ts` + `LockScreen`；启动/回前台门禁 + 设备页开关（expo-local-authentication） |
-| **设备管理（App）** | ✅ `src/lib/devices.ts`：经 mTLS 隧道读取设备列表/撤销（host 侧已测试）；依赖原生 `requestWithClientCert` |
-| **主机诊断（App）** | ✅ 设备页显示主机版本/域名/TLS 证书到期/relay 连接/设备数（`/__dsh_remote/status`，mTLS） |
-| **安全审计（App）** | ✅ 设备页展示最近审计（`/__dsh_remote/audit`，mTLS，limit≤200） |
-| **原生 mTLS HTTP 客户端（iOS）** | ✅ `DSHMTLSNetwork.swift`（URLSession delegate）；URLSession 客户端证书机制已独立 POC 验证；⏳ 未编译 |
-| 推送（expo-notifications + 注册到 host） | ✅ JS 已接入（`src/lib/notifications.ts`）；⏳ 等原生 `requestWithClientCert` + EAS/APNs 凭据 |
+| iOS Release 构建 / 真机安装 | ✅ 已完成（手动签名 + `devicectl`；无 dev-client/DevMenu） |
+| iOS 原生 mTLS WebView（Secure Enclave 设备证书） | ✅ 真机通过 |
+| 配对 / 设备证书 / 撤销 / 审计 / App 锁 | ✅ 已实现 |
+| Android 源码（mTLS WebView / CSR / Keystore） | ✅ 源码完成；⏳ 未在有 Android SDK 的环境编译 |
+| iOS/Android 推送 | ✅ JS 接入；⏳ 生产 APNs/EAS 凭据待配置 |
+| 手机侧栏抽屉（`?dsh_mobile=1`） | ✅ 已实现；会话点击保持 DSH 原生行为（不自动补点击） |
+| 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
 
-> 因此请不要把本目录当作"已构建、已验证"的产物。原生部分需要在你自己的 Mac（Xcode）上按下面步骤编译，并按「POC 验收清单」逐条验证。
-
----
+> 原生构建需要 macOS + Xcode；本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
 
 ## 目录结构
 

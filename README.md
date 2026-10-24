@@ -1,57 +1,144 @@
-# DSH Remote Access（远程访问）方案评估
+# DSH Remote
 
-> 目标：给 DeepSeek Harness 增加「手机 App 远程访问 + 可自托管服务端 + 强安全 + 账号上方入口」能力，模仿 Codex 那一类体验。
-> 本仓库当前阶段：**方案已确认（B2 + 自托管 relay + 自有域名），POC + MVP 代码/文档/测试完成，等待真机与生产上线验收**。
+给 **DeepSeek Harness (DSH)** 增加手机远程访问能力的自托管方案：
 
-## 先读这一个文件
+- **iPhone/Android App**：扫码配对，用设备证书（Secure Enclave / AndroidKeyStore）通过 mTLS 访问主机。
+- **主机插件**：跑在 DSH 主机上，负责配对、证书、设备管理和到本机 DSH 的反向代理。
+- **自托管 relay**：跑在公网服务器上，只做 TLS 盲转发；看不到明文，也不持有主机私钥。
 
-- **[STATUS.md](STATUS.md)** —— 当前状态 / 可自验命令 / 剩余 3 项人工验收清单（先读这个）
-- **[docs/remote-access-evaluation.zh.md](docs/remote-access-evaluation.zh.md)** —— 完整方案评估（一页结论 / 现状盘点 / 6 个方案对比 / 推荐架构 B / 安全设计 / 入口 UI / 工作量 / 决策清单）
+> 设计目标：**不 fork DSH**、不把 DSH Web 直接暴露公网、支持自建域名/自建服务端。
 
-## 配套材料
+---
 
-| 文件 | 内容 |
-|---|---|
-| [research/codex-reference.md](research/codex-reference.md) | Codex 远程访问事实清单（确认/推断分离）、Happy/Omnara/VibeTunnel 对比、App 与服务端选型、12 个待确认问题 |
-| [research/dsh-architecture.md](research/dsh-architecture.md) | DSH 0.2.1-rc.2 代码测绘：启动/插件/认证/侧栏/API 面，含 file:line 证据 |
-| [research/security.md](research/security.md) | 现有信任模型、13 种「自称 localhost」核对表、22 行威胁表、MUST/SHOULD/NICE、反模式 |
-| [mockups/architecture.png](mockups/architecture.png) | 推荐架构图（方案 B） |
-| [mockups/sidebar-entry.png](mockups/sidebar-entry.png) | 账号行上方入口 + 配对弹窗 UI 稿 |
-
-## 一句话结论
-
-DSH 已有约六成底座（Web 传输/会话/审批/插件/入口/自托管链路），推荐用**外部插件 + 自托管盲中继 + 设备 mTLS 证书 + Expo/WebView App** 实现；不 fork DSH，不直接暴露现有 Web 服务，不建议用「公网反代 + 手机浏览器」的捷径。
-
-## 实施状态（2026-10-19）
-
-方案已确认 **B2 + 自托管 relay + 自有域名**，POC 阶段完成：
-
-| 项 | 状态 |
-|---|---|
-| 服务端 monorepo（protocol / host 插件 / relay / 客户端 UI） | ✅ 实现在 [`dsh-remoteService/`](dsh-remoteService) |
-| 测试 `npm test` | ✅ 58/58 |
-| 本地端到端 POC（真实 `dsh web` + relay + 设备 mTLS + UI/WS） | ✅ PASS，见 [`docs/POC-REPORT.md`](dsh-remoteService/docs/POC-REPORT.md) |
-| 真实 DSH 入口 & 配对弹窗截图 | ✅ [`mockups/live-pairing.png`](mockups/live-pairing.png) |
-| 手机 App 源码（Expo/RN + mTLS 原生模块骨架） | ✅ [`dsh-remoteApp/`](dsh-remoteApp)（原生未编译，需 Xcode） |
-| B2 生产部署文档（域名/DNS-01/证书/运维） | ✅ [`dsh-remoteService/docs/DEPLOY.md`](dsh-remoteService/docs/DEPLOY.md) |
-| WebView mTLS | ✅ macOS WKWebView 已验证（同一 iOS API）；⏳ iOS 真机待 Xcode |
-| 真机验收手册/环境检查 | ✅ `dsh-remoteApp/docs/ACCEPTANCE.md` + `npm run check:ios-env` / `check:android-env` |
-| 推送 host/relay 链路 / 安全加固 | ✅ 已实现 + 测试 |
-| Docker relay 端到端（真实容器 + host + mTLS） | ✅ `npm run poc:docker` |
-| 部署自检成功/失败双路径 | ✅ `npm run poc:deploy` / `check-deploy.sh` |
-| 真机环境检查 / prebuild / 验收手册 | ✅ `dsh-remoteApp` check:* / prebuild / [`docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) |
-| 原生 Secure Enclave CSR + mTLS HTTP（iOS 源码 + POC） | ✅ `npm run poc:csr` / `poc:webview`（含 URLSession）通过；⏳ Xcode 编译/真机 |
-| Android CSR（源码） | ✅ Keystore P-256 + PKCS#10 源码；⏳ 无 SDK 未编译 |
-| Android 原生 mTLS HTTP（源码） | ✅ HttpsURLConnection + KeyManager；⏳ 无 SDK 未编译 |
-
-快速验收：`cd dsh-remoteService && npm install && npm test && node poc/run-poc.js`
-
-## 目录约定（实施时）
+## 架构
 
 ```
-dsh-remoteService/   # pnpm monorepo：DSH host 插件 + 自托管 relay + 共享协议 + docker 部署
-dsh-remoteApp/       # Expo/React Native App（iOS 优先）
-docs/                # 方案/设计/部署文档
-mockups/             # UI 与架构稿
-research/            # 预研材料（已完成）
+┌──────────────┐        mTLS 客户端证书         ┌─────────────────────┐
+│  手机 App     │ ─────────────────────────────► │  nginx / relay:443   │
+│  WebView     │   https://<hostId>.<domain>    │  TLS 盲透传（SNI）    │
+└──────────────┘                                 └──────────┬──────────┘
+                                                            │ TLS 原样转发
+                                                            ▼
+                                                 ┌─────────────────────┐
+                                                 │  主机插件（DSH 主机） │
+                                                 │  终止 TLS + 校验设备  │
+                                                 │  反代到 127.0.0.1 DSH │
+                                                 └─────────────────────┘
+        ▲
+        │ wss://relay:8443（控制面）
+        └──────────── 主机插件 ↔ relay
 ```
+
+- 手机拿到 `dshremote://pair?...` 二维码后配对，获得设备证书。
+- App 用证书访问 `<hostId>.<relayDomain>`，主机插件校验后反代到本机 DSH。
+- relay 只按 SNI 转发 TLS 字节；主机子域证书和私钥只在主机。
+
+---
+
+## 从这里开始
+
+| 我想… | 去这里 |
+|---|---|
+| 部署公网 relay + nginx + 证书 | **[server/README.md](server/README.md)** |
+| 在 DSH 主机安装/配置远程访问插件 | **[dsh-remoteService/packages/host-plugin/README.md](dsh-remoteService/packages/host-plugin/README.md)** |
+| 构建/运行手机 App | **[dsh-remoteApp/README.md](dsh-remoteApp/README.md)** |
+| 了解服务端 monorepo / relay 协议 / 管理 API | **[dsh-remoteService/README.md](dsh-remoteService/README.md)** |
+| 看完整部署细节（DNS-01、acme.sh、主机证书、运维） | **[dsh-remoteService/docs/DEPLOY.md](dsh-remoteService/docs/DEPLOY.md)** |
+| 看方案评估、威胁模型、Codex/Happy 对比 | **[docs/remote-access-evaluation.zh.md](docs/remote-access-evaluation.zh.md)** |
+| 看 POC 验收记录/截图 | **[dsh-remoteService/docs/POC-REPORT.md](dsh-remoteService/docs/POC-REPORT.md)**、[STATUS.md](STATUS.md) |
+| 看当前真机/构建状态 | **[STATUS.md](STATUS.md)** |
+
+### 服务器如何配置（摘要）
+
+1. 域名：`relay.example.com` 和 `*.relay.example.com` 都解析到 VPS。
+2. 证书：
+   - relay 控制面证书（`relay.example.com`）放在服务器 `server/data/certs/`；
+   - 主机子域证书（`<hostId>.relay.example.com`）在 **DSH 主机** 上签发，填到插件设置里。
+3. `server/docker-compose.yml` 启动 relay；已有宿主机 nginx 时用 `server/nginx/host-nginx-stream.conf` 做 443/8443 的 **L4 TCP 透传**（不要做 HTTPS 终止）。
+4. relay 端 `token create` 生成主机 token，填到主机插件。
+5. 手机 App 扫码配对，访问 `https://<hostId>.relay.example.com/`。
+
+完整步骤、nginx 配置、Docker 端口、排障与安全清单：[**server/README.md**](server/README.md)。
+
+---
+
+## 仓库结构
+
+```
+DshRemote/
+├── server/                     # 公网服务器：relay compose + nginx 透传配置
+├── dsh-remoteService/          # 服务端 monorepo
+│   ├── packages/protocol/      #   配对 URI/SAS、relay 控制协议、二进制帧、管理 API 常量
+│   ├── packages/host-plugin/   #   DSH 主机插件（Host 半 + Client 半）
+│   ├── packages/relay/         #   自托管盲中继（443 透传 / 8443 控制面 / token CLI）
+│   ├── scripts/                #   DNS-01 主机证书、部署自检
+│   └── docs/                   #   DEPLOY / ADMIN-API / POC-REPORT
+├── dsh-remoteApp/              # Expo / React Native App（iOS 优先，含原生 mTLS 模块）
+├── docs/                       # 方案评估与设计
+├── mockups/                    # UI / 架构稿 / 真机截图
+├── research/                   # Codex/DSH 预研材料
+└── STATUS.md                   # 当前实施状态与剩余验收项
+```
+
+---
+
+## 两分钟跑通（开发/POC）
+
+```bash
+# 1) 服务端依赖 + 单元/端到端 POC（需要 dsh CLI）
+cd dsh-remoteService
+npm install
+npm test
+node poc/run-poc.js
+
+# 2) 服务器编排（VPS）
+cd ../server
+cp .env.example .env        # 改 RELAY_DOMAIN
+docker compose up -d relay
+
+# 3) App
+cd ../dsh-remoteApp
+npm install
+npx expo prebuild --clean
+npx expo run:ios --device   # 或 run:android
+```
+
+生产证书、nginx、DNS 和 main 机插件配置不要跳过：
+先读 [server/README.md](server/README.md) 与 [host-plugin README](dsh-remoteService/packages/host-plugin/README.md)。
+
+---
+
+## 安全模型（摘要）
+
+- **设备身份 = mTLS 客户端证书**，私钥只在 Secure Enclave / AndroidKeyStore。
+- **relay 是盲管道**：只按 SNI 转发 TLS，不持有主机子域证书、看不到明文。
+- **主机插件终止主机 TLS**，校验设备证书后反代到 `127.0.0.1` 的 DSH Web。
+- DSH Web 不直接暴露公网，不关闭认证，不使用 `--trusted-host`。
+- 配对密钥一次性、短时有效；设备可撤销；管理 API 只允许本机已认证浏览器。
+- 不要用 nginx 对 relay 域名做 HTTPS 终止/HTTP 反代；必须 L4 透传（原因见 server/README）。
+
+---
+
+## 开发与测试
+
+```bash
+cd dsh-remoteService
+npm test
+npm run validate:artifacts
+node poc/run-poc.js
+npm run poc:docker
+
+cd ../dsh-remoteApp
+npx tsc --noEmit
+npm run check:native
+npm run check:ios-env
+```
+
+> 当前 App 已包含原生 mTLS WebView、配对、设备管理、推送注册和手机侧栏适配；
+> 真机签名/构建步骤见 [dsh-remoteApp/README.md](dsh-remoteApp/README.md)。
+
+---
+
+## 许可
+
+源码采用 MIT License；第三方依赖遵循各自许可证。

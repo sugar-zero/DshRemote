@@ -1,7 +1,18 @@
 # dsh-remoteService（方案 B2 · 服务端 monorepo）
 
 DSH 远程访问的服务端实现：**自托管盲中继 + 主机插件（mTLS 反向代理）+ 共享协议**。
-配套手机 App 在 [`../dsh-remoteApp`](../dsh-remoteApp)。评估与设计见 [`../docs/remote-access-evaluation.zh.md`](../docs/remote-access-evaluation.zh.md)。
+配套手机 App 在 [`../dsh-remoteApp`](../dsh-remoteApp)；公网服务器编排在 [`../server`](../server)；评估与设计见 [`../docs/remote-access-evaluation.zh.md`](../docs/remote-access-evaluation.zh.md)。
+
+## 快速导航
+
+| 内容 | 文档 |
+|---|---|
+| 公网 relay + nginx 部署 | [`../server/README.md`](../server/README.md) |
+| 主机插件安装与配置 | [`packages/host-plugin/README.md`](packages/host-plugin/README.md) |
+| 手机 App | [`../dsh-remoteApp/README.md`](../dsh-remoteApp/README.md) |
+| 完整部署细节（DNS-01 / 证书 / 运维） | [`docs/DEPLOY.md`](docs/DEPLOY.md) |
+| 管理 API 契约 | [`docs/ADMIN-API.md`](docs/ADMIN-API.md) |
+| 根目录总览 | [`../README.md`](../README.md) |
 
 ```
 packages/protocol/     # 配对 URI/SAS/12 位码、relay 控制消息、二进制流帧、管理 API 常量
