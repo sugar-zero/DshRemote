@@ -51,3 +51,8 @@ modules/dsh-mtls/android/.gradle/
 *.mobileprovision
 secrets/
 *.dshpair
+
+# Apple signing material — never commit
+../Certificates/
+*.p8
+*.mobileprovision

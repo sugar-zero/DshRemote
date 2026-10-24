@@ -77,23 +77,29 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 
 ## 待人工执行（需要外部环境）
 
-### A. iOS 真机验收（Xcode 已安装，待完成系统授权 + CocoaPods + 连接设备）
+### A. iOS 真机验收（Xcode 环境已就绪，待解锁/连接 iPhone 安装）
 
-当前已检测到：Xcode 27.1（`/Applications/Xcode.app`）、iOS 原生工程已由 `expo prebuild` 生成。
-仍需在 Mac 终端执行（需要管理员密码）：
+当前状态：
+- ✅ Xcode 27.1、license、xcode-select、iPhoneOS SDK 均就绪
+- ✅ CocoaPods 1.17.0，`pod install` 成功
+- ✅ iOS 原生工程（`dsh-remoteApp/ios/`）已生成，bundle ID = `com.amesucre.dshremote`
+- ✅ **无签名 generic iOS 编译已通过**（`xcodebuild ... BUILD SUCCEEDED`，含本地 Swift mTLS 模块）
+- ✅ 开发证书 + `DshRemote.mobileprovision`（含 `aps-environment=development`）已安装到本机
+- ⏳ 已配对 iPhone「iPhone」当前处于锁定状态，`xcodebuild` 提示需要解锁才能启用开发服务
+
+剩余步骤：
 
 ```bash
-sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
-sudo xcodebuild -license accept
-brew install cocoapods        # 或 sudo gem install cocoapods
-```
-
-连接 iPhone（USB + 信任此电脑）后：
-
-```bash
-cd dsh-remoteApp
-npm run check:ios-env                 # 必须先全绿
-npx expo run:ios --device
+# 1) 解锁 iPhone 并保持亮屏，USB 连接/信任此电脑
+# 2) 确认设备可用
+xcrun devicectl list devices
+# 3) 构建并安装（签名）
+cd dsh-remoteApp/ios
+xcodebuild -workspace DSHRemote.xcworkspace -scheme DSHRemote -configuration Debug \
+  -destination 'id=<IPHONE_UDID>' \
+  -derivedDataPath /tmp/dsh-ios-device \
+  DEVELOPMENT_TEAM=<TEAM_ID> CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates build
+# 4) 或直接用 Expo：npx expo run:ios --device
 ```
 按 [`dsh-remoteApp/docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) 执行并记录：
 配对/桌面确认、WebView mTLS、Secure Enclave 身份、推送、App 锁、撤销断链、证书轮换。

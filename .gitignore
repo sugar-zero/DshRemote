@@ -8,3 +8,8 @@ poc/tmp/
 dist/
 build/
 *.tgz
+
+# Apple signing material — never commit
+Certificates/
+*.p8
+*.mobileprovision

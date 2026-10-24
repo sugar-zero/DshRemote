@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.24 | iOS 原生编译 | ✅ Xcode 27.1 + CocoaPods 1.17：`xcodebuild` **generic iOS BUILD SUCCEEDED**（含本地 Swift mTLS/CSR/WebView 模块，无签名）；修复了 Secure Enclave 证书安装（iOS 无 `SecIdentityCreateWithCertificate`）、证书到 DER notAfter 解析、WKUserContentController 脚本移除三处编译错误。⏳ 真机安装被 iPhone 锁定阻塞 | `dsh-remoteApp/modules/dsh-mtls/ios/`、`/tmp/ios-build3.log` |
 | 1.23 | App 安全审计视图 | ✅ host `GET /__dsh_remote/audit`（mTLS，limit 1–200）→ App 设备页展示最近 10 条；host 测试覆盖 200 与无证书 403 | `packages/host-plugin/lib/server.js`、`dsh-remoteApp/src/lib/devices.ts`、`DevicesScreen` |
 | 1.22 | Expo prebuild 验证 | ✅ iOS/Android `expo prebuild --no-install` 均成功生成原生工程；`expo-modules-autolinking search` 两端都识别本地模块 `dsh-mtls`（未执行 pod install/Gradle 编译） | `dsh-remoteApp` README、`docs/ACCEPTANCE.md` |
 | 1.21 | 真机环境检查 + 验收手册 | ✅ `dsh-remoteApp`: `npm run check:ios-env` / `check:android-env` 如实报告本机缺失 Xcode/Android SDK 并给出修复命令；`docs/ACCEPTANCE.md` 覆盖构建/配对/mTLS/推送/生物识别/撤销/证书轮换验收步骤 | `dsh-remoteApp/scripts/check-*-env.sh`、`dsh-remoteApp/docs/ACCEPTANCE.md` |

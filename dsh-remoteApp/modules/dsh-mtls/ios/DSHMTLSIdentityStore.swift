@@ -121,21 +121,12 @@ final class DSHMTLSIdentityStore {
     if certStatus != errSecSuccess && certStatus != errSecDuplicateItem {
       throw DSHMTLSIdentityError.keychainWriteFailed(certStatus)
     }
-    var identity: SecIdentity?
-    let identityStatus = SecIdentityCreateWithCertificate(nil, certificate, &identity)
-    guard identityStatus == errSecSuccess, let identity else {
-      throw DSHMTLSIdentityError.missingPrivateKey(identityStatus)
-    }
-    if self.identity(label: label) == nil {
-      let identityQuery: [String: Any] = [
-        kSecValueRef as String: identity,
-        kSecAttrLabel as String: label,
-        kSecAttrAccessible as String: kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-      ]
-      let identityAddStatus = SecItemAdd(identityQuery as CFDictionary, nil)
-      if identityAddStatus != errSecSuccess && identityAddStatus != errSecDuplicateItem {
-        throw DSHMTLSIdentityError.keychainWriteFailed(identityAddStatus)
-      }
+    // iOS 没有 SecIdentityCreateWithCertificate（macOS-only）。
+    // 证书与私钥都在同一个 Keychain 后，identity 由系统合成，直接按 label 查询；
+    // 如果 label 未关联上，则扫描所有 identity 按证书 DER 精确匹配。
+    let leafData = SecCertificateCopyData(certificate) as Data
+    guard findIdentity(label: label, certificateData: leafData) != nil else {
+      throw DSHMTLSIdentityError.missingPrivateKey(errSecItemNotFound)
     }
     let encodedChain = [certificate].map { certificate -> String in
       (SecCertificateCopyData(certificate) as Data).base64EncodedString()
@@ -143,6 +134,26 @@ final class DSHMTLSIdentityStore {
     UserDefaults.standard.set(encodedChain, forKey: certificateChainKeyPrefix + label)
     configuredLabel = label
     return diagnostics(label: label)
+  }
+
+  /// 在 Keychain 中按 label（优先）或证书 DER（回退）查找设备 identity。
+  private func findIdentity(label: String, certificateData: Data) -> SecIdentity? {
+    if let byLabel = identity(label: label) { return byLabel }
+    let query: [String: Any] = [
+      kSecClass as String: kSecClassIdentity,
+      kSecReturnRef as String: true,
+      kSecMatchLimit as String: kSecMatchLimitAll
+    ]
+    var result: CFTypeRef?
+    guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess else { return nil }
+    guard let result, let candidates = result as? [SecIdentity] else { return nil }
+    for candidate in candidates {
+      var certificate: SecCertificate?
+      guard SecIdentityCopyCertificate(candidate, &certificate) == errSecSuccess,
+            let certificate else { continue }
+      if SecCertificateCopyData(certificate) as Data == certificateData { return candidate }
+    }
+    return nil
   }
 
   /// PEM → DER（只接受单证书 PEM；忽略头尾行）。
@@ -251,24 +262,57 @@ final class DSHMTLSIdentityStore {
     ]
   }
 
-  /// POC: parse `notAfter` via SecCertificateCopyValues (best effort).
+  /// 从证书 DER 解析 notAfter（iOS 没有 macOS 的 SecCertificateCopyValues）。
   private func expiryDateString(for certificate: SecCertificate) -> String? {
-    guard
-      let values = SecCertificateCopyValues(
-        certificate,
-        [kSecOIDX509V1ValidityNotAfter] as CFArray,
-        nil
-      ) as? [String: [String: Any]],
-      let entry = values[kSecOIDX509V1ValidityNotAfter as String],
-      let raw = entry[kSecPropertyKeyValue as String] as? Double
-    else {
-      return nil
+    let data = SecCertificateCopyData(certificate) as Data
+    var offset = 0
+    guard let certificateSeq = Self.readTLV(data, &offset), certificateSeq.tag == 0x30 else { return nil }
+    var tbsOffset = 0
+    guard let tbs = Self.readTLV(certificateSeq.content, &tbsOffset), tbs.tag == 0x30 else { return nil }
+    var cursor = 0
+    // 可选 [0] version
+    guard var item = Self.readTLV(tbs.content, &cursor) else { return nil }
+    if item.tag == 0xA0 { guard let next = Self.readTLV(tbs.content, &cursor) else { return nil }; item = next }
+    // serialNumber, signatureAlgorithm, issuer
+    for _ in 0..<3 { guard let next = Self.readTLV(tbs.content, &cursor) else { return nil }; item = next }
+    // validity SEQUENCE { notBefore, notAfter }
+    guard let validity = Self.readTLV(tbs.content, &cursor), validity.tag == 0x30 else { return nil }
+    var validityCursor = 0
+    guard Self.readTLV(validity.content, &validityCursor) != nil,
+          let notAfter = Self.readTLV(validity.content, &validityCursor),
+          notAfter.tag == 0x17 || notAfter.tag == 0x18,
+          let text = String(data: notAfter.content, encoding: .utf8) else { return nil }
+    // UTCTime: YYMMDDHHMMSSZ；GeneralizedTime: YYYYMMDDHHMMSSZ
+    let dateText = text.count == 13 ? "20\(text)" : text
+    let formatter = DateFormatter()
+    formatter.locale = Locale(identifier: "en_US_POSIX")
+    formatter.timeZone = TimeZone(identifier: "UTC")
+    formatter.dateFormat = "yyyyMMddHHmmss'Z'"
+    guard let date = formatter.date(from: dateText) else { return nil }
+    let iso = ISO8601DateFormatter()
+    iso.formatOptions = [.withInternetDateTime]
+    return iso.string(from: date)
+  }
+
+  private struct TLV { let tag: UInt8; let content: Data }
+
+  private static func readTLV(_ data: Data, _ offset: inout Int) -> TLV? {
+    guard offset < data.count else { return nil }
+    let tag = data[offset]; offset += 1
+    guard offset < data.count else { return nil }
+    let first = Int(data[offset]); offset += 1
+    var length = 0
+    if first & 0x80 == 0 {
+      length = first
+    } else {
+      let count = first & 0x7F
+      guard count > 0, offset + count <= data.count else { return nil }
+      for _ in 0..<count { length = (length << 8) | Int(data[offset]); offset += 1 }
     }
-    // SecCertificateCopyValues returns seconds since 2001-01-01 (CFAbsoluteTime).
-    let date = Date(timeIntervalSinceReferenceDate: raw)
-    let formatter = ISO8601DateFormatter()
-    formatter.formatOptions = [.withInternetDateTime]
-    return formatter.string(from: date)
+    guard length >= 0, offset + length <= data.count else { return nil }
+    let content = data.subdata(in: offset..<(offset + length))
+    offset += length
+    return TLV(tag: tag, content: content)
   }
 
   private static var nativeBuild: String {

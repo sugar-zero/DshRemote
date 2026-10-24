@@ -119,10 +119,10 @@ npx expo start --dev-client
 open ios/*.xcworkspace     # 在 Xcode 中打开
 # 选择 target → Signing & Capabilities
 #   Team: 你的 Apple Developer Team
-#   Bundle Identifier: com.dsh.remote（占位符，可改成你自己的，需与 Team 匹配）
+#   Bundle Identifier: com.amesucre.dshremote（已与注册的 App ID 对齐）
 ```
 
-> `bundleIdentifier` / `android.package` 目前是占位符 `com.dsh.remote`，上架或使用个人 Team 时请改成唯一值（`app.json` 一处修改，重新 `prebuild --clean`）。
+> `bundleIdentifier` / `android.package` 已固定为 `com.amesucre.dshremote`，与 Apple Developer 注册的 App ID `<TEAM_ID>.com.amesucre.dshremote` 一致。
 
 Android（结构已就绪，未在本机验证）：
 
@@ -141,8 +141,8 @@ npx expo run:android --device
 |---|---|---|
 | `name` / `slug` | `DSH Remote` / `dsh-remote` | 显示名 / EAS slug |
 | `scheme` | `dshremote` | 与二维码 URI 一致；未来可处理深链 |
-| `ios.bundleIdentifier` | `com.dsh.remote` | **占位符** |
-| `android.package` | `com.dsh.remote` | **占位符** |
+| `ios.bundleIdentifier` | `com.amesucre.dshremote` | 已注册 App ID |
+| `android.package` | `com.amesucre.dshremote` | 与 iOS 对齐 |
 | `ios.infoPlist.ITSAppUsesNonExemptEncryption` | `false` | 仅标准 TLS/证书，免出口合规文档 |
 | `plugins` | expo-camera / expo-secure-store / expo-local-authentication / expo-notifications / expo-build-properties | 权限文案与 iOS 16.4 部署目标 |
 | `extra.dshRemote.relayDomain` | `relay.example.com` | 仅文档/POC 提示用，实际域名来自配对 URI |

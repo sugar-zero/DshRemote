@@ -115,6 +115,9 @@ npx expo run:android --device
 推送需要：
 
 1. Apple Developer 账号 → APNs key（.p8）或 EAS 托管凭据；
+   - 本机签名材料位于 `Certificates/`（已被 `.gitignore` 忽略）：`AuthKey_<APNS_KEY_ID>.p8`、`DshRemote.mobileprovision`、`development.cer`
+   - Team ID：`<TEAM_ID>`；App ID：`<TEAM_ID>.com.amesucre.dshremote`
+   - 注意：当前 provisioning profile 到期日为 **2026-10-31**，过期前需在 Apple Developer / Xcode 重新生成；
 2. `eas init` 生成 EAS `projectId`，写入 `app.json` 的 `extra.eas.projectId`；
 3. Android：Firebase 项目 + `google-services.json`（`npx expo install expo-notifications` 已配置插件）；
 4. 服务端 relay 的 `RELAY_PUSH_*` 配置（默认 Expo Push endpoint）。
@@ -126,6 +129,8 @@ Host 端 token 注册接口：`POST /__dsh_remote/push-token`（mTLS），App �
 
 | 项目 | 结果 | 证据（截图/日志） |
 |---|---|---|
+| iOS 编译（generic，无签名） | ✅ BUILD SUCCEEDED（2026-10-24） | /tmp/ios-build3.log |
+| iOS 真机安装/启动 | ⏳ 设备锁定时 xcodebuild 无法启用开发服务 | 需解锁 iPhone |
 | iOS WebView mTLS | | |
 | Secure Enclave 身份（identityPresent） | | |
 | 配对 + 桌面确认 | | |
