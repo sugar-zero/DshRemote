@@ -84,8 +84,10 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   }
 
   func applyInjectedJavaScript(_ script: String?) {
-    if let existing = userScript {
-      webView.configuration.userContentController.removeUserScript(existing)
+    if userScript != nil {
+      // iOS 的 WKUserContentController 没有 removeUserScript；这个 WebView 只注入
+      // 我们自己的脚本，直接清空后重新添加。
+      webView.configuration.userContentController.removeAllUserScripts()
       userScript = nil
     }
     guard let script, !script.isEmpty else { return }
