@@ -1,0 +1,33 @@
+# ============================================================================
+# 模板 C：可选叠加 nginx 容器（专用服务器，不依赖宿主机 nginx）
+#
+# 与模板 A/B 叠加使用：
+#   使用已有镜像：
+#     docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+#
+#   从源码构建：
+#     docker compose -f docker-compose.build.yml -f docker-compose.nginx.yml up -d --build
+#
+# 使用前把 nginx/container-nginx.conf 里的 relay.example.com 改成你的域名。
+# nginx 只做 TLS 透传，不需要挂载证书；证书由 relay / 主机插件各自持有。
+# ============================================================================
+
+services:
+  nginx:
+    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
+    container_name: dsh-nginx
+    restart: unless-stopped
+    depends_on:
+      relay:
+        condition: service_healthy
+    ports:
+      - "80:80"
+      - "443:443"
+      - "8443:8443"
+    volumes:
+      - ./nginx/container-nginx.conf:/etc/nginx/nginx.conf:ro
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

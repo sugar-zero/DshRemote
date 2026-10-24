@@ -23,7 +23,9 @@ iPhone App ──mTLS──► <hostId>.relay.example.com:443 ──► nginx / 
 
 ```text
 server/
-├── docker-compose.yml            # relay；可选 standalone nginx
+├── docker-compose.yml            # 模板 A：使用已有 relay 镜像
+├── docker-compose.build.yml      # 模板 B：从源码构建 relay 镜像
+├── docker-compose.nginx.yml      # 模板 C：可选叠加 nginx 容器
 ├── .env.example                  # 复制为 .env
 ├── nginx/
 │   ├── host-nginx-stream.conf    # 已有宿主机 nginx：443/8443 L4 透传
@@ -74,15 +76,36 @@ acme.sh --install-cert -d relay.example.com \
 
 ---
 
-## 4. 启动 relay
+## 4. 启动 relay（三份模板按需选择）
 
 ```bash
 cd server
 cp .env.example .env
-# 编辑 .env：RELAY_DOMAIN=relay.example.com
-docker compose up -d relay
+# 编辑 .env：RELAY_DOMAIN / 端口 / DSH_RELAY_IMAGE
+```
+
+| 场景 | 使用文件 | 命令 |
+|---|---|---|
+| **已有镜像**（离线/生产推荐） | `docker-compose.yml` | `docker compose up -d relay` |
+| **纯源码编译** | `docker-compose.build.yml` | `docker compose -f docker-compose.build.yml up -d --build` |
+| 已有镜像 + 内置 nginx | `docker-compose.yml` + `docker-compose.nginx.yml` | `docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d` |
+| 编译 + 内置 nginx | `docker-compose.build.yml` + `docker-compose.nginx.yml` | `docker compose -f docker-compose.build.yml -f docker-compose.nginx.yml up -d --build` |
+
+已有镜像的先加载：
+
+```bash
+docker load -i dsh-relay-0.1.0-linux-amd64.tar
+```
+
+查看日志：
+
+```bash
 docker compose logs -f relay
 ```
+
+> 镜像默认 CMD 带 `--config /data/config/relay.json`；本模板已用
+> `command: ["node", "packages/relay/bin/relay.js"]` 覆盖为纯环境变量模式，
+> 不需要准备 `data/config/relay.json`。
 
 relay 只监听宿主机回环地址：
 
@@ -93,6 +116,23 @@ relay 只监听宿主机回环地址：
 | `127.0.0.1:18080` | 80 | `/healthz`、301（可选） |
 
 公网 443/8443 由 nginx 接管，**不要**把 relay 端口直接暴露到公网。
+
+### 4.0 需要映射哪些目录
+
+relay 容器**只需要映射 `/data`**：
+
+| 宿主机路径 | 容器路径 | 内容 |
+|---|---|---|
+| `./data` | `/data` | `certs/`、`tokens.json`（以及可选的 `config/`） |
+
+不需要挂载源代码、`node_modules`、`.env` 或 nginx 配置：代码/依赖已打进镜像，
+`.env` 由 Docker Compose 在宿主机读取并注入环境变量。
+
+如果使用 `docker-compose.nginx.yml` 叠加 nginx 容器，额外挂载：
+
+| 宿主机路径 | 容器路径 | 内容 |
+|---|---|---|
+| `./nginx/container-nginx.conf` | `/etc/nginx/nginx.conf` | nginx 配置（只读） |
 
 ### 4.1 已有宿主机 nginx（推荐）
 
@@ -136,7 +176,11 @@ curl -s http://127.0.0.1:18080/healthz
 
 ```bash
 # 先把 nginx/container-nginx.conf 里的 relay.example.com 改成你的域名
-docker compose --profile standalone up -d
+# 已有镜像：
+docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
+
+# 或从源码构建：
+docker compose -f docker-compose.build.yml -f docker-compose.nginx.yml up -d --build
 ```
 
 此时 nginx 容器占用 80/443/8443，不再需要宿主机 nginx；配置同样只做 L4 透传，
@@ -212,10 +256,13 @@ openssl s_client -connect relay.example.com:8443 -servername relay.example.com <
 ## 8. 升级、备份与安全
 
 ```bash
-# 升级 relay
+# 升级 relay（使用已有镜像）
 cd server
-docker compose build --pull relay
-docker compose up -d relay
+docker load -i dsh-relay-新版本-linux-amd64.tar
+docker compose up -d --force-recreate relay
+
+# 或从源码重新构建
+docker compose -f docker-compose.build.yml up -d --build relay
 
 # 备份（不要提交）
 tar czf dsh-relay-backup-$(date +%F).tgz data/tokens.json data/certs data/config 2>/dev/null || true

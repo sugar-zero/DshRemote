@@ -1,31 +1,29 @@
-# DSH Remote 生产服务器编排：自托管盲中继（relay）
+# ============================================================================
+# 模板 A：使用「已有 relay 镜像」部署（默认）
 #
-# 默认只启动 relay（适合服务器上已有 nginx 的情况）：
+# 生产/离线环境先把镜像 load 进来：
+#   docker load -i dsh-relay-0.1.0-linux-amd64.tar
+#
+# 启动：
+#   cp .env.example .env
+#   # 编辑 .env（RELAY_DOMAIN / 端口）
 #   docker compose up -d relay
-# relay 只绑定 127.0.0.1 的回环端口，由宿主机 nginx 做 443/8443 的 TCP 透传。
 #
-# 如果这是一台专用服务器、想让 compose 连 nginx 一起起：
-#   docker compose --profile standalone up -d
-# nginx 容器会占用 80/443/8443；此时不要再在本机起第二个 nginx。
+# 可选叠加 nginx 容器（专用服务器）：
+#   docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d
 #
-# 证书/数据目录（不提交到 git）：
-#   data/config/relay.json             可选；本文件用环境变量代替
-#   data/certs/<relay-domain>/fullchain.pem   relay 控制面证书
-#   data/certs/<relay-domain>/privkey.pem
-#   data/tokens.json                   token create 后生成
-#
-# 详细步骤见 server/README.md。
+# 需要在本机从源码构建镜像时，改用 docker-compose.build.yml。
+# ============================================================================
 
 name: dsh-remote-server
 
 services:
   relay:
-    build:
-      # 复用 dsh-remoteService 的 relay Dockerfile
-      context: ../dsh-remoteService
-      dockerfile: packages/relay/Dockerfile
     image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.1.0}
     container_name: dsh-relay
+    # 镜像默认 CMD 带 --config /data/config/relay.json；本模板用环境变量
+    # 配置 relay，这里覆盖 CMD，不需要准备 relay.json。
+    command: ["node", "packages/relay/bin/relay.js"]
     restart: unless-stopped
     ports:
       # 只给宿主机 nginx 用；不要直接暴露公网
@@ -53,27 +51,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 10s
-    logging:
-      driver: json-file
-      options:
-        max-size: "10m"
-        max-file: "3"
-
-  # 可选：专用服务器自带 nginx。已有宿主机 nginx 时不要启用这个 profile。
-  nginx:
-    image: ${NGINX_IMAGE:-nginx:1.27-alpine}
-    profiles: ["standalone"]
-    container_name: dsh-nginx
-    restart: unless-stopped
-    depends_on:
-      relay:
-        condition: service_healthy
-    ports:
-      - "80:80"
-      - "443:443"
-      - "8443:8443"
-    volumes:
-      - ./nginx/container-nginx.conf:/etc/nginx/nginx.conf:ro
     logging:
       driver: json-file
       options:
