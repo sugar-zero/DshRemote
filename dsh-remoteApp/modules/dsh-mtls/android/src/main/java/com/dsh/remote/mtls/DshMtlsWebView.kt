@@ -89,6 +89,11 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
     injectedJavaScript = script
   }
 
+  fun applyJsCommand(command: String?) {
+    if (command.isNullOrEmpty()) return
+    webView.evaluateJavascript(command, null)
+  }
+
   /** Bridge exposed to the page as `window.dshMtlsBridge`. */
   private class Bridge(private val onMessage: (String) -> Unit) {
     @JavascriptInterface

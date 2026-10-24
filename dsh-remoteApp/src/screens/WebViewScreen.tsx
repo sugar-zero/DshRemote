@@ -30,7 +30,7 @@
  * └─────────────────────────────────────────────────────────────────────────┘
  */
 
-import { useCallback, useMemo, useRef, useState, type ComponentType, type Ref } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type Ref } from 'react';
 import {
   ActivityIndicator,
   Linking,
@@ -46,6 +46,8 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { webUiUrl } from '../lib/protocol';
 import { MOBILE_WEB_SHELL_JS } from '../lib/mobileWebShell';
+import { MOBILE_SESSION_BRIDGE_JS } from '../lib/mobileSessionBridge';
+import { SessionListSheet, type MobileSessionSummary } from '../components/SessionListSheet';
 import type { StoredConnection } from '../lib/store';
 import { getDshMtlsWebView, type DshMtlsWebViewErrorEvent, type DshMtlsWebViewLoadingEvent } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
@@ -95,6 +97,16 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
   const [currentUrl, setCurrentUrl] = useState(() => webUiUrl(connection.host));
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  const [sessions, setSessions] = useState<MobileSessionSummary[]>([]);
+  const [sessionsOpen, setSessionsOpen] = useState(true);
+  const [sessionsLoading, setSessionsLoading] = useState(true);
+  const [bridgeError, setBridgeError] = useState<string | null>(null);
+  const [jsCommand, setJsCommand] = useState<string | undefined>(undefined);
+  const commandIdRef = useRef(0);
+  const injectedJavaScript = useMemo(
+    () => `${MOBILE_WEB_SHELL_JS}\n${MOBILE_SESSION_BRIDGE_JS}`,
+    [],
+  );
 
   const NativeMtlsWebView = useMemo(() => getDshMtlsWebView(), []);
   /**
@@ -173,13 +185,80 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
     setErrorMessage(`主机返回 HTTP ${statusCode}。`);
   }, []);
 
+  interface BridgeMessage {
+    type?: string;
+    sessions?: MobileSessionSummary[];
+    message?: string;
+  }
+
+  const handleBridgeMessage = useCallback((raw: string) => {
+    let message: BridgeMessage | null = null;
+    try {
+      message = JSON.parse(raw) as BridgeMessage;
+    } catch {
+      return;
+    }
+    if (!message || typeof message.type !== 'string') return;
+    if (message.type === 'sessions') {
+      setSessions(Array.isArray(message.sessions) ? message.sessions : []);
+      setSessionsLoading(false);
+      setBridgeError(null);
+      return;
+    }
+    if (message.type === 'error') {
+      setBridgeError(message.message ?? '原生会话桥接失败');
+      setSessionsLoading(false);
+    }
+  }, []);
+
+  const sendCommand = useCallback((statement: string) => {
+    // 每次带上递增序号，保证原生侧即使命令文本相同也会重新 evaluate。
+    const id = commandIdRef.current + 1;
+    commandIdRef.current = id;
+    setJsCommand(`/*dsh-native-${id}*/ ${statement}`);
+  }, []);
+
+  const handleSessionSelect = useCallback(
+    (session: MobileSessionSummary) => {
+      setSessionsOpen(false);
+      sendCommand(`window.__dshMobileBridge && window.__dshMobileBridge.openSession(${JSON.stringify(session.id)})`);
+    },
+    [sendCommand],
+  );
+
+  const handleNewSession = useCallback(() => {
+    setSessionsOpen(false);
+    sendCommand('window.__dshMobileBridge && window.__dshMobileBridge.newSession()');
+  }, [sendCommand]);
+
+  const handleOpenPlugins = useCallback(() => {
+    setSessionsOpen(false);
+    sendCommand('window.__dshMobileBridge && window.__dshMobileBridge.openSidebar()');
+  }, [sendCommand]);
+
+  const handleRefreshSessions = useCallback(() => {
+    setSessionsLoading(true);
+    sendCommand('window.__dshMobileBridge && window.__dshMobileBridge.refresh()');
+  }, [sendCommand]);
+
+  const handleBack = useCallback(() => {
+    if (sessionsOpen) onClose();
+    else setSessionsOpen(true);
+  }, [onClose, sessionsOpen]);
+
+  // RN WebView 兜底路径没有原生 jsCommand prop：用 injectJavaScript 发同一条命令。
+  useEffect(() => {
+    if (!jsCommand || useNativeMtlsView) return;
+    webViewRef.current?.injectJavaScript(`${jsCommand}; true;`);
+  }, [jsCommand, useNativeMtlsView]);
+
   const topInset = insets.top;
 
   return (
     <View style={styles.screen}>
       <View style={[styles.topBar, { paddingTop: topInset + spacing.sm }]}>
         <View style={styles.topRow}>
-          <TouchableOpacity accessibilityLabel="返回" onPress={onClose} style={styles.iconButton}>
+          <TouchableOpacity accessibilityLabel={sessionsOpen ? '返回主机列表' : '返回会话列表'} onPress={handleBack} style={styles.iconButton}>
             <Text style={styles.iconGlyph}>‹</Text>
           </TouchableOpacity>
           <View style={styles.titleWrap}>
@@ -193,6 +272,9 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
               </Text>
             </View>
           </View>
+          <TouchableOpacity accessibilityLabel="会话列表" onPress={() => setSessionsOpen(true)} style={styles.iconButton}>
+            <Text style={styles.iconGlyphSmall}>☰</Text>
+          </TouchableOpacity>
           <TouchableOpacity accessibilityLabel="设备与安全" onPress={onOpenDevices} style={styles.iconButton}>
             <Text style={styles.iconGlyphSmall}>⚙︎</Text>
           </TouchableOpacity>
@@ -238,8 +320,10 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             key={reloadKey}
             url={webUiUrl(connection.host)}
             clientIdentityLabel={connection.certRef}
-            injectedJavaScript={MOBILE_WEB_SHELL_JS}
+            injectedJavaScript={injectedJavaScript}
+            jsCommand={jsCommand}
             style={styles.webview}
+            onMessage={(event) => handleBridgeMessage(event.nativeEvent.data)}
             onLoadingStart={(_event: DshMtlsWebViewLoadingEvent) => setStatus('connecting')}
             onLoadingFinish={(_event: DshMtlsWebViewLoadingEvent) => setStatus('online')}
             onLoadingError={(event: DshMtlsWebViewErrorEvent) =>
@@ -251,7 +335,7 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             key={reloadKey}
             ref={webViewRef}
             source={{ uri: webUiUrl(connection.host) }}
-            injectedJavaScript={MOBILE_WEB_SHELL_JS}
+            injectedJavaScript={injectedJavaScript}
             style={styles.webview}
             // A secure, cookie-less origin: the host proxies with its own session.
             sharedCookiesEnabled={false}
@@ -277,7 +361,7 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             originWhitelist={[`https://${connection.host}`]}
             mixedContentMode="never"
             setSupportMultipleWindows={false}
-            onMessage={() => undefined}
+            onMessage={(event) => handleBridgeMessage(event.nativeEvent.data)}
             applicationNameForUserAgent="DSHRemote/0.1 (Expo)"
           />
         )}
@@ -288,6 +372,20 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
           {pageTitle} · {currentUrl}
         </Text>
       </View>
+
+      <SessionListSheet
+        visible={sessionsOpen}
+        hostName={connection.hostName ?? connection.host}
+        sessions={sessions}
+        loading={sessionsLoading}
+        error={bridgeError}
+        onBack={onClose}
+        onSelect={handleSessionSelect}
+        onNewSession={handleNewSession}
+        onOpenPlugins={handleOpenPlugins}
+        onContinue={() => setSessionsOpen(false)}
+        onRefresh={handleRefreshSessions}
+      />
     </View>
   );
 }
