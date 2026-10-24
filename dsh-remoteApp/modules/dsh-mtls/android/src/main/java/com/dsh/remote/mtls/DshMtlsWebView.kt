@@ -64,6 +64,9 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
     with(webView.settings) {
       javaScriptEnabled = true
       domStorageEnabled = true
+      setSupportZoom(false)
+      builtInZoomControls = false
+      displayZoomControls = false
       // SDK 58 / RN 0.88: mixed content never allowed; the tunnel is HTTPS-only.
       mixedContentMode = WebSettings.MIXED_CONTENT_NEVER_ALLOW
       allowFileAccess = false

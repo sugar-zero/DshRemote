@@ -58,6 +58,12 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
 
     contentController.add(self, name: Self.bridgeName)
     webView.navigationDelegate = self
+    // Mobile shell: no pinch/double-tap zoom; iOS otherwise zooms the page when
+    // a focused input's font is < 16px, which breaks the conversation layout.
+    webView.scrollView.maximumZoomScale = 1
+    webView.scrollView.minimumZoomScale = 1
+    webView.scrollView.bouncesZoom = false
+    webView.scrollView.pinchGestureRecognizer?.isEnabled = false
     webView.translatesAutoresizingMaskIntoConstraints = false
     addSubview(webView)
     NSLayoutConstraint.activate([

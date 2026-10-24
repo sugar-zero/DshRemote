@@ -31,6 +31,9 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     var style = document.createElement('style');
     style.id = STYLE_ID;
     style.textContent = [
+      'html, body { -webkit-text-size-adjust: 100% !important; touch-action: manipulation; }',
+      // iOS 会在聚焦 <16px 的输入框时自动放大整页；统一到 16px 并锁 viewport。
+      'input, textarea, select, [contenteditable="true"] { font-size: 16px !important; }',
       '@media (max-width: 760px) {',
       '  [class*="_sidebarCol"] {',
       '    position: fixed !important; left: 0 !important; top: 0 !important; bottom: 0 !important;',
@@ -69,6 +72,22 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '}',
     ].join('\n');
     document.head.appendChild(style);
+
+    function enforceViewport() {
+      var meta = document.querySelector('meta[name="viewport"]');
+      if (!meta) {
+        meta = document.createElement('meta');
+        meta.setAttribute('name', 'viewport');
+        document.head.appendChild(meta);
+      }
+      meta.setAttribute(
+        'content',
+        'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover'
+      );
+    }
+    enforceViewport();
+    setTimeout(enforceViewport, 500);
+    setTimeout(enforceViewport, 1500);
 
     var backdrop = document.createElement('div');
     backdrop.className = 'dsh-mobile-backdrop';
