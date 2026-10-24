@@ -130,7 +130,7 @@ Host 端 token 注册接口：`POST /__dsh_remote/push-token`（mTLS），App �
 | 项目 | 结果 | 证据（截图/日志） |
 |---|---|---|
 | iOS 编译（generic，无签名） | ✅ BUILD SUCCEEDED（2026-10-24） | /tmp/ios-build3.log |
-| iOS 真机安装/启动 | ⏳ 设备锁定时 xcodebuild 无法启用开发服务 | 需解锁 iPhone |
+| iOS 真机安装/启动 | ✅ 已安装并启动，JS bundle 加载成功 | `mockups/ios-pairing.png`、/tmp/ios-device-build3.log |
 | iOS WebView mTLS | | |
 | Secure Enclave 身份（identityPresent） | | |
 | 配对 + 桌面确认 | | |

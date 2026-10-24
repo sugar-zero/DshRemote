@@ -349,7 +349,8 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
           <View style={styles.debugTitleWrap}>
             <Text style={styles.cardTitle}>POC 调试选项</Text>
             <Text style={styles.hint}>
-              本机 POC 尚未实现原生 CSR 生成。打开后使用占位 CSR 验证传输层（真实主机会拒绝，仅用于 mock 主机）。
+              设备密钥/CSR 已由原生模块生成（Secure Enclave 优先）。此开关仅用于 mock 主机的占位 CSR 调试；
+              真实主机会拒绝占位 CSR。
             </Text>
           </View>
           <Switch
