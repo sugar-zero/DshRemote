@@ -41,8 +41,6 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   private let webView: WKWebView
   private var loadedUrlString: String?
   private var userScript: WKUserScript?
-  private var pendingCommand: String?
-  private var pageReady = false
 
   /// Keychain label of the client identity to present. Falls back to the
   /// globally configured label when the prop is not set.
@@ -148,13 +146,10 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   // MARK: - WKNavigationDelegate: loading lifecycle → JS events
 
   public func webView(_ webView: WKWebView, didStartProvisionalNavigation navigation: WKNavigation!) {
-    pageReady = false
     onLoadingStart(["url": webView.url?.absoluteString ?? loadedUrlString ?? ""])
   }
 
   public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-    pageReady = true
-    runPendingCommand()
     onLoadingFinish(["url": webView.url?.absoluteString ?? ""])
   }
 
@@ -180,26 +175,6 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
       "description": error.localizedDescription,
       "url": url ?? ""
     ])
-  }
-
-  // MARK: - Native → page commands (session list opens a session)
-
-  func applyJsCommand(_ command: String?) {
-    guard let command, !command.isEmpty else { return }
-    pendingCommand = command
-    if pageReady { runPendingCommand() }
-  }
-
-  private func runPendingCommand() {
-    guard let command = pendingCommand else { return }
-    pendingCommand = nil
-    webView.evaluateJavaScript(command) { [weak self] _, error in
-      guard let self, let error else { return }
-      self.onLoadingError([
-        "description": "页面命令执行失败：\(error.localizedDescription)",
-        "url": self.webView.url?.absoluteString ?? ""
-      ])
-    }
   }
 
   // MARK: - WKScriptMessageHandler (page → JS bridge)

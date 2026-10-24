@@ -121,9 +121,6 @@ class DshMtlsModule : Module() {
       Prop("injectedJavaScript") { view: DshMtlsWebView, script: String? ->
         view.applyInjectedJavaScript(script)
       }
-      Prop("jsCommand") { view: DshMtlsWebView, command: String? ->
-        view.applyJsCommand(command)
-      }
 
       Events("onMessage", "onLoadingStart", "onLoadingFinish", "onLoadingError")
     }
