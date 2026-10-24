@@ -34,11 +34,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '@media (max-width: 760px) {',
       '  [class*="_sidebarCol"] {',
       '    position: fixed !important; left: 0 !important; top: 0 !important; bottom: 0 !important;',
-      '    width: min(84vw, 340px) !important; max-width: 340px !important;',
+      '    width: min(84vw, 280px) !important; max-width: 280px !important;',
       '    z-index: 9000 !important; transform: translateX(-102%);',
       '    transition: transform 220ms ease;',
       '    box-shadow: 24px 0 48px rgba(0,0,0,0.35);',
-      '    background: #0b1220 !important; overflow: visible !important;',
+      '    overflow: visible !important;',
       '  }',
       '  html.' + DRAWER_CLASS + ' [class*="_sidebarCol"] { transform: translateX(0) !important; }',
       // DSH 用 CSS grid（sidebar, center, rightbar）。sidebar 改为 fixed 后会脱离 grid，
@@ -100,15 +100,33 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     });
     backdrop.addEventListener('click', function () { closeDrawer(); });
 
-    // 侧栏内任意可交互项：导航/打开后自动收起抽屉。
+    // 侧栏内：
+    //  - 设置/更多等会打开二级弹窗的入口：保持抽屉打开，等用户选完二级内容；
+    //  - 会话/面板等功能项：跳转后自动收起。
+    // 抽屉外的点击（二级弹窗/内容区）：执行动作后再收起。
+    var settingsEntrySelector = '[class*="_footerActions"],[class*="_settingsArea"],[class*="_footArea"],[class*="triggerRow"],[class*="railRow"],[class*="_toggle"]';
+    // 部分 DSH 版本在触摸设备上需要两次点击才打开会话（第一次只聚焦列表）。
+    // 对会话列表项自动补一次 click，让用户实际只需点一次。
+    var autoTapped = new WeakSet();
     document.addEventListener('click', function (event) {
       if (!isOpen()) return;
       var target = event.target;
       if (!target) return;
       var bar = sidebar();
-      if (!bar || !bar.contains(target)) return;
-      if (target.closest('[class*="_toggle"]')) return;
-      window.setTimeout(closeDrawer, 120);
+      if (bar && bar.contains(target)) {
+        if (target.closest(settingsEntrySelector)) return;
+        var sessionItem = target.closest('[class*="_listArea"] button,[class*="_listArea"] [role="button"],[class*="_listArea"] [class*="_panelRow"]');
+        if (sessionItem && !autoTapped.has(sessionItem)) {
+          autoTapped.add(sessionItem);
+          window.setTimeout(function () {
+            try { sessionItem.click(); } catch (e) {}
+          }, 180);
+        }
+        window.setTimeout(closeDrawer, sessionItem ? 500 : 300);
+        return;
+      }
+      if (target.closest('.dsh-mobile-fab') || target.closest('.dsh-mobile-backdrop')) return;
+      window.setTimeout(closeDrawer, 300);
     }, true);
 
     // 左边缘右滑打开 / 抽屉上左滑关闭。
