@@ -1,5 +1,7 @@
 # dsh-remote-service（主机插件）
 
+
+> 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../../../LICENSE)）。
 运行在 **DSH 主机** 上的远程访问插件，提供：
 
 - 远程访问开关 / 中继连接配置

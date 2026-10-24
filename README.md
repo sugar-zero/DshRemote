@@ -141,4 +141,13 @@ npm run check:ios-env
 
 ## 许可
 
-源码采用 MIT License；第三方依赖遵循各自许可证。
+本项目采用 **GNU Affero General Public License v3.0 or later（AGPL-3.0-or-later）**。
+
+- 完整协议文本：[LICENSE](LICENSE)
+- 版权声明：[COPYRIGHT](COPYRIGHT)
+- 你可以运行、修改、分发、商业使用本软件。
+- 如果你修改了本软件并通过网络向用户提供服务，必须按 AGPL §13 向这些用户提供修改版的完整 Corresponding Source。
+- 分发衍生作品时，必须继续使用 AGPL-3.0-or-later。
+- App Store 等平台分发可能和 AGPL 的再分发要求存在冲突；若要上架，请单独评估或采用商业双许可。
+
+第三方依赖遵循各自许可证。

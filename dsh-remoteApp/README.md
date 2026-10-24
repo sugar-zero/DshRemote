@@ -1,5 +1,7 @@
 # DSH Remote App
 
+
+> 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../LICENSE)）。
 DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 优先、Android 同步搭骨架。
 
 > 相关文档：

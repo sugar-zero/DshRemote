@@ -1,5 +1,7 @@
 # dsh-remoteService（方案 B2 · 服务端 monorepo）
 
+
+> 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../LICENSE)）。
 DSH 远程访问的服务端实现：**自托管盲中继 + 主机插件（mTLS 反向代理）+ 共享协议**。
 配套手机 App 在 [`../dsh-remoteApp`](../dsh-remoteApp)；公网服务器编排在 [`../server`](../server)；评估与设计见 [`../docs/remote-access-evaluation.zh.md`](../docs/remote-access-evaluation.zh.md)。
 
