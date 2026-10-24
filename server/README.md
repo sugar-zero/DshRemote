@@ -434,7 +434,128 @@ tar czf dsh-relay-backup-$(date +%F).tgz data/tokens.json data/certs data/config
 
 ---
 
-## 9. 相关文档
+## 9. 常见坑与排错（实战）
+
+这些是本项目真实部署中踩过的坑。
+
+### 9.1 relay 容器一直重启
+
+| 日志 | 原因 | 修复 |
+|---|---|---|
+| `cannot load control-plane TLS certificate: ENOENT` | relay 控制面证书没放到 `server/data/certs/<RELAY_DOMAIN>/` | 把 `fullchain.pem` / `privkey.pem` 放到 `data/certs/<RELAY_DOMAIN>/` |
+| `EACCES ... /data/.tokens.json...tmp` | `data/` 属主和容器运行 UID 不一致 | `chown -R <RELAY_UID>:<RELAY_GID> data`，或设置 `.env` 的 `RELAY_UID/GID` |
+| `EACCES ... /app/packages/...` | 自定义镜像里 `/app` 文件对运行 UID 不可读 | 镜像构建时加 `chmod -R a+rX /app`；本项目镜像已包含 |
+| `--config /data/config/relay.json` | 还在跑旧镜像 | `docker load` 新镜像后 `docker compose up -d --force-recreate relay` |
+| `RELAY_HOST_ID 未设置` | `.env` 没被 compose 读取 | 在 `server/` 目录执行，确认 `docker compose config | grep RELAY_HOST_ID` |
+
+### 9.2 主机显示在线，但 App 配对“网络连接失败”
+
+主机在线只代表 **8443 控制面**通；App 走的是 **数据面端口**。
+
+按顺序检查：
+
+```bash
+# 1. 二维码 host 是否带端口
+# 应类似：h_ab12cd34.relay.example.com:11443
+
+# 2. 公网 TLS（服务器外部执行）
+openssl s_client -connect h_ab12cd34.relay.example.com:11443 \
+  -servername h_ab12cd34.relay.example.com \
+  -verify_hostname h_ab12cd34.relay.example.com </dev/null
+
+# 3. 配对接口（不需要设备证书）
+curl -i https://h_ab12cd34.relay.example.com:11443/__dsh_remote/pair \
+  -X POST -H 'content-type: application/json' --data '{}'
+```
+
+常见原因：
+
+1. **DNS 泛解析没配**
+   ```text
+   *.relay.example.com  A  <VPS IP>
+   ```
+   手机 Safari 打开配对地址提示“找不到服务器”时，先查这条。
+2. **主机插件证书不对**
+   - 数据面证书必须是 `h_ab12cd34.relay.example.com` 或 `*.relay.example.com`；
+   - 不能是 relay 控制面证书或 `CN=xxx.local` 的开发证书；
+   - 用 `openssl s_client ... | openssl x509 -noout -ext subjectAltName` 确认 SAN。
+3. **扫的是旧二维码**
+   - 修改 `publicPort` 后旧 QR 不会更新；
+   - 必须重新「配对新设备」生成二维码。
+4. **手机代理 / VPN / Private Relay**
+   - 换蜂窝网络测试；
+   - 关闭代理后重试；
+   - 注意 Mac 上 `dig` 可能返回 `198.18.x.x` Fake-IP，不能代表公网 DNS。
+5. **安全组没放通**
+   - 1Panel/系统防火墙放通不等于云厂商安全组放通；
+   - 直连模式要放通数据面和控制面端口。
+
+### 9.3 公网 DNS / Fake-IP
+
+代理软件（Clash/Surge 等）的 `198.18.0.0/15` 是 Fake-IP，不是真实服务器：
+
+```bash
+dig +short 你的主机子域
+# 198.18.x.x  → 本机 DNS 被代理接管
+```
+
+绕过 DNS 测真实 IP：
+
+```bash
+curl -vk --resolve \
+  h_ab12cd34.relay.example.com:11443:<VPS_IP> \
+  https://h_ab12cd34.relay.example.com:11443/
+```
+
+### 9.4 nginx / 443 配置
+
+- **不要**为 `relay.example.com` 或 `*.relay.example.com` 创建 nginx 网站、证书或 HTTP 反代；
+- nginx 只做 **TCP/SNI 透传**；
+- 如果使用 `stream { listen 443; }`，必须让出原 nginx 的 `http` 443：
+  ```nginx
+  listen 127.0.0.1:4433 ssl;   # 原站点改内部端口
+  ```
+- nginx 容器是 `network_mode: host` 时，relay 的 `127.0.0.1:1443/18443` 可直接访问；
+- bridge 网络时，`127.0.0.1` 指容器自己，需改 `relay:443` 或 `host.docker.internal`；
+- 不想动 443 时使用 `docker-compose.direct.yml` + 主机插件 `publicPort`，配套 DNS 和防火墙。
+
+### 9.5 UID/GID 与权限
+
+Docker 只看数字 UID/GID：
+
+```bash
+ls -ldn data
+id -u
+id -g
+```
+
+`data/` 属主必须与 compose 的 `user:` 一致：
+
+```dotenv
+RELAY_UID=1000
+RELAY_GID=1000
+```
+
+```bash
+chown -R 1000:1000 data
+```
+
+不要用 `user: "0:0"` 长期运行 relay。
+
+### 9.6 主机在线但二维码没有端口
+
+- 主机插件 `publicPort` 是 Host 半配置；
+- 修改后必须**重启 DSH**，只刷新设置页不够；
+- 重启后：
+
+```bash
+cat ~/.dsh/remote-access/config.json | jq .publicPort
+```
+  应为 `11443`/`1443`，不是 `0`。
+
+---
+
+## 10. 相关文档
 
 - [完整部署指南](../dsh-remoteService/docs/DEPLOY.md)
 - [管理 API 契约](../dsh-remoteService/docs/ADMIN-API.md)

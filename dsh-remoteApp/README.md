@@ -149,6 +149,8 @@ npx expo run:android --device
 
 1. 桌面端「设置 → 远程访问 → 配对新设备」生成一次性密钥（32B，≤120s，单次使用）并显示二维码：
    `dshremote://pair?v=1&host=<hostId>.<relayDomain>&secret=<base64url>&hostfp=<base64url sha256>&exp=<unix 秒>&relay=<relayDomain>`
+   - 直连端口模式下 `host` 会带端口，例如
+     `host=h_xxx.relay.example.com:11443`；App 支持 `host:port`。
 2. `PairingScreen` 扫码/粘贴 → `src/lib/protocol.ts` **本地严格校验**：
    - scheme/authority/path、`v=1`、host 必须是 `relay` 域名的子域（防篡改）、secret/hostfp 必须是 32 字节 base64url、`exp` 未过期、参数不重复。
    - 展示 **完整指纹**（分组显示）+ **短指纹**（人眼对照，仅展示、不作为 pin）+ 倒计时。
@@ -344,6 +346,8 @@ $ node <protocol.ts 编译后的 Node 自测>
 | `SecPKCS12Import` 失败（status ≠ 0） | 密码错误或 p12 不含证书+私钥（检查 `openssl pkcs12 -info -in device.p12`）。 |
 | Android 导入后 `identityPresent=false` | 系统安装界面未确认完；或 alias 与 `setClientIdentity` 的 label 不一致。重新进入该页刷新诊断。 |
 | 扫码无反应（模拟器） | iOS 模拟器没有可用相机；用"手动粘贴配对链接"。 |
+| 扫码后“网络连接失败” | ① 旧二维码没带新端口，重新生成；② `*.relayDomain` 泛解析缺失；③ 手机开了代理/VPN/Private Relay；④ 云安全组/防火墙没放通直连端口；⑤ 主机数据面证书不是 `*.<relayDomain>` 或主机子域证书。用手机 Safari 打开配对 URL 验证。 |
+| 配对请求到了主机但 App 无响应 | 检查主机是否在等待桌面「允许配对」；确认 App 与主机时钟正常。 |
 
 ---
 

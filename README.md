@@ -47,6 +47,7 @@
 | 看方案评估、威胁模型、Codex/Happy 对比 | **[docs/remote-access-evaluation.zh.md](docs/remote-access-evaluation.zh.md)** |
 | 看 POC 验收记录/截图 | **[dsh-remoteService/docs/POC-REPORT.md](dsh-remoteService/docs/POC-REPORT.md)**、[STATUS.md](STATUS.md) |
 | 看当前真机/构建状态 | **[STATUS.md](STATUS.md)** |
+| 看真实部署踩坑与排错 | **[server/README.md §9 常见坑](server/README.md#9-常见坑与排错实战)** |
 
 ### 服务器如何配置（摘要）
 

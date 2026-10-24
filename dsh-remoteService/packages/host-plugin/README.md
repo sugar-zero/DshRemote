@@ -72,6 +72,31 @@ CF_Token="<Cloudflare token>" \
 
 插件每小时检查文件变化并热重建 TLS 监听；证书续期后无需重启 DSH。
 
+### 直连端口模式（App 使用 `host:port`）
+
+如果服务器 443 已被现有 nginx/业务占用，不想改 nginx stream，可以让 App 直接访问
+relay 的公网数据端口：
+
+1. 主机插件「手机访问端口」填公网数据端口，例如 `11443`；
+2. 重启 DSH（Host 半必须重新加载）；
+3. 重新生成配对二维码，host 会带端口：
+   ```text
+   h_ab12cd34.relay.example.com:11443
+   ```
+4. App 会直接访问 `https://<host>:11443/`；
+5. 服务器防火墙/安全组需要放通该数据端口。
+
+注意：
+
+- 修改 `publicPort` 后**旧二维码不会更新**，必须重新生成；
+- 数据面证书仍是主机插件自己的 `<hostId>.<relayDomain>` / `*.<relayDomain>` 证书；
+- 不要把 relay 控制面证书当成主机数据面证书；
+- 证书 SAN 必须覆盖主机子域：
+  ```bash
+  openssl x509 -in ~/.dsh/remote-access/certs/fullchain.pem \
+    -noout -subject -ext subjectAltName
+  ```
+
 ### 如果 DSH 主机运行在 Docker 中
 
 把主机证书挂进 **DSH 容器**（不是 relay 容器）：
@@ -123,6 +148,9 @@ Host 半注册在 DSH 本机 webServer：
 | 配对二维码过期 | 重新生成；配对密钥 ≤120s |
 | 证书续期不生效 | 插件每小时检查；关闭再启用强制重载 |
 | 手机打开管理 API 403 | 这是安全边界；远程设备不允许管理 relay/配对 |
+| App 扫描后“网络连接失败” | 先重新生成二维码；确认 host 带 `:端口`；再查 `*.relayDomain` 泛解析、手机代理/VPN、云安全组、主机数据面证书 SAN |
+| 设置里 publicPort 又变回 0 | Host 半还是旧代码；重启 DSH；确认 `~/.dsh/remote-access/config.json` 有 `publicPort` |
+| 主机在线但 App 连不上 | 控制面 8443 和数据面不是一条链路；看 [server/README.md §9.2](../../../server/README.md#92-主机显示在线但-app-配对网络连接失败) |
 
 ---
 
