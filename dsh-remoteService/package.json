@@ -16,7 +16,8 @@
     "bench": "node poc/bench-relay.js",
     "poc:docker": "bash poc/docker-e2e/run.sh",
     "validate:artifacts": "bash scripts/validate-artifacts.sh",
-    "poc:deploy": "node poc/check-deploy-local.js"
+    "poc:deploy": "node poc/check-deploy-local.js",
+    "poc:iphone-local": "node poc/serve-iphone-local.mjs"
   },
   "engines": {
     "node": ">=22"

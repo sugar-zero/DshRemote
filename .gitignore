@@ -13,3 +13,6 @@ build/
 Certificates/
 *.p8
 *.mobileprovision
+
+# 临时配对二维码（含一次性 secret）
+mockups/local-pairing-qr.png
