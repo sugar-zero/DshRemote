@@ -1705,8 +1705,17 @@ window.__ModuleLoader__.load({
           return h(SettingsPage, { ...positionProps, t: positionProps && positionProps.t ? positionProps.t : translate });
         }
 
-        slots.inject('sidebar.footer.action', () => slots.register(entryOptions, EntrySeat));
-        slots.inject('settings.section', () => slots.register(settingsOptions, SettingsSeat));
+        // 手机远程 WebView（host 反代注入 ?dsh_mobile=1）：本机管理页不应出现。
+        // /api/remote-access/* 被代理 deny（403）正是安全边界；若显示入口，DSH 设置页
+        // 拉不到 status 会误导为「403 中继离线」。远程管理请用 App 自己的设备页。
+        const isRemoteWebView = typeof globalThis === 'object'
+          && globalThis.location
+          && typeof globalThis.location.search === 'string'
+          && /(?:^|[?&])dsh_mobile=1(?:&|$)/.test(globalThis.location.search);
+        if (!isRemoteWebView) {
+          slots.inject('sidebar.footer.action', () => slots.register(entryOptions, EntrySeat));
+          slots.inject('settings.section', () => slots.register(settingsOptions, SettingsSeat));
+        }
       },
     };
   },
