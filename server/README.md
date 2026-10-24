@@ -144,6 +144,11 @@ sudo cp nginx/host-nginx-stream.conf /etc/nginx/dsh-relay-stream.conf
 # include /etc/nginx/dsh-relay-stream.conf;
 ```
 
+**不要**为 `relay.example.com` 或 `*.relay.example.com` 创建 nginx 的
+`http { server { ... } }` 网站，也不要在 nginx 上给这些域名配置证书或
+`proxy_pass`：这些域名必须在 `stream` 层原样透传给 relay，由 relay/主机插件
+终止 TLS。nginx 只需要负责 SNI 选路。
+
 该文件做了两件事：
 
 1. `443` 用 `ssl_preread` 读取 SNI：
@@ -185,6 +190,9 @@ docker compose -f docker-compose.build.yml -f docker-compose.nginx.yml up -d --b
 
 此时 nginx 容器占用 80/443/8443，不再需要宿主机 nginx；配置同样只做 L4 透传，
 TLS 证书仍由 relay / 主机插件各自持有。
+
+> `container-nginx.conf` 里的 `http {}` 只负责 `/healthz` 和 80 跳转，**不是**
+> relay 域名的网站；不需要再为 relay 域名增加 server block。
 
 ---
 
