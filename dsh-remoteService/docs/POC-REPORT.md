@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.35 | 抽屉反馈修复 3（真机录屏） | ✅ 去掉 backdrop 压暗/侧栏阴影（消除黑色过渡）；抽屉仍在 280px；入口改为克隆 DSH 原生鲸鱼 logo（非悬浮汉堡）；会话行按 `data-row-key^="session:"` 精确识别并自动补第二次 click；文件夹行不自动点击且保持抽屉展开；设置/账号入口改为先关抽屉，保证二级弹窗可见。Release 已安装，待解锁手机目视验收 | `mobileWebShell.ts`、`docs/DOM 分析` |
 | 1.34 | 抽屉真机反馈修复 2 | ✅ 抽屉宽度改为 DSH 原生 280px（消除右侧黑边）；设置/更多入口点击不立即关抽屉，等二级弹窗选择后再关；会话列表项自动补第二次 click 解决"点两次"；Release 已安装（真机 WebView 布局正常） | `mobileWebShell.ts`、`mockups/ios-mobile-webview.png` |
 | 1.33 | 手机抽屉修复（真机反馈） | ✅ 根因：WKUserScript 在 `documentStart` 注入时 `document.body` 尚不存在，旧脚本静默失败；同时 DSH grid 在 sidebar `position:fixed` 后把 center 挤到 56px。已改为 DOM-ready 初始化 + 字面量 JS + `frame{display:block}` / center 100% / rightbar 隐藏；Chrome 移动视口验证抽屉/自动关闭/布局正常；Release 已安装（Home 真机截图 `mockups/ios-home.png`） | `mobileWebShell.ts`、`mockups/ios-home.png` |
 | 1.32 | App 多主机 Home + 手机侧栏抽屉 | ✅ HomeScreen 列出多台已配对主机（v2 存储，自动迁移旧单连接），WebView 返回 → Home；设备证书按 host scope 存储；注入 mobile shell：DSH 侧栏变为离屏抽屉（汉堡/左缘滑开），点击侧栏项自动收起；Chrome 移动视口验证抽屉/自动关闭通过；Release 已构建安装，待解锁 iPhone 目视验收 | `dsh-remoteApp/src/screens/HomeScreen.tsx`、`src/lib/mobileWebShell.ts`、`mockups/mobile-drawer-preview.png` |
