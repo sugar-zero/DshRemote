@@ -136,6 +136,36 @@ relay 容器**只需要映射 `/data`**：
 |---|---|---|
 | `./nginx/container-nginx.conf` | `/etc/nginx/nginx.conf` | nginx 配置（只读） |
 
+### 4.0.1 运行时 UID/GID（可选）
+
+Docker 里的 `100:101` 只是**数字 ID**，和宿主机上的用户名没有对应关系。
+compose 支持覆盖容器运行用户：
+
+```yaml
+user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
+```
+
+`.env`：
+
+```dotenv
+# 宿主机上负责写 data 的用户
+RELAY_UID=1000
+RELAY_GID=1000
+```
+
+然后：
+
+```bash
+sudo chown -R 1000:1000 data
+docker compose up -d --force-recreate relay
+```
+
+这样 relay 就会以宿主机用户 `1000:1000` 运行，`data/` 的属主也一致。
+
+- 默认值是镜像内的 `relay(100:101)`；
+- 不要用 `user: "0:0"` 让 relay 以 root 运行；
+- 证书文件和 `tokens.json` 都需要该 UID/GID 可读/可写。
+
 ### 4.1 已有宿主机 nginx（推荐）
 
 把 [`nginx/host-nginx-stream.conf`](nginx/host-nginx-stream.conf) 复制/安装到 nginx：
