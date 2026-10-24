@@ -25,9 +25,9 @@ services:
       dockerfile: packages/relay/Dockerfile
     image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.1.0}
     container_name: dsh-relay
-    # 入口脚本先在 /data 中确保 host token 存在，再启动 relay。
-    # 镜像默认 CMD 带 --config /data/config/relay.json；这里改为纯环境变量模式。
-    command: ["/bin/sh", "/scripts/relay-entrypoint.sh"]
+    # 镜像 ENTRYPOINT 会先根据 RELAY_HOST_ID/TOKEN 补齐 /data/tokens.json，
+    # 再执行这个 CMD；纯环境变量模式，不需要 relay.json。
+    command: ["node", "packages/relay/bin/relay.js"]
     restart: unless-stopped
     ports:
       - "127.0.0.1:${RELAY_DATA_PORT_HOST:-1443}:443"
@@ -47,7 +47,6 @@ services:
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
     volumes:
       - ./data:/data
-      - ./scripts:/scripts:ro
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
     healthcheck:

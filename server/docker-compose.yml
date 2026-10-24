@@ -21,9 +21,9 @@ services:
   relay:
     image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.1.0}
     container_name: dsh-relay
-    # 入口脚本先在 /data 中确保 host token 存在，再启动 relay。
-    # 镜像默认 CMD 带 --config /data/config/relay.json；这里改为纯环境变量模式。
-    command: ["/bin/sh", "/scripts/relay-entrypoint.sh"]
+    # 镜像 ENTRYPOINT 会先根据 RELAY_HOST_ID/TOKEN 补齐 /data/tokens.json，
+    # 再执行这个 CMD；纯环境变量模式，不需要 relay.json。
+    command: ["node", "packages/relay/bin/relay.js"]
     restart: unless-stopped
     ports:
       # 只给宿主机 nginx 用；不要直接暴露公网
@@ -44,7 +44,6 @@ services:
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
     volumes:
       - ./data:/data
-      - ./scripts:/scripts:ro
     sysctls:
       # 非 root 用户绑定容器内 80/443
       net.ipv4.ip_unprivileged_port_start: "0"

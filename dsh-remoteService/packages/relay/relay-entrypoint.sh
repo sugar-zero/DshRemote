@@ -8,6 +8,8 @@
 # 已存在 token 时不会自动轮换，避免每次重启把主机踢下线。
 set -eu
 
+cd /app
+
 if [ -z "${RELAY_HOST_ID:-}" ]; then
   echo "relay-entrypoint: RELAY_HOST_ID 未设置，请在 .env 中配置" >&2
   exit 1
@@ -63,4 +65,7 @@ if (provided) {
 }
 NODE
 
+if [ "$#" -gt 0 ]; then
+  exec "$@"
+fi
 exec node packages/relay/bin/relay.js

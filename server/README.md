@@ -198,8 +198,7 @@ TLS 证书仍由 relay / 主机插件各自持有。
 
 ## 5. 主机 token（容器首次启动自动完成）
 
-不需要再 `docker compose exec` 进容器执行 `token create`。入口脚本
-[`scripts/relay-entrypoint.sh`](scripts/relay-entrypoint.sh) 会在 relay 启动前
+不需要再 `docker compose exec` 进容器执行 `token create`。镜像 ENTRYPOINT（源码 [packages/relay/relay-entrypoint.sh](../dsh-remoteService/packages/relay/relay-entrypoint.sh)）会在 relay 启动前
 检查 `/data/tokens.json`，并按 `.env` 自动补齐 host token。
 
 ### 5.1 必填：RELAY_HOST_ID
