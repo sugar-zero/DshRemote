@@ -87,7 +87,8 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 - ✅ 开发证书 + `DshRemote.mobileprovision`（含 `aps-environment=development`）已安装到本机
 - ✅ 已手动签名构建并安装到 iPhone「iPhone」，App 启动、JS bundle 加载成功
 - ✅ 真机 Secure Enclave 自检：原生模块生成 P-256 key（`SE=true`）→ CSR → host CA 签发 → openssl 证书链/公钥校验通过
-- ⏳ 仍待完成：相机授权、扫码配对、真机 WebView mTLS、推送、App 锁（需 host/APNs 就绪）
+- ✅ 真机配对 + 原生 mTLS WebView 已通过本地 Docker relay 端到端验证（设备 `d_example123`「我的 iPhone」，截图 `mockups/ios-mtls-dsh-ui.png`）
+- ⏳ 仍待完成：App 锁交互验证、推送（需 APNs/EAS 凭据）；生产 relay 由用户自行验证
 
 剩余步骤：
 

@@ -132,7 +132,7 @@ Host 端 token 注册接口：`POST /__dsh_remote/push-token`（mTLS），App �
 | iOS 编译（generic，无签名） | ✅ BUILD SUCCEEDED（2026-10-24） | /tmp/ios-build3.log |
 | iOS 真机安装/启动 | ✅ 已安装并启动，JS bundle 加载成功 | `mockups/ios-pairing.png` |
 | Secure Enclave 身份（identityPresent） | ✅ P-256 key `SE=true`，CSR 经 host CA 签发，链/公钥校验通过 | `/tmp/metro.log`、`/tmp/iphone-se-cert.pem` |
-| iOS WebView mTLS | | |
+| iOS WebView mTLS | ✅ 真机 + 本地 Docker relay + 本机 host：原生 mTLS WebView 成功加载 DSH UI，Keychain 身份生效 | `mockups/ios-mtls-dsh-ui.png` |
 | Secure Enclave 身份（identityPresent） | | |
 | 配对 + 桌面确认 | | |
 | 推送（内容无关） | | |
