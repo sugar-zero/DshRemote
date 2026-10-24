@@ -133,13 +133,6 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       if (fab.dataset.ready !== '1') fab.dataset.ready = '1';
     }
 
-    // 暴露给 native bridge / 会话列表使用。
-    window.__dshMobileShell = {
-      openDrawer: openDrawer,
-      closeDrawer: closeDrawer,
-      isOpen: isOpen
-    };
-
     fab.addEventListener('click', function (event) {
       event.preventDefault(); event.stopPropagation(); openDrawer();
     });

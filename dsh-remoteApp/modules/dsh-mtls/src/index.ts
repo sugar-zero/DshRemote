@@ -215,8 +215,6 @@ export interface DshMtlsWebViewProps {
   clientIdentityLabel?: string;
   /** Injected JS; native side adds it as a WKUserScript / evaluateJavascript. */
   injectedJavaScript?: string;
-  /** Native → page one-shot JS command. Change the string to trigger a new evaluation. */
-  jsCommand?: string;
   onMessage?: (event: DshMtlsWebViewMessageEvent) => void;
   onLoadingStart?: (event: DshMtlsWebViewLoadingEvent) => void;
   onLoadingFinish?: (event: DshMtlsWebViewLoadingEvent) => void;

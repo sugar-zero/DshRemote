@@ -10,7 +10,6 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
-| 1.38 | 原生会话列表 MVP | ✅ 新增原生 SessionListSheet：桥接 DSH DOM 读取会话/工作区/时间，原生列表一次点击；桥接层直接调用 DSH React onClick；原生 jsCommand 通道（iOS WKWebView evaluateJavaScript / Android evaluateJavascript）；入口含新建会话、插件/完整 DSH 界面、直接进入当前界面、返回会话列表。Release 已构建安装，待真机解锁验收 | `src/components/SessionListSheet.tsx`、`src/lib/mobileSessionBridge.ts`、`modules/dsh-mtls`、`WebViewScreen.tsx` |
 | 1.37 | 会话单击进入（React handler 直调） | ✅ 真机确认 WKWebView 会拦截合成 click（自动补第二次 click 不生效）。改为从会话行 DOM 的 `__reactProps$*.onClick` 直接调用 DSH 自己的 onOpen，跳过合成事件/信任检查；Chrome 验证一次调用即切换会话。Release 已安装 | `mobileWebShell.ts`、Chrome DOM 验证 |
 | 1.36 | 锤鱼入口并入原生 header + 抽屉彻底关闭 | ✅ 鲸鱼按钮不再 fixed 悬浮，改为插入 DSH `conversation.header.leading` 原生槽位（标题自动右移，不再重叠）；隐藏同槽位原生侧栏 toggle；关闭时 sidebar 同时 visibility/opacity 隐藏，点击会话/设置立即关闭（会话仍自动补第二次 click）；Release 已安装，Home 正常 | `mobileWebShell.ts`、Chrome DOM 验证 |
 | 1.35 | 抽屉反馈修复 3（真机录屏） | ✅ 去掉 backdrop 压暗/侧栏阴影（消除黑色过渡）；抽屉仍在 280px；入口改为克隆 DSH 原生鲸鱼 logo（非悬浮汉堡）；会话行按 `data-row-key^="session:"` 精确识别并自动补第二次 click；文件夹行不自动点击且保持抽屉展开；设置/账号入口改为先关抽屉，保证二级弹窗可见。Release 已安装，待解锁手机目视验收 | `mobileWebShell.ts`、`docs/DOM 分析` |
