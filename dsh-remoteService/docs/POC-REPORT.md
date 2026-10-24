@@ -10,6 +10,7 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.37 | 会话单击进入（React handler 直调） | ✅ 真机确认 WKWebView 会拦截合成 click（自动补第二次 click 不生效）。改为从会话行 DOM 的 `__reactProps$*.onClick` 直接调用 DSH 自己的 onOpen，跳过合成事件/信任检查；Chrome 验证一次调用即切换会话。Release 已安装 | `mobileWebShell.ts`、Chrome DOM 验证 |
 | 1.36 | 锤鱼入口并入原生 header + 抽屉彻底关闭 | ✅ 鲸鱼按钮不再 fixed 悬浮，改为插入 DSH `conversation.header.leading` 原生槽位（标题自动右移，不再重叠）；隐藏同槽位原生侧栏 toggle；关闭时 sidebar 同时 visibility/opacity 隐藏，点击会话/设置立即关闭（会话仍自动补第二次 click）；Release 已安装，Home 正常 | `mobileWebShell.ts`、Chrome DOM 验证 |
 | 1.35 | 抽屉反馈修复 3（真机录屏） | ✅ 去掉 backdrop 压暗/侧栏阴影（消除黑色过渡）；抽屉仍在 280px；入口改为克隆 DSH 原生鲸鱼 logo（非悬浮汉堡）；会话行按 `data-row-key^="session:"` 精确识别并自动补第二次 click；文件夹行不自动点击且保持抽屉展开；设置/账号入口改为先关抽屉，保证二级弹窗可见。Release 已安装，待解锁手机目视验收 | `mobileWebShell.ts`、`docs/DOM 分析` |
 | 1.34 | 抽屉真机反馈修复 2 | ✅ 抽屉宽度改为 DSH 原生 280px（消除右侧黑边）；设置/更多入口点击不立即关抽屉，等二级弹窗选择后再关；会话列表项自动补第二次 click 解决"点两次"；Release 已安装（真机 WebView 布局正常） | `mobileWebShell.ts`、`mockups/ios-mobile-webview.png` |
