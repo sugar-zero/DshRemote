@@ -56,6 +56,8 @@ export interface CsrResult {
   csrPem: string;
   /** Keychain/Keystore label of the newly generated private key. */
   label: string;
+  /** iOS: true = 私钥由 Secure Enclave 持有；false = 软件 Keychain 回退。 */
+  secureEnclave?: boolean;
 }
 
 export interface P12ImportResult {

@@ -16,6 +16,8 @@ import Security
 struct DSHMTLSCsrResult {
   let csrPem: String
   let keyLabel: String
+  /// true = P-256 私钥由 Secure Enclave 持有（不可导出）；false = 软件 Keychain 回退。
+  let secureEnclave: Bool
 }
 
 enum DSHMTLSCsrError: Error, LocalizedError {
@@ -82,6 +84,7 @@ enum DSHMTLSCsr {
     let secureEnclaveAttrs = baseAttrs.merging([kSecAttrTokenID as String: kSecAttrTokenIDSecureEnclave]) { $1 }
     var error: Unmanaged<CFError>?
     var privateKey = SecKeyCreateRandomKey(secureEnclaveAttrs as CFDictionary, &error)
+    let usedSecureEnclave = privateKey != nil
     if privateKey == nil {
       error = nil
       privateKey = SecKeyCreateRandomKey(baseAttrs as CFDictionary, &error)
@@ -120,6 +123,10 @@ enum DSHMTLSCsr {
       DSHMTLSDER.sequence([DSHMTLSDER.oid(oidEcdsaWithSha256)]),
       DSHMTLSDER.bitString(signature),
     ])
-    return DSHMTLSCsrResult(csrPem: DSHMTLSDER.pem(csr, label: "CERTIFICATE REQUEST"), keyLabel: keyLabel)
+    return DSHMTLSCsrResult(
+      csrPem: DSHMTLSDER.pem(csr, label: "CERTIFICATE REQUEST"),
+      keyLabel: keyLabel,
+      secureEnclave: usedSecureEnclave
+    )
   }
 }

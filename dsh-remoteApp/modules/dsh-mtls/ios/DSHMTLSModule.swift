@@ -52,7 +52,7 @@ public final class DSHMTLSModule: Module {
     AsyncFunction("generateCsr") { (commonName: String) -> [String: Any] in
       let label = "com.dsh.remote.device.\(UUID().uuidString)"
       let result = try DSHMTLSCsr.generate(commonName: commonName, keyLabel: label)
-      return ["csrPem": result.csrPem, "label": result.keyLabel]
+      return ["csrPem": result.csrPem, "label": result.keyLabel, "secureEnclave": result.secureEnclave]
     }
 
     AsyncFunction("installCertificate") { (certPem: String, label: String?) -> [String: Any?] in
