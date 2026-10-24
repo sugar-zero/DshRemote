@@ -16,3 +16,17 @@ Certificates/
 
 # 临时配对二维码（含一次性 secret）
 mockups/local-pairing-qr.png
+
+# 服务器生产数据 / 证书 / env
+server/data/
+server/certs/
+server/.env
+
+# 生产环境 secrets / 证书（server 目录还有独立 .gitignore）
+.env
+**/.env
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx

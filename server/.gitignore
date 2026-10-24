@@ -1,0 +1,9 @@
+# 生产数据/证书/环境变量永远不要提交
+data/
+certs/
+.env
+*.pem
+*.key
+*.crt
+*.p12
+*.pfx
