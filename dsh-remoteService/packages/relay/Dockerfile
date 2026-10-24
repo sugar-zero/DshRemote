@@ -39,7 +39,8 @@ RUN addgroup -S relay \
  && adduser -S -G relay -h /data relay \
  && mkdir -p /data \
  && chmod 755 /usr/local/bin/relay-entrypoint.sh \
- && chown -R relay:relay /app /data
+ && chown -R relay:relay /app /data \
+ && chmod -R a+rX /app
 USER relay
 
 # 入口脚本根据 RELAY_HOST_ID / RELAY_HOST_TOKEN 自动补齐 /data/tokens.json，
