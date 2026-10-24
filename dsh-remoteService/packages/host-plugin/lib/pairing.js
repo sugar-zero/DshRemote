@@ -9,6 +9,7 @@ import {
   safeEqualStrings,
 } from 'dsh-remote-protocol';
 import { parseDeviceCsr, signDeviceCertificate } from './identity.js';
+import { hostAddress } from './config.js';
 
 export const PAIRING_TTL_MS = 120_000;
 export const PAIRING_MAX_ATTEMPTS_PER_IP = 10;
@@ -61,7 +62,7 @@ export class PairingManager {
     if (!config.hostId || !config.relayDomain) {
       throw new PairingError('not-configured', '请先配置 hostId / relayDomain 并启用远程访问', 409);
     }
-    const fqdn = `${config.hostId}.${config.relayDomain}`;
+    const fqdn = hostAddress(config);
     const secret = newPairingSecret();
     const expiresAt = this.now() + PAIRING_TTL_MS;
     const uri = buildPairingUri({

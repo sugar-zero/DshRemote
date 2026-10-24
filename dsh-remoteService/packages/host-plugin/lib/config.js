@@ -8,6 +8,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   relayUrl: '',            // 例如 wss://relay.example.com:8443
   relayDomain: '',         // 例如 relay.example.com；主机 FQDN = <hostId>.<relayDomain>
   hostId: '',              // 例如 h_ab12cd34（relay 分配/约定）
+  publicPort: 0,           // 手机访问的数据面端口；0/443 表示默认 443；直连模式可填 1443
   hostToken: '',           // relay host token（0600 文件保存）
   relayTlsInsecure: false, // 仅本地 POC：relay 控制面自签证书时使用
   tlsCertFile: '',         // B2：主机侧 DNS-01 得到的 fullchain.pem；留空则生成 dev 自签
@@ -22,7 +23,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 });
 
 const ALLOWED_KEYS = new Set([
-  'enabled', 'hostName', 'relayUrl', 'relayDomain', 'hostId', 'hostToken',
+  'enabled', 'hostName', 'relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken',
   'relayTlsInsecure', 'tlsCertFile', 'tlsKeyFile', 'requireApproval', 'listenPort', 'denyPrefixes',
   'pushEnabled', 'pushCooldownSeconds', 'maxRequestBytes',
 ]);
@@ -67,6 +68,10 @@ export function validateConfig(config) {
     if (!config.hostId) errors.push('hostId 未配置');
     else if (!/^[a-z0-9][a-z0-9_-]{1,40}$/.test(config.hostId)) errors.push('hostId 只能是小写字母/数字/-/_，2-41 位');
     if (!config.hostToken) errors.push('hostToken 未配置');
+    const publicPort = Number(config.publicPort ?? 0);
+    if (!Number.isInteger(publicPort) || publicPort < 0 || publicPort > 65535) {
+      errors.push('publicPort 必须是 0-65535 的整数（0/443 表示默认 443）');
+    }
     if ((config.tlsCertFile && !config.tlsKeyFile) || (!config.tlsCertFile && config.tlsKeyFile)) errors.push('tlsCertFile 与 tlsKeyFile 必须成对提供');
   }
   return errors;
@@ -76,4 +81,15 @@ export function validateConfig(config) {
 export function hostFqdn(config) {
   if (!config.relayDomain) return '';
   return `${config.hostId}.${config.relayDomain}`;
+}
+
+/**
+ * 手机实际访问的 host（配对 URI / WebView URL）。
+ * publicPort=0/443 时不带端口；直连模式（例如 1443）时带上 :1443。
+ */
+export function hostAddress(config) {
+  const fqdn = hostFqdn(config);
+  if (!fqdn) return '';
+  const port = Number(config.publicPort ?? 0);
+  return Number.isInteger(port) && port > 0 && port !== 443 ? `${fqdn}:${port}` : fqdn;
 }

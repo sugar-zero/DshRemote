@@ -1,0 +1,63 @@
+# ============================================================================
+# 模板 D：直连数据端口（不动现有 nginx 443）
+#
+# 适用：服务器已有 nginx/业务占用 443，不想改 nginx stream。
+# App 通过二维码拿到端口，直接访问：
+#   https://<hostId>.relay.example.com:1443
+#
+# 启动：
+#   docker load -i dsh-relay-0.1.0-linux-amd64.tar
+#   cp .env.example .env
+#   # 编辑 .env：RELAY_DOMAIN / RELAY_HOST_ID / RELAY_PUBLIC_DATA_PORT / RELAY_PUBLIC_CONTROL_PORT
+#   docker compose -f docker-compose.direct.yml up -d
+#
+# 主机插件必须设置：
+#   publicPort = 1443
+#   relayUrl   = wss://relay.example.com:8443
+#
+# 防火墙需要放通：1443/tcp（App 数据面）和 8443/tcp（主机控制面）。
+# 不需要 nginx stream，也不需要 4433。
+# ============================================================================
+
+name: dsh-remote-server
+
+services:
+  relay:
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.1.0}
+    container_name: dsh-relay
+    command: ["node", "packages/relay/bin/relay.js"]
+    restart: unless-stopped
+    ports:
+      # 公网直连数据面：App 访问 <host>:1443
+      - "0.0.0.0:${RELAY_PUBLIC_DATA_PORT:-1443}:443"
+      # 公网控制面：主机插件连接 wss://<relay-domain>:8443
+      - "0.0.0.0:${RELAY_PUBLIC_CONTROL_PORT:-8443}:8443"
+      # healthz 只绑回环，不暴露公网
+      - "127.0.0.1:${RELAY_HTTP_PORT_HOST:-18080}:80"
+    environment:
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?请在 .env 中设置 RELAY_DOMAIN}
+      RELAY_HOST_ID: ${RELAY_HOST_ID:?请在 .env 中设置 RELAY_HOST_ID}
+      RELAY_HOST_TOKEN: ${RELAY_HOST_TOKEN:-}
+      RELAY_DATA_PORT: "443"
+      RELAY_CONTROL_PORT: "8443"
+      RELAY_HTTP_PORT: "80"
+      RELAY_DATA_HOST: "0.0.0.0"
+      RELAY_TOKENS_FILE: /data/tokens.json
+      RELAY_TLS_CERT_FILE: /data/certs/${RELAY_DOMAIN}/fullchain.pem
+      RELAY_TLS_KEY_FILE: /data/certs/${RELAY_DOMAIN}/privkey.pem
+      RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+    volumes:
+      - ./data:/data
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
