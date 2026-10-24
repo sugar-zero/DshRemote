@@ -85,22 +85,25 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 - ✅ iOS 原生工程（`dsh-remoteApp/ios/`）已生成，bundle ID = `com.amesucre.dshremote`
 - ✅ **无签名 generic iOS 编译已通过**（`xcodebuild ... BUILD SUCCEEDED`，含本地 Swift mTLS 模块）
 - ✅ 开发证书 + `DshRemote.mobileprovision`（含 `aps-environment=development`）已安装到本机
-- ⏳ 已配对 iPhone「iPhone」当前处于锁定状态，`xcodebuild` 提示需要解锁才能启用开发服务
+- ✅ 已手动签名构建并安装到 iPhone「iPhone」，App 启动、JS bundle 加载成功
+- ✅ 真机 Secure Enclave 自检：原生模块生成 P-256 key（`SE=true`）→ CSR → host CA 签发 → openssl 证书链/公钥校验通过
+- ⏳ 仍待完成：相机授权、扫码配对、真机 WebView mTLS、推送、App 锁（需 host/APNs 就绪）
 
 剩余步骤：
 
+已完成真机安装（手动签名）：
+
 ```bash
-# 1) 解锁 iPhone 并保持亮屏，USB 连接/信任此电脑
-# 2) 确认设备可用
-xcrun devicectl list devices
-# 3) 构建并安装（签名）
 cd dsh-remoteApp/ios
 xcodebuild -workspace DSHRemote.xcworkspace -scheme DSHRemote -configuration Debug \
-  -destination 'id=<IPHONE_UDID>' \
-  -derivedDataPath /tmp/dsh-ios-device \
-  DEVELOPMENT_TEAM=<TEAM_ID> CODE_SIGN_STYLE=Automatic -allowProvisioningUpdates build
-# 4) 或直接用 Expo：npx expo run:ios --device
+  -destination 'id=<IPHONE_UDID>' -derivedDataPath /tmp/dsh-ios-device \
+  CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=<TEAM_ID> \
+  PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID> \
+  CODE_SIGN_IDENTITY="Apple Development: <YOUR_NAME> (<CERT_ID>)" build
+xcrun devicectl device install app --device <UDID> /tmp/dsh-ios-device/Build/Products/Debug-iphoneos/DSHRemote.app
 ```
+
+剩余验收需要 host 配对二维码（相机/手动粘贴）与推送凭据；见 `docs/ACCEPTANCE.md`。
 按 [`dsh-remoteApp/docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) 执行并记录：
 配对/桌面确认、WebView mTLS、Secure Enclave 身份、推送、App 锁、撤销断链、证书轮换。
 
