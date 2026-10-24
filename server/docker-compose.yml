@@ -21,6 +21,9 @@ services:
   relay:
     image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.1.0}
     container_name: dsh-relay
+    # 运行时 UID/GID；默认沿用镜像内的 relay(100:101)。
+    # 宿主机 data 目录需要归这个 UID/GID 所有，或至少可写。
+    user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
     # 镜像 ENTRYPOINT 会先根据 RELAY_HOST_ID/TOKEN 补齐 /data/tokens.json，
     # 再执行这个 CMD；纯环境变量模式，不需要 relay.json。
     command: ["node", "packages/relay/bin/relay.js"]
