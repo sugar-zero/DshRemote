@@ -293,83 +293,6 @@ export function DevicesScreen({
         </View>
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>POC 调试：导入设备证书（PKCS#12）</Text>
-          <Text style={styles.bodyText}>
-            原生 CSR 尚未实现。POC 可先用 openssl 在 Mac 上生成 P-256 设备密钥与 CSR，交由主机侧设备
-            CA 签发后打包成 PKCS#12，再粘到这里导入 Keychain / Android Keystore（README 有完整命令）。
-          </Text>
-          <TouchableOpacity
-            style={styles.secondaryButton}
-            onPress={() => setDevImportOpen((open) => !open)}
-          >
-            <Text style={styles.secondaryButtonText}>
-              {devImportOpen ? '收起调试导入' : '展开调试导入'}
-            </Text>
-          </TouchableOpacity>
-          {devImportOpen ? (
-            <View style={styles.devImportBody}>
-              <Text style={styles.inputLabel}>PKCS#12（base64，含设备证书 + 私钥）</Text>
-              <TextInput
-                value={p12Base64}
-                onChangeText={setP12Base64}
-                style={[sharedStyles.input, styles.p12Input]}
-                multiline
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="MIIJ…（base64）"
-                placeholderTextColor={colors.textFaint}
-              />
-              <Text style={styles.inputLabel}>PKCS#12 密码</Text>
-              <TextInput
-                value={p12Password}
-                onChangeText={setP12Password}
-                style={sharedStyles.input}
-                secureTextEntry
-                autoCapitalize="none"
-                autoCorrect={false}
-                placeholder="仅本次导入使用，不持久化"
-                placeholderTextColor={colors.textFaint}
-              />
-              <TouchableOpacity
-                style={[styles.primaryButton, importing ? styles.disabledButton : null]}
-                onPress={() => void handleImportP12()}
-                disabled={importing}
-              >
-                {importing ? (
-                  <ActivityIndicator color="#04101F" />
-                ) : (
-                  <Text style={styles.primaryButtonText}>导入设备证书</Text>
-                )}
-              </TouchableOpacity>
-              {importMessage ? <Text style={styles.hint}>{importMessage}</Text> : null}
-            </View>
-          ) : null}
-        </View>
-
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>主机侧设备管理</Text>
-          <Text style={styles.bodyText}>
-            POC 阶段请在被控主机的桌面 DSH 界面中管理设备（列表、撤销、重新签发）。本机管理 API
-            只对本机已认证浏览器开放，远程隧道明确拒绝该前缀，因此 App 无法直接调用。
-          </Text>
-          <DetailRow label="桌面端接口（仅本机）" value={ADMIN_PATHS.devices} mono />
-          <Text style={styles.hint}>
-            后续版本可增加经 mTLS 认证的隧道接口（如 /__dsh_remote/devices）来支持 App 内列表与撤销；
-            在那之前此页只显示本地状态。
-          </Text>
-          <View style={styles.buttonRow}>
-            <TouchableOpacity style={[styles.secondaryButton, styles.disabledButton]} disabled>
-              <Text style={styles.secondaryButtonText}>刷新主机设备列表（未接通）</Text>
-            </TouchableOpacity>
-          </View>
-          <View style={styles.buttonRow}>
-            <TouchableOpacity style={[styles.secondaryButton, styles.disabledButton]} disabled>
-              <Text style={styles.secondaryButtonText}>撤销此设备（请在桌面端操作）</Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>重新配对</Text>
           <Text style={styles.bodyText}>
             重新配对会清除本机保存的主机信息与设备证书，并返回扫码页面。若设备已在主机侧被撤销，也必须重新配对。
@@ -388,7 +311,7 @@ export function DevicesScreen({
         </View>
 
         <Text style={styles.footnote}>
-          DSH Remote POC · 远程访问采用 mTLS 设备证书；主机侧可随时撤销。安全模型详见
+          DSH Remote · 远程访问采用 mTLS 设备证书；主机侧可随时撤销。安全模型详见
           docs/remote-access-evaluation.zh.md。
         </Text>
       </ScrollView>
