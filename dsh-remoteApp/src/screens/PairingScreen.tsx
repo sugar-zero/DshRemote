@@ -344,6 +344,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
         <Text style={styles.hint}>建议包含机型，方便日后在主机侧识别与撤销。</Text>
       </View>
 
+      {__DEV__ ? (
       <View style={styles.card}>
         <View style={styles.debugHeader}>
           <View style={styles.debugTitleWrap}>
@@ -372,6 +373,7 @@ export function PairingScreen({ onPaired }: PairingScreenProps) {
           </Text>
         ) : null}
       </View>
+      ) : null}
     </>
   );
 

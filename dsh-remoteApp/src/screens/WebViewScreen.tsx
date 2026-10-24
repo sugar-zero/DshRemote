@@ -208,9 +208,11 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
       </View>
 
       {useNativeMtlsView ? (
-        <Text style={styles.nativeHint}>
-          正在使用原生 mTLS WebView（Keychain 身份：{connection.certRef}）
-        </Text>
+        __DEV__ ? (
+          <Text style={styles.nativeHint}>
+            正在使用原生 mTLS WebView（Keychain 身份：{connection.certRef}）
+          </Text>
+        ) : null
       ) : (
         <Pressable style={styles.warningBar} onPress={reload}>
           <Text style={styles.warningText}>
