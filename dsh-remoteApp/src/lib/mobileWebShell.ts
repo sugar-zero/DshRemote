@@ -142,7 +142,19 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     //  - 工作区/文件夹行：只展开/收起，不关闭抽屉（否则选不了里面的会话）；
     //  - 会话行：DSH 在触摸端第一次点击只聚焦列表，补一次 click 实现单击打开，然后关闭抽屉；
     //  - 其它入口（设置/账号/插件等）：先关闭抽屉，让二级页面/弹窗可见。
-    var autoTapped = new WeakSet();
+    // iOS/WKWebView 对合成 click 有拦截，点到第二次才生效。
+    // 会话行本身是 React 组件，直接取 DOM 上的 __reactProps 并调用它自己的
+    // onClick（onOpen），绕开浏览器/合成事件限制，一次真实点击即进入会话。
+    function openSessionRow(row) {
+      try {
+        var key = Object.keys(row).filter(function (k) { return k.indexOf('__reactProps$') === 0; })[0];
+        if (key && row[key] && typeof row[key].onClick === 'function') {
+          row[key].onClick({});
+          return true;
+        }
+      } catch (e) { /* fall through */ }
+      return false;
+    }
     document.addEventListener('click', function (event) {
       if (!isOpen()) return;
       var target = event.target;
@@ -151,11 +163,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       if (bar && bar.contains(target)) {
         if (target.closest('[data-row-key^="workspace:"]')) return; // 文件夹展开/收起，保持抽屉
         var sessionRow = target.closest('[data-row-key^="session:"]');
-        if (sessionRow && !autoTapped.has(sessionRow)) {
-          autoTapped.add(sessionRow);
-          window.setTimeout(function () {
-            try { sessionRow.click(); } catch (e) {}
-          }, 150);
+        if (sessionRow) {
+          if (!openSessionRow(sessionRow)) {
+            // 兜底：旧版 React/DOM 没有 __reactProps 时，再合成一次 click。
+            window.setTimeout(function () { try { sessionRow.click(); } catch (e) {} }, 60);
+          }
           closeDrawer();
           return;
         }
