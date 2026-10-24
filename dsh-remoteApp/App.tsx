@@ -113,9 +113,8 @@ export default function App() {
   }, [connection]);
 
   const handleCloseWebView = useCallback(() => {
-    // The shell has no home screen: "back" from the WebView returns to pairing
-    // only after an explicit unpair. Keeping the WebView mounted is intentional.
-    setRoute(connection ? 'webview' : 'pairing');
+    // 返回 → 设备页（可查看状态 / 清除旧配对 / 重新配对）。
+    setRoute(connection ? 'devices' : 'pairing');
   }, [connection]);
 
   const handleRepair = useCallback(async () => {
