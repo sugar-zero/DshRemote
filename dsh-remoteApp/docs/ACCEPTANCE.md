@@ -115,9 +115,9 @@ npx expo run:android --device
 推送需要：
 
 1. Apple Developer 账号 → APNs key（.p8）或 EAS 托管凭据；
-   - 本机签名材料位于 `Certificates/`（已被 `.gitignore` 忽略）：`AuthKey_<APNS_KEY_ID>.p8`、`DshRemote.mobileprovision`、`development.cer`
-   - Team ID：`<TEAM_ID>`；App ID：`<TEAM_ID>.com.amesucre.dshremote`
-   - 注意：当前 provisioning profile 到期日为 **2026-10-31**，过期前需在 Apple Developer / Xcode 重新生成；
+   - 本机签名材料放在 `Certificates/`（已被 `.gitignore` 忽略），不要提交
+   - 在 Apple Developer / Xcode 中确认 Team ID 与 App ID 和项目配置一致
+   - 注意 provisioning profile 到期前需重新生成；
 2. `eas init` 生成 EAS `projectId`，写入 `app.json` 的 `extra.eas.projectId`；
 3. Android：Firebase 项目 + `google-services.json`（`npx expo install expo-notifications` 已配置插件）；
 4. 服务端 relay 的 `RELAY_PUSH_*` 配置（默认 Expo Push endpoint）。

@@ -85,7 +85,7 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 - ✅ iOS 原生工程（`dsh-remoteApp/ios/`）已生成，bundle ID = `com.amesucre.dshremote`
 - ✅ **无签名 generic iOS 编译已通过**（`xcodebuild ... BUILD SUCCEEDED`，含本地 Swift mTLS 模块）
 - ✅ 开发证书 + `DshRemote.mobileprovision`（含 `aps-environment=development`）已安装到本机
-- ✅ 已手动签名构建并安装到 iPhone「iPhone」，App 启动、JS bundle 加载成功
+- ✅ 已手动签名构建并安装到 iPhone 真机，App 启动、JS bundle 加载成功
 - ✅ 真机 Secure Enclave 自检：原生模块生成 P-256 key（`SE=true`）→ CSR → host CA 签发 → openssl 证书链/公钥校验通过
 - ✅ 真机配对 + 原生 mTLS WebView 已通过本地 Docker relay 端到端验证（设备 `d_example123`「我的 iPhone」，截图 `mockups/ios-mtls-dsh-ui.png`）
 - ⏳ 仍待完成：App 锁交互验证、推送（需 APNs/EAS 凭据）；生产 relay 由用户自行验证
@@ -100,7 +100,7 @@ xcodebuild -workspace DSHRemote.xcworkspace -scheme DSHRemote -configuration Deb
   -destination 'id=<IPHONE_UDID>' -derivedDataPath /tmp/dsh-ios-device \
   CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=<TEAM_ID> \
   PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID> \
-  CODE_SIGN_IDENTITY="Apple Development: <YOUR_NAME> (<CERT_ID>)" build
+  CODE_SIGN_IDENTITY="Apple Development: <YOUR_NAME>" build
 xcrun devicectl device install app --device <UDID> /tmp/dsh-ios-device/Build/Products/Debug-iphoneos/DSHRemote.app
 ```
 

@@ -5,18 +5,20 @@
  */
 import { spawn, execFileSync } from 'node:child_process';
 import { createWriteStream, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { tmpdir, networkInterfaces } from 'node:os';
 import http from 'node:http';
 import zlib from 'node:zlib';
 import forge from 'node-forge';
 import qrcode from 'qrcode-generator';
-import { parsePairingUri } from './dsh-remoteService/packages/protocol/index.js';
+import { parsePairingUri } from '../packages/protocol/index.js';
 
-const ROOT = './dsh-remoteService';
+const SCRIPT_DIR = dirname(fileURLToPath(import.meta.url));
+const ROOT = resolve(SCRIPT_DIR, '..');
 const HOST_PLUGIN = join(ROOT, 'packages/host-plugin');
 const DSH = process.env.DSH_BIN || 'dsh';
-const HOST_ID = 'h_ab12cd34';
+const HOST_ID = process.env.DSH_HOST_ID || 'h_ab12cd34';
 const RELAY_DOMAIN = 'local';
 const FQDN = `${HOST_ID}.${RELAY_DOMAIN}`;
 const TOKEN_FILE = `${process.env.HOME}/.dsh-relay-iphone/config/tokens.json`;
@@ -185,7 +187,7 @@ async function main() {
   const pairing = await adminJson(webPort, cookie, 'POST', '/api/remote-access/pairing/start', {});
   const parsed = parsePairingUri(pairing.uri);
   log(`pairing URI host=${parsed.host}`);
-  const qrPath = './mockups/local-pairing-qr.png';
+  const qrPath = resolve(SCRIPT_DIR, '../../mockups/local-pairing-qr.png');
   writeQrPng(pairing.uri, qrPath);
   writeFileSync(join(CERT_DIR, 'pairing-uri.txt'), pairing.uri + '\n', { mode: 0o600 });
   log(`配对二维码: ${qrPath}`);

@@ -113,7 +113,7 @@ open ios/*.xcworkspace     # 在 Xcode 中打开
 #   Bundle Identifier: com.amesucre.dshremote（已与注册的 App ID 对齐）
 ```
 
-> `bundleIdentifier` / `android.package` 已固定为 `com.amesucre.dshremote`，与 Apple Developer 注册的 App ID `<TEAM_ID>.com.amesucre.dshremote` 一致。
+> `bundleIdentifier` / `android.package` 已固定为 `com.amesucre.dshremote`。
 
 Android（结构已就绪，未在本机验证）：
 

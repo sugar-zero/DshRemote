@@ -141,7 +141,7 @@ dsh plugin --profile desktop add github:<you>/dsh-remote#<commit>
    - 中继域名：`relay.example.com`
    - hostId：`h_ab12cd34`
    - host token：relay 生成的 token（保存后不再回显）
-   - 主机名：如 `Jiayu 的 Mac`
+   - 主机名：如 `Example Mac`
    - TLS 证书 / 私钥：`~/.dsh/remote-access/certs/fullchain.pem` / `privkey.pem`
    - 打开「启用远程访问」；按需打开「配对需要桌面确认」
 3. 保存后入口状态点应变绿（中继在线）；若红，检查 relay 8443 可达性与 token。
@@ -153,7 +153,7 @@ dsh plugin --profile desktop add github:<you>/dsh-remote#<commit>
 curl -c /tmp/dsh.cookies -o /dev/null "http://127.0.0.1:3080/?token=<TOKEN>"
 curl -b /tmp/dsh.cookies -X POST http://127.0.0.1:3080/api/remote-access/config \
   -H 'content-type: application/json' \
-  -d '{"enabled":true,"relayUrl":"wss://relay.example.com:8443","relayDomain":"relay.example.com","hostId":"h_ab12cd34","hostToken":"<TOKEN>","hostName":"Jiayu 的 Mac","tlsCertFile":"/Users/you/.dsh/remote-access/certs/fullchain.pem","tlsKeyFile":"/Users/you/.dsh/remote-access/certs/privkey.pem","requireApproval":true}'
+  -d '{"enabled":true,"relayUrl":"wss://relay.example.com:8443","relayDomain":"relay.example.com","hostId":"h_ab12cd34","hostToken":"<TOKEN>","hostName":"Example Mac","tlsCertFile":"/Users/you/.dsh/remote-access/certs/fullchain.pem","tlsKeyFile":"/Users/you/.dsh/remote-access/certs/privkey.pem","requireApproval":true}'
 ```
 
 ### 4.4 macOS 常驻（launchd，推荐远程主机形态）
