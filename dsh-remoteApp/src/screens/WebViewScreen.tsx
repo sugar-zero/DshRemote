@@ -45,6 +45,7 @@ import { WebView, type WebViewNavigation, type WebViewProps } from 'react-native
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { webUiUrl } from '../lib/protocol';
+import { MOBILE_WEB_SHELL_JS } from '../lib/mobileWebShell';
 import type { StoredConnection } from '../lib/store';
 import { getDshMtlsWebView, type DshMtlsWebViewErrorEvent, type DshMtlsWebViewLoadingEvent } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
@@ -237,6 +238,7 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             key={reloadKey}
             url={webUiUrl(connection.host)}
             clientIdentityLabel={connection.certRef}
+            injectedJavaScript={MOBILE_WEB_SHELL_JS}
             style={styles.webview}
             onLoadingStart={(_event: DshMtlsWebViewLoadingEvent) => setStatus('connecting')}
             onLoadingFinish={(_event: DshMtlsWebViewLoadingEvent) => setStatus('online')}
@@ -249,6 +251,7 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             key={reloadKey}
             ref={webViewRef}
             source={{ uri: webUiUrl(connection.host) }}
+            injectedJavaScript={MOBILE_WEB_SHELL_JS}
             style={styles.webview}
             // A secure, cookie-less origin: the host proxies with its own session.
             sharedCookiesEnabled={false}

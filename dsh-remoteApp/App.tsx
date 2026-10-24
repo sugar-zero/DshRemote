@@ -24,29 +24,42 @@ import { LockScreen } from './src/screens/LockScreen';
 import { isAppLockEnabled } from './src/lib/appLock';
 import { WebViewScreen } from './src/screens/WebViewScreen';
 import { DevicesScreen } from './src/screens/DevicesScreen';
-import { clearAll, loadConnection, type StoredConnection } from './src/lib/store';
+import { HomeScreen } from './src/screens/HomeScreen';
+import {
+  clearCertificate,
+  loadConnections,
+  removeConnection,
+  type StoredConnection,
+} from './src/lib/store';
 import { configureNotificationHandler, enablePushForConnection } from './src/lib/notifications';
 import { colors, spacing, typography } from './src/theme';
 
-type Route = 'loading' | 'pairing' | 'webview' | 'devices';
+type Route = 'loading' | 'home' | 'pairing' | 'webview' | 'devices';
 
 export default function App() {
   const [route, setRoute] = useState<Route>('loading');
+  const [connections, setConnections] = useState<StoredConnection[]>([]);
   const [connection, setConnection] = useState<StoredConnection | null>(null);
   const [locked, setLocked] = useState(false);
   const lockEnabledRef = useRef(false);
 
+  const refreshConnections = useCallback(async () => {
+    const stored = await loadConnections();
+    setConnections(stored);
+    return stored;
+  }, []);
+
   useEffect(() => {
     let cancelled = false;
-    loadConnection()
+    loadConnections()
       .then((stored) => {
         if (cancelled) return;
-        setConnection(stored);
-        setRoute(stored ? 'webview' : 'pairing');
+        setConnections(stored);
+        setRoute(stored.length > 0 ? 'home' : 'pairing');
       })
       .catch(() => {
         if (cancelled) return;
-        setConnection(null);
+        setConnections([]);
         setRoute('pairing');
       });
     return () => {
@@ -56,7 +69,18 @@ export default function App() {
 
   const handlePaired = useCallback((paired: StoredConnection) => {
     setConnection(paired);
+    void refreshConnections();
     setRoute('webview');
+  }, [refreshConnections]);
+
+  const handleOpenConnection = useCallback((target: StoredConnection) => {
+    setConnection(target);
+    setRoute('webview');
+  }, []);
+
+  const handleOpenDevices = useCallback((target: StoredConnection) => {
+    setConnection(target);
+    setRoute('devices');
   }, []);
 
   // POC：通知权限/推送 token 注册；原生 mTLS 客户端未实现时只打日志，不打断主流程。
@@ -113,15 +137,19 @@ export default function App() {
   }, [connection]);
 
   const handleCloseWebView = useCallback(() => {
-    // 返回 → 设备页（可查看状态 / 清除旧配对 / 重新配对）。
-    setRoute(connection ? 'devices' : 'pairing');
-  }, [connection]);
+    // 左上角返回 → 主机列表（支持多台已配对主机）。
+    setRoute('home');
+  }, []);
 
   const handleRepair = useCallback(async () => {
-    await clearAll();
+    if (connection) {
+      await removeConnection(connection);
+      await clearCertificate(connection.hostFingerprint);
+    }
+    const remaining = await refreshConnections();
     setConnection(null);
-    setRoute('pairing');
-  }, []);
+    setRoute(remaining.length > 0 ? 'home' : 'pairing');
+  }, [connection, refreshConnections]);
 
   const renderRoute = () => {
     switch (route) {
@@ -132,8 +160,22 @@ export default function App() {
             <Text style={styles.loadingText}>正在读取本机配对信息…</Text>
           </View>
         );
+      case 'home':
+        return (
+          <HomeScreen
+            connections={connections}
+            onOpen={handleOpenConnection}
+            onOpenDevices={handleOpenDevices}
+            onPairNew={() => setRoute('pairing')}
+          />
+        );
       case 'pairing':
-        return <PairingScreen onPaired={handlePaired} />;
+        return (
+          <PairingScreen
+            onPaired={handlePaired}
+            {...(connections.length > 0 ? { onCancel: () => setRoute('home') } : {})}
+          />
+        );
       case 'webview':
         return connection ? (
           <WebViewScreen
@@ -142,18 +184,28 @@ export default function App() {
             onOpenDevices={() => setRoute('devices')}
           />
         ) : (
-          <PairingScreen onPaired={handlePaired} />
+          <HomeScreen
+            connections={connections}
+            onOpen={handleOpenConnection}
+            onOpenDevices={handleOpenDevices}
+            onPairNew={() => setRoute('pairing')}
+          />
         );
       case 'devices':
         return connection ? (
           <DevicesScreen
             connection={connection}
-            onClose={() => setRoute('webview')}
+            onClose={() => setRoute('home')}
             onRepair={handleRepair}
             onConnectionUpdated={setConnection}
           />
         ) : (
-          <PairingScreen onPaired={handlePaired} />
+          <HomeScreen
+            connections={connections}
+            onOpen={handleOpenConnection}
+            onOpenDevices={handleOpenDevices}
+            onPairNew={() => setRoute('pairing')}
+          />
         );
     }
   };
