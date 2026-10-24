@@ -26,6 +26,7 @@ server/
 ├── docker-compose.yml            # 模板 A：使用已有 relay 镜像
 ├── docker-compose.build.yml      # 模板 B：从源码构建 relay 镜像
 ├── docker-compose.nginx.yml      # 模板 C：可选叠加 nginx 容器
+├── docker-compose.direct.yml     # 模板 D：直连数据端口，不动 nginx 443
 ├── .env.example                  # 复制为 .env
 ├── nginx/
 │   ├── host-nginx-stream.conf    # 已有宿主机 nginx：443/8443 L4 透传
@@ -88,6 +89,7 @@ cp .env.example .env
 |---|---|---|
 | **已有镜像**（离线/生产推荐） | `docker-compose.yml` | `docker compose up -d relay` |
 | **纯源码编译** | `docker-compose.build.yml` | `docker compose -f docker-compose.build.yml up -d --build` |
+| **直连端口（不动 nginx 443）** | `docker-compose.direct.yml` | `docker compose -f docker-compose.direct.yml up -d` |
 | 已有镜像 + 内置 nginx | `docker-compose.yml` + `docker-compose.nginx.yml` | `docker compose -f docker-compose.yml -f docker-compose.nginx.yml up -d` |
 | 编译 + 内置 nginx | `docker-compose.build.yml` + `docker-compose.nginx.yml` | `docker compose -f docker-compose.build.yml -f docker-compose.nginx.yml up -d --build` |
 
@@ -196,6 +198,58 @@ TLS 证书仍由 relay / 主机插件各自持有。
 
 ---
 
+### 4.3 直连数据端口（不动现有 nginx 443）
+
+如果服务器 443 已经被 nginx 业务占用，也不想改 nginx stream，可以让 App 直接访问
+relay 的公网数据端口，由二维码告诉 App 端口号。
+
+```bash
+# 需要新镜像（ENTRYPOINT 自动 token）
+docker load -i dsh-relay-0.1.0-linux-amd64.tar
+
+cd server
+cp .env.example .env
+# 编辑：
+#   RELAY_DOMAIN=relay.example.com
+#   RELAY_HOST_ID=h_xxxx
+#   RELAY_PUBLIC_DATA_PORT=1443
+#   RELAY_PUBLIC_CONTROL_PORT=8443
+
+docker compose -f docker-compose.direct.yml up -d
+```
+
+防火墙需要放通：
+
+```text
+1443/tcp  App → relay 数据面（TLS + mTLS）
+8443/tcp  主机插件 → relay 控制面（WSS）
+```
+
+主机插件设置：
+
+```text
+中继地址      wss://relay.example.com:8443
+手机访问端口  1443
+```
+
+生成配对二维码后，QR 里的 host 会是：
+
+```text
+h_xxxx.relay.example.com:1443
+```
+
+> 主机插件的 `publicPort` / pairing 逻辑更新后，需要重启一次 DSH 桌面端，
+> 让 Host 半与 Client 半重新加载。
+
+App 会直接访问 `https://h_xxxx.relay.example.com:1443/`，完全绕过 nginx 443。
+
+- 现有 nginx 443 完全不动；
+- 不需要 stream，也不需要 4433；
+- 证书不变：仍覆盖 `<hostId>.<relayDomain>`；
+- 非标准端口在少数网络可能被拦截，443 兼容性最好。
+
+---
+
 ## 5. 主机 token（容器首次启动自动完成）
 
 不需要再 `docker compose exec` 进容器执行 `token create`。镜像 ENTRYPOINT（源码 [packages/relay/relay-entrypoint.sh](../dsh-remoteService/packages/relay/relay-entrypoint.sh)）会在 relay 启动前
@@ -282,6 +336,7 @@ curl -s http://127.0.0.1:18080/healthz
 | 中继地址 | `wss://relay.example.com:8443` |
 | 中继域名 | `relay.example.com` |
 | 主机 ID | `h_ab12cd34` |
+| 手机访问端口 | 443/留空 = nginx 443 模式；直连模式填 `1443` |
 | 中继主机令牌 | 第 5 步生成的一次性 token |
 | TLS 证书路径 | `~/.dsh/remote-access/certs/fullchain.pem` |
 | TLS 私钥路径 | `~/.dsh/remote-access/certs/privkey.pem` |

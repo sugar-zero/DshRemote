@@ -1,7 +1,7 @@
 import { readFileSync, watchFile, unwatchFile } from 'node:fs';
 import { hostname } from 'node:os';
 import { X509Certificate } from 'node:crypto';
-import { hostFqdn, loadConfig, saveConfig, validateConfig } from './config.js';
+import { hostAddress, hostFqdn, loadConfig, saveConfig, validateConfig } from './config.js';
 import { ensureDir, paths, readJson, writeJson } from './paths.js';
 import { loadOrCreateDeviceCa, loadOrCreateDevServerCert, loadOrCreateHostIdentity } from './identity.js';
 import { DeviceStore } from './devices.js';
@@ -268,6 +268,7 @@ export class RemoteService {
         fingerprint: this.identity?.fingerprint ?? '',
         publicKey: this.identity?.publicKeyDerB64 ?? '',
         domain: hostFqdn(config),
+        address: hostAddress(config),
         tls: {
           certFile: tls.certFile ?? config.tlsCertFile ?? '',
           subject: tls.subject ?? '',
@@ -285,6 +286,7 @@ export class RemoteService {
         relayUrl: config.relayUrl ?? '',
         relayDomain: config.relayDomain ?? '',
         hostId: config.hostId ?? '',
+        publicPort: Number(config.publicPort ?? 0),
         hostName: config.hostName ?? '',
         requireApproval: Boolean(config.requireApproval),
         pushEnabled: config.pushEnabled !== false,

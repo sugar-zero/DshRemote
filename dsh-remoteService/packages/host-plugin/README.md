@@ -46,6 +46,7 @@ DSH 设置 → 远程访问：
 | 中继地址 | `wss://relay.example.com:8443`（自托管 relay 控制面） |
 | 中继域名 | `relay.example.com`；主机域名是 `<hostId>.relay.example.com` |
 | 主机 ID | `h_ab12cd34`，必须与 relay token 的 hostId 一致 |
+| 手机访问端口 | `443`/留空 = 默认 443（nginx 模式）；直连 relay 数据面时填 `1443` |
 | 中继主机令牌 | relay 端 `token create` 生成的一次性 token |
 | 主机名称 | 手机/App 显示的主机名 |
 | TLS 证书路径 | 主机子域证书 `fullchain.pem` 的本机绝对路径 |

@@ -102,3 +102,30 @@ test('pairing: bad secret rejected and attempts counted', async () => {
     home.cleanup();
   }
 });
+
+test('pairing: publicPort is included in the QR host (direct relay mode)', async () => {
+  const home = withTempHome();
+  try {
+    const { loadOrCreateHostIdentity, loadOrCreateDeviceCa } = await import('../lib/identity.js');
+    const { DeviceStore } = await import('../lib/devices.js');
+    const { PairingManager } = await import('../lib/pairing.js');
+    const pairing = new PairingManager({
+      identity: loadOrCreateHostIdentity(),
+      ca: loadOrCreateDeviceCa(),
+      devices: new DeviceStore(),
+      audit: { append() {} },
+      getConfig: () => ({
+        hostId: 'h_test',
+        relayDomain: 'relay.test',
+        publicPort: 1443,
+        requireApproval: false,
+      }),
+    });
+    const session = pairing.createSession();
+    const parsed = parsePairingUri(session.uri);
+    assert.equal(parsed.host, 'h_test.relay.test:1443');
+    assert.equal(parsed.relayDomain, 'relay.test');
+  } finally {
+    home.cleanup();
+  }
+});

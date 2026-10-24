@@ -86,6 +86,10 @@ window.__ModuleLoader__.load({
       'field.relayDomainNote': '主机域名为 <hostId>.<中继域名>。',
       'field.hostId': '主机 ID',
       'field.hostIdHint': 'h_ab12cd34',
+      'field.publicPort': '手机访问端口',
+      'field.publicPortHint': '443 或留空 = 默认 443；直连模式填 1443',
+      'field.publicPortNote': '二维码会把该端口告诉 App。用 nginx 443 模式时留空/443；直连 relay 数据面时填公网端口，例如 1443。',
+      'host.address': '手机访问地址',
       'field.hostToken': '中继主机令牌',
       'field.hostTokenPlaceholder': '已配置，留空保持不变',
       'field.hostName': '主机名称',
@@ -239,6 +243,10 @@ window.__ModuleLoader__.load({
       'field.relayDomainNote': 'Host domain is <hostId>.<relay domain>.',
       'field.hostId': 'Host ID',
       'field.hostIdHint': 'h_ab12cd34',
+      'field.publicPort': 'Mobile access port',
+      'field.publicPortHint': '443 or empty = default 443; direct mode: 1443',
+      'field.publicPortNote': 'The QR code tells the app which port to use. Leave empty/443 behind nginx:443; set the public relay data port (e.g. 1443) for direct mode.',
+      'host.address': 'Mobile address',
       'field.hostToken': 'Relay host token',
       'field.hostTokenPlaceholder': 'Configured — leave empty to keep',
       'field.hostName': 'Host name',
@@ -487,6 +495,7 @@ window.__ModuleLoader__.load({
         enabled: config.enabled !== undefined ? config.enabled === true : (status ? status.enabled === true : false),
         relayUrl: stringOrPrevious(firstDefined(config.relayUrl, relay.url), prev.relayUrl || ''),
         hostId: stringOrPrevious(firstDefined(config.hostId, host.id), prev.hostId || ''),
+        publicPort: stringOrPrevious(firstDefined(config.publicPort, prev.publicPort), prev.publicPort !== undefined ? String(prev.publicPort) : '0'),
         relayDomain: stringOrPrevious(deriveRelayDomain(status), prev.relayDomain || ''),
         hostToken: '',
         hostName: stringOrPrevious(firstDefined(config.hostName, host.name), prev.hostName || ''),
@@ -1326,6 +1335,12 @@ window.__ModuleLoader__.load({
         if (relayDomain !== baseline.relayDomain) patch.relayDomain = relayDomain;
         const hostId = draft.hostId.trim();
         if (hostId !== '' && hostId !== baseline.hostId) patch.hostId = hostId;
+        const publicPortRaw = String(draft.publicPort ?? '').trim();
+        const publicPort = publicPortRaw === '' ? 0 : Number.parseInt(publicPortRaw, 10);
+        if (Number.isFinite(publicPort) && publicPort >= 0 && publicPort <= 65535
+          && String(publicPort) !== String(baseline.publicPort)) {
+          patch.publicPort = publicPort;
+        }
         const hostName = draft.hostName.trim();
         if (hostName !== baseline.hostName) patch.hostName = hostName;
         const tlsCertFile = draft.tlsCertFile.trim();
@@ -1456,6 +1471,7 @@ window.__ModuleLoader__.load({
         h(InfoRow, { label: t('host.id'), value: host.id || '—' }),
         h(InfoRow, { label: t('host.name'), value: host.name || '—' }),
         h(InfoRow, { label: t('host.domain'), value: host.domain || '—' }),
+        h(InfoRow, { label: t('host.address'), value: host.address || host.domain || '—' }),
         h(InfoRow, { label: t('host.fingerprint'), value: fingerprint || '—' }),
         h(InfoRow, {
           label: t('host.cert'),
@@ -1500,7 +1516,14 @@ window.__ModuleLoader__.load({
             value: draft.hostName,
             placeholder: t('field.hostNameHint'),
             onChange: (value) => setDraft({ ...draft, hostName: value }),
+          }),
+          h(Field, {
+            label: t('field.publicPort'),
+            value: draft.publicPort,
+            placeholder: t('field.publicPortHint'),
+            onChange: (value) => setDraft({ ...draft, publicPort: value }),
           })),
+        h('div', { 'data-ra-note': '' }, t('field.publicPortNote')),
         h('div', { 'data-ra-grid': '' },
           h(Field, {
             label: t('field.hostToken'),
