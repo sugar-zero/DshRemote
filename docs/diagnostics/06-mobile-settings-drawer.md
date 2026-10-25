@@ -185,7 +185,8 @@ npm run check:shell       # 43/43 通过（新增 20 项设置断言）
 回归对照（证明用例能抓住旧行为）：
 
 ```bash
-git show HEAD:dsh-remoteApp/src/lib/mobileWebShell.ts > /tmp/mobileWebShell-old.ts
+# 3112409 = 本功能之前的提交（旧的注入壳）
+git show 3112409:dsh-remoteApp/src/lib/mobileWebShell.ts > /tmp/mobileWebShell-old.ts
 cd dsh-remoteApp
 node scripts/check-injected-shell.mjs --shell-js /tmp/mobileWebShell-old.ts
 # → 16/43 失败；其中：

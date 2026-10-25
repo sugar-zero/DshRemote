@@ -20,7 +20,7 @@
  *
  * 用法：node scripts/check-injected-shell.mjs   （本机没有 Chrome 时自动跳过，退出码 0）
  * 开发对照：node scripts/check-injected-shell.mjs --shell-js /tmp/old-mobileWebShell.ts
- *   —— 把注入脚本换成另一份文件（例如 `git show HEAD:...` 的旧版本），用来证明用例能抓住回归。
+ *   —— 把注入脚本换成另一份文件（例如 `git show 3112409:...` 的旧版本），用来证明用例能抓住回归。
  *   默认（CI / 日常自检）永远从 src/lib/mobileWebShell.ts 现取，不需要也不应该带这个参数。
  *
  * ⚠️ 这不是真机验证的替代品：只覆盖注入脚本的 DOM/布局行为，不覆盖 WKWebView 的
@@ -364,7 +364,7 @@ const shellPath = fileURLToPath(new URL('../src/lib/mobileWebShell.ts', import.m
 
 /**
  * 注入脚本来源：默认永远是仓库当前的 src/lib/mobileWebShell.ts（CI/日常自检的路径）。
- * `--shell-js <path>` 只给本地对照用（例如 `git show HEAD:...` 的旧版本），
+ * `--shell-js <path>` 只给本地对照用（例如 `git show 3112409:...` 的旧版本），
  * 用来证明新增断言能抓住回归；不要在 CI 里传。
  */
 function resolveShellFile(argv) {
