@@ -95,6 +95,22 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
   error: colors.danger,
 };
 
+/**
+ * 顶栏副标题只展示「主机 ID」：从 connection.host（<hostId>.<relayDomain>[:port]）
+ * 里去掉端口和 relay 域名；直连 IP/自定义地址保留原值。
+ */
+function hostIdOf(host: string): string {
+  let hostname = host;
+  try {
+    hostname = new URL(`https://${host}`).hostname;
+  } catch {
+    const [withoutPort] = host.split(':');
+    hostname = withoutPort ?? host;
+  }
+  const [firstLabel] = hostname.split('.');
+  return firstLabel || hostname;
+}
+
 /** The host's relay domain is the only origin this WebView may navigate to. */
 function isTunnelUrl(url: string, host: string): boolean {
   const httpsPrefix = `https://${host}/`;
@@ -275,6 +291,8 @@ export function WebViewScreen({
   }, [reloadToken, reload]);
 
   const handleNavigationStateChange = useCallback((navigation: WebViewNavigation) => {
+    // 底部连接信息只在 Debug 构建显示（Release 下这块空间留给主界面）。
+    if (!__DEV__) return;
     setCurrentUrl(navigation.url);
     if (navigation.title) setPageTitle(navigation.title);
   }, []);
@@ -537,7 +555,7 @@ export function WebViewScreen({
             <View style={styles.statusRow}>
               <View style={[styles.statusDot, { backgroundColor: STATUS_COLORS[status] }]} />
               <Text style={styles.statusText} numberOfLines={1}>
-                {STATUS_LABELS[status]} · {connection.host}
+                {STATUS_LABELS[status]} · {hostIdOf(connection.host)}
               </Text>
             </View>
           </View>
@@ -643,11 +661,20 @@ export function WebViewScreen({
         ) : null}
       </View>
 
-      <View style={[styles.bottomBar, { paddingBottom: insets.bottom + spacing.xs }]}>
-        <Text style={styles.bottomText} numberOfLines={1}>
-          {pageTitle} · {currentUrl}
-        </Text>
-      </View>
+      {/*
+        * 底部连接信息（页面标题 + 当前 URL）只在 Debug 构建显示，方便排查
+        * 导航/加载问题；Release 构建去掉这条，把高度让给主界面 WebView。
+        * Release 下 WebView 铺到屏幕底部（含 home indicator 区域），底部安全区
+        * 由注入手机壳在 DSH 页面容器内用 env(safe-area-inset-bottom) 预留，
+        * 背景跟随 DSH 主题，不会出现 App 背景色的黑边。
+        */}
+      {__DEV__ ? (
+        <View style={[styles.bottomBar, { paddingBottom: insets.bottom + spacing.xs }]}>
+          <Text style={styles.bottomText} numberOfLines={1}>
+            {pageTitle} · {currentUrl}
+          </Text>
+        </View>
+      ) : null}
     </View>
   );
 }
