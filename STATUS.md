@@ -41,12 +41,151 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   若 DSH 缓存启动 bundle 则重启 DSH 一次。
 - 详情：[`docs/diagnostics/04-session-switch-cache.md`](docs/diagnostics/04-session-switch-cache.md)。
 
+## 2026-10-25 新增：自托管 APNs 推送（方案 A）
+
+- **目标**：iOS 推送不再依赖 Expo 云 / EAS projectId；主机插件用自己的 APNs Auth Key
+  直接调 Apple，relay 完全不参与推送，也看不到推送 token。
+- **链路**：DSH `turn/end` → host `lib/apns.js` → APNs → iPhone；主机会按 App 注册时上报的
+  `aps-environment` 自动选择 `api.sandbox.push.apple.com`（开发签名包）或
+  `api.push.apple.com`（发布签名包）。
+- **实现**：
+  - host-plugin 新增 `lib/apns.js`（`node:http2` + `node:crypto`，零新依赖）：ES256 provider
+    JWT（raw r||s，缓存 50min）、`apns-topic/push-type/priority`、410/BadDeviceToken 自动
+    清理、错误分类；`pushProvider: apns|expo` 分流，旧 relay→Expo 通道保留为可选。
+  - 通知内容取自实际会话（`lib/push-summary.js`）：**标题 = 最新会话标题（无则首条用户消息）；
+    正文 = 本轮最后一条助手回复的截断摘要**（失败加 `⚠️`，无文本时状态兜底）；不再使用固定
+    「DSH/有任务需要你」文案。标题最多 60 字符、正文 160 字符。
+  - App：`getDevicePushTokenAsync()` + `getIosPushNotificationServiceEnvironmentAsync()`，
+    经原生 mTLS 注册 `{provider:"apns", token, environment}`；`expo-application` 提为直接依赖。
+  - 设置页新增：自托管直连 APNs 开关、私钥路径 / Key ID / Team ID / Topic。
+  - `POST /__dsh_remote/push-token` 校验 APNs token（64 位 hex）与环境；每设备只保留最新
+    token；APNs 返回 **410 / Unregistered** 时清理失效 token（`BadDeviceToken` /
+    `DeviceTokenNotForTopic` 视为 topic/环境配置错误，不删 token）。
+- **验证**：`npm test` **97/97**；`npm run validate:artifacts`；`npx tsc --noEmit`；
+  `npm run check:native`；`npm run check:shell`。
+- **生效**：本批次统一为 Host 插件 **0.1.5**（重启 DSH 后生效）；App **0.1.5 (build 6)**
+  需重新构建安装/重载（本批次含原生能力；最终说明见文末 0.1.5 条目）。
+- **隐私**：通知标题/正文会进入 APNs payload、可能显示在锁屏（并经过 Apple 推送网络）；
+  介意的话关闭推送或隐藏锁屏预览。
+- **待完成（需外部环境）**：把 APNs `.p8` 放到主机并填好设置 → 真机推送验收
+  （`dsh-remoteApp/docs/ACCEPTANCE.md` §5）。key 建议 Environment 选 **Sandbox & Production**：
+  只选 Sandbox 的 key 只能发开发包，上架/Ad Hoc 前需要覆盖生产环境。
+
+## 2026-10-25 新增：App 设置页 + 前台应用内通知 + 清理缓存
+
+- **前台通知策略**：新增「应用内通知」开关（默认开）。App 在前台收到推送时不再弹系统
+  横幅，改为顶部应用内卡片（5s 自动消失，点击可打开主机）；关闭开关则前台恢复系统横幅。
+  后台/锁屏仍由 iOS 显示系统通知；App 锁（生物识别）状态不显示应用内卡片，此时推送按
+  系统通知显示（与后台一致）。
+- **设置页**（Home 右上角 ⚙︎ / 主机页顶栏 ⚙︎）：
+  - 版本：App 版本/构建号、Bundle ID、iOS 版本；
+  - 通知：应用内通知开关、系统通知权限状态、打开系统设置、发送测试通知；
+  - 缓存：清理 WebView 缓存 / Cookie / 本地存储（新增原生 `clearWebCache`：iOS
+    WKWebsiteDataStore 全类型 + URLCache；Android HTTP 磁盘缓存 + Cookie/WebStorage/认证缓存），完成后自动重载 WebView；
+  - 设备与安全入口（复用现有 DevicesScreen：证书/诊断/App 锁/解除配对）。
+- **实现**：`src/screens/SettingsScreen.tsx`、`src/components/InAppNotificationBanner.tsx`、
+  `src/lib/settings.ts`（SecureStore 持久化）、`notifications.ts`（按 AppState/开关抑制系统 UI）、
+  `modules/dsh-mtls` 新增 `clearWebCache`（JS bridge + iOS/Android，`check-native` 增加两端一致性检查）。
+- **验证**：`npx tsc --noEmit`、`npm run check:native`、`npm run check:shell`、`npx expo config`
+  通过；iOS Release 编译通过；真机前台/后台行为与清缓存待验收。
+- **生效**：本批次统一为 App **0.1.5 (build 6)** 需重新构建安装（含原生 clearWebCache）。
+
+## 2026-10-25 修复：手机 WebView 后台恢复后的计时 / 状态不一致
+
+- **现象**：App 切后台较长时间再回来，运行中计时先停在后台前的旧值（例如 4 分钟），
+  短暂闪一下真实值（20 分钟）又回到旧值；其他会话信息也可能出现短暂不对等。
+- **初步原因**：iOS 会挂起 WKWebView 的 JS 与定时器，但原 WebSocket 可能仍被判定为
+  “活着”，DSH 客户端因此不会主动重建连接；恢复后 UI 继续复用后台前的 Session / 内存
+  状态（叠加会话热缓存），与主机最新状态短暂并存 → 旧值/新值闪动。
+- **缓解**：host 插件 Client 半在手机远程 WebView 中监听 `visibilitychange`；页面隐藏
+  ≥10s 后再次可见时调用 DSH Client 的 `connection.reconnect()`，强制重建 generation 并
+  重新下发 tail 快照；现有热缓存逻辑会在断线时释放非当前会话，避免旧状态继续复用。
+  阈值可用 `globalThis.__DSH_REMOTE_RESUME_RECONNECT_MS__` 覆盖（调试）。
+- **验证**：`client-smoke` 新增“后台恢复触发重连”用例；`npm test` 全量通过。
+  **真机上的 4→20→4 闪烁仍需复测**（等 iPhone 可用后安装 0.1.5 观察）。
+- **生效**：Client bundle 由 host 提供，App 内刷新/重开页面即可；若 DSH 缓存启动 bundle
+  则重启 DSH 一次。Host 插件版本 **0.1.5**（本批次统一版本）。
+
+## 2026-10-25 新增：推送点击跳转会话 + 当前会话不弹应用内通知
+
+- **能力**：
+  - 点击系统通知（后台/锁屏）或应用内卡片 → 切到推送所属主机，并让 DSH 打开对应会话；
+  - 前台收到的推送若属于**当前正在查看的会话**（host + sessionId 匹配），应用内
+    卡片与系统横幅都不显示（DSH 页面本身已更新）；其它会话 / 其它页面仍提示。
+- **实现**：
+  - host：APNs payload 增加 `body` 字典 `{kind, sessionId, host}`。注意 expo-notifications
+    的 iOS 实现只把 APNs `userInfo["body"]` 映射到 JS 的 `content.data`，根字段拿不到；
+    `push.js` 传入会话 id 与 `hostAddress(config)`，`apns.js` 负责组装。
+  - host Client 半（`client.js`，仅 `?dsh_mobile=1`）：注入 DSH `uiWorkspace` service，
+    订阅 `uiWorkspace.selection` 通过原生 WebView 桥上报当前 `{host, sessionId}`；暴露
+    `window.__DSH_REMOTE_OPEN_SESSION__(id)`（内部 `uiWorkspace.openSession(id)`）与
+    `dsh-remote:open-session` 事件；插件加载前的请求暂存 pending，加载后消费。
+    `uiWorkspace` 不存在时静默降级（仍打开主机，只是不自动跳会话）。
+  - App：原生模块新增 `evaluateJavaScript`（iOS WKWebView / Android WebView，同一时刻跟踪
+    活跃 WebView）；WebViewScreen 新增 `openSessionRequest`（页面加载完成后注入打开脚本）、
+    `onMessage` 解析当前会话；App 处理 received + response + 冷启动
+    （`getLastNotificationResponseAsync`），多主机按 payload 的 `host` 路由。
+- **验证**：`npm test` **97/97**；`npm run validate:artifacts`；`npx tsc --noEmit`；
+  `npm run check:native`；`npm run check:shell`；iOS Release 编译通过；
+  **2026-10-25 真机验收成功**：非当前会话推送、系统横幅点击跳转、当前会话不提示均通过
+  （App 0.1.5 build 6 / Host 0.1.5）。
+- **生效**：Host 插件 **0.1.5**（重启 DSH 生效；Client bundle 也可刷新页面加载）；
+  App **0.1.5 (build 6)** 需重新构建安装（含原生 `evaluateJavaScript`）。
+- **限制**：旧版 `pushProvider=expo` 通道 payload 无 session/host，点击只打开主机；
+  会话已删除/归档时打开失败会保持当前页面。
+
+## 2026-10-25 修复：手机 App 右侧栏打不开（展开按钮消失 / 面板不可见）
+
+- **现象**：远程 App 里，会话 header 右角的「展开右侧栏」按钮可见；点击后按钮消失，
+  但看不到面板——像「打开到了屏幕右边、App 看不到」。
+- **根因**（App 侧，注入手机壳）：注入 DSH Web UI 的窄屏 CSS 里有
+  `[class*="_rightbarCol"] { display: none !important; }`，把右栏整列隐藏。DSH 在 frame
+  宽度 <768px 时让右栏**自动全屏**（`@deepseek-ai/dsh-client-ui-sidebar-right` 的
+  `autoFullscreen`，面板 `position:absolute; right:0; width:100vw`，挂在该列里）；
+  点击展开后 DSH 会隐藏 header 角落的按钮（`ExpandButton` 在 expanded 时返回 null），
+  于是「按钮消失是正常的、面板被 CSS 藏掉是 bug」叠加成“点了没反应”。
+- **修复**（`dsh-remoteApp/src/lib/mobileWebShell.ts`，纯 JS）：窄屏下不再隐藏整列，改为
+  `[class*="_rightbarCol"] { display: contents !important; }` —— 列不生成盒子后，DSH 原生
+  全屏面板（`position:absolute` + inline `width:100vw`）的包含块上移到 `_frame`
+  （`position:relative; height:100%`），正好铺满 WebView。不覆盖几何、不加 z-index；
+  收起态由 DSH 自己 `translateX(100vw)+visibility:hidden` 且面板 `pointer-events:none`，
+  不拦截聊天手势。
+- **验证**：`npm run check:shell` **23/23**（新增 11 项右栏断言：390×844 无头 Chrome
+  fixture，展开覆盖 rect 0,0,390,844、点击穿透、面板按钮可点、旧脚本对照失败）；
+  `npx tsc --noEmit`、`npm run check:native` 通过。**真机行为待验收**（见 ACCEPTANCE §3 #18）。
+- **生效**：纯 JS，无需重建原生；dev client Metro reload / 重开 App 即可，发布包需重打
+  JS bundle。Host 插件 / relay / DSH 不需要任何改动或重启。
+- 详情：[`docs/diagnostics/05-mobile-right-panel.md`](docs/diagnostics/05-mobile-right-panel.md)。
+
+## 2026-10-25 修复：推送 token 误删 / 清缓存 / 锁屏通知 / 会话状态（提交前审查）
+
+- **APNs token 清理口径**：只对 **410 / Unregistered** 删除失效 token；
+  `BadDeviceToken` / `DeviceTokenNotForTopic` / `InvalidProviderToken` 视为 topic / 环境 /
+  key 配置错误，**不再删 token**，只记日志提示检查 `apnsTopic` / `apnsEnvironment` /
+  Key ID / Team ID（避免一个 typo 清空所有设备 token）。清理时同时校验 token 值，避免误删
+  刚轮换的新 token。新增 `apns-collapse-id`（= sessionId）折叠同会话重复提醒。
+- **清缓存**：Android 补上 `WebView.clearCache(true)` / `clearFormData()`（HTTP 磁盘缓存真正
+  清理）；iOS 改为 Promise 回调（不再阻塞 expo 全局 async 队列），10s 超时返回 false 并在
+  设置页提示；`npm run check:native` 增加 Android 三项断言。
+- **前台通知**：App 锁（生物识别覆盖层）显示时按“后台”处理——系统通知正常显示，应用内
+  卡片不显示（避免通知被两处同时吞掉）。
+- **当前会话抑制**：离开 WebView 时清空“当前会话”；host 侧在 selection 被清空时上报
+  `sessionId:''`，App 清除抑制状态；重新进入主机时恢复上报，避免误吞其它推送。
+- **多主机**：注册推送 token 前先 `setClientIdentity(connection.certRef)`，避免用其它主机
+  的设备身份注册（失败返回原因，不重试）。
+- **通知跳会话**：native 页面重载/自动恢复期间重置 `loadedRef`，避免把“注入到将销毁文档”
+  当作已处理导致跳转丢失；`flushOpenSession` 只在页面就绪时执行。
+- **验证**：`npm test` **97/97**（+3 新测试：prune 分类、config-error 不删 token、轮换安全）；
+  `npm run validate:artifacts`；`npx tsc --noEmit`；`npm run check:native`；
+  `npm run check:shell` **23/23**。
+- **生效**：Host **0.1.5** / App **0.1.5 (build 6)**（与本批次同一版本）。
+
 ## 可自验证据（当前机器即可跑）
 
 ```bash
 cd dsh-remoteService
 npm install
-npm test                    # ✅ 58/58 pass
+npm test                    # ✅ 97/97 pass（含 APNs、会话摘要、后台恢复重连与通知跳转）
 npm run validate:artifacts  # ✅ shell/compose/plist/JSON/Node 入口校验
 npm run poc:deploy          # ✅ check-deploy.sh 成功路径（真 relay + 真 host + 证书检查）
 node poc/run-poc.js         # ✅ 配对→设备 mTLS→relay→真实 dsh web 的 UI/WS
@@ -75,7 +214,7 @@ npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 - 远程 TLS 监听：仅 `127.0.0.1` 反代真实 DSH Web（UI/静态资源/API/WS 全功能），mTLS 校验、Cookie 注入、Host/Origin/Forwarded 等头清洗、安全响应头、请求体上限、路径 deny list
 - 配对：一次性 256-bit secret / 12 位 Crockford code、120s TTL、限速、完整 SHA-256 指纹、SAS、桌面允许/拒绝
 - relay：443 **TLS 透传（按 SNI 路由，不看明文）**、80 重定向/healthz、8443 WSS 控制面、host token、per-IP/全站连接上限、push token 内存存储
-- 推送：host 只发内容无关通用提醒（turn/end 等），relay → Expo；token 注册/恢复、冷却、断线重连后重注册
+- 推送：自托管直连 APNs（默认；会话标题+助手回复摘要、私钥/设备 token 只在本机、失效 token 自动清理）；旧 relay→Expo 通道保留为可选
 - 运维：TLS 证书文件热加载 `reloadTls()`、撤销设备立即断链、audit、`check-deploy.sh`、`validate:artifacts`
 - 部署：relay `Dockerfile` + `docker-compose.yml`（已验证构建/运行）、systemd/launchd 模板、DNS-01 证书脚本、DEPLOY 文档
 
@@ -85,7 +224,8 @@ npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 - 自定义 WKWebView/WebView mTLS 客户端证书挑战
 - 原生：iOS Secure Enclave 优先的 P-256 密钥 + PKCS#10 CSR + 证书安装 + URLSession mTLS；Android AndroidKeyStore + 手写 PKCS#10 + setKeyEntry + HttpsURLConnection mTLS（源码完成，未编译）
 - 设备管理（列表/撤销）、主机状态、安全审计（均走 mTLS tunnel API）
-- 推送注册、生物识别 App 锁、诊断页
+- 推送注册、生物识别 App 锁、诊断页；设置页（版本 / 应用内通知开关 / 通知权限 / 清理 WebView 缓存）；前台推送应用内卡片
+- 注入式手机壳：会话侧栏 → 左侧抽屉、窄屏单列布局、右栏（sidebar-right）全屏覆盖层（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归）
 - 环境检查、原生源码一致性检查、Expo prebuild（iOS/Android 生成成功、autolinking 识别 `dsh-mtls`）、真机验收手册
 
 ## 安全属性（已实现）
@@ -95,7 +235,7 @@ npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 - DSH Web 始终只监听 `127.0.0.1`，无 `--trusted-host`、不暴露公网
 - 远程响应统一安全头；HTML/API `no-store`；请求体 256 MiB 上限；危险本机路径 deny
 - 配对一次性 secret + 限速 + 完整指纹 + 桌面确认；设备可即时撤销并断链
-- 推送 payload 零业务内容（只有通用标题/正文 + `{kind}`）
+- 推送内容 = 会话标题 + 本轮助手回复摘要（截断，锁屏可见；用户可关闭推送/锁屏预览）；APNs 私钥与设备 token 只留在主机，relay 不接触
 
 ## 仓库地图
 
@@ -122,7 +262,7 @@ dsh-remoteApp/                        # Expo App + 原生模块 + docs/ACCEPTANC
 - ✅ 已手动签名构建并安装到 iPhone 真机，App 启动、JS bundle 加载成功
 - ✅ 真机 Secure Enclave 自检：原生模块生成 P-256 key（`SE=true`）→ CSR → host CA 签发 → openssl 证书链/公钥校验通过
 - ✅ 真机配对 + 原生 mTLS WebView 已通过本地 Docker relay 端到端验证（设备 `d_example123`「我的 iPhone」，截图 `mockups/ios-mtls-dsh-ui.png`）
-- ⏳ 仍待完成：App 锁交互验证、推送（需 APNs/EAS 凭据）；生产 relay 由用户自行验证
+- ⏳ 仍待完成：App 锁交互验证、**真机推送验收（APNs 前台应用内/后台系统通知）**、设置页清理缓存验证；生产 relay 由用户自行验证
 
 剩余步骤：
 
@@ -138,7 +278,7 @@ xcodebuild -workspace DSHRemote.xcworkspace -scheme DSHRemote -configuration Deb
 xcrun devicectl device install app --device <UDID> /tmp/dsh-ios-device/Build/Products/Debug-iphoneos/DSHRemote.app
 ```
 
-剩余验收需要 host 配对二维码（相机/手动粘贴）与推送凭据；见 `docs/ACCEPTANCE.md`。
+剩余验收需要 host 配对二维码（相机/手动粘贴）与 APNs 私钥（`.p8` + Key ID/Team ID）；见 `docs/ACCEPTANCE.md`。
 按 [`dsh-remoteApp/docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md) 执行并记录：
 配对/桌面确认、WebView mTLS、Secure Enclave 身份、推送、App 锁、撤销断链、证书轮换。
 
@@ -167,7 +307,10 @@ cd dsh-remoteService
 ## 已知限制 / 风险（MVP 待收尾）
 
 - iOS/Android 原生**未编译**（本机无 Xcode/Android SDK）；已用独立 Swift POC 验证 WKWebView/URLSession 客户端证书、P-256 CSR 链路
-- 推送需要 APNs/EAS/FCM 凭据（代码已就绪，未配置真实凭据）
+- 推送：iOS 自托管 APNs 代码就绪，需配置 APNs Auth Key 并真机验收（key 环境范围需覆盖运行包）；Android FCM 未接入；旧 relay/Expo 通道保留但非默认
+- 推送通道升级：自托管 APNs 是默认通道；旧配置（无 `pushProvider` 字段）升级后按 `apns` 处理，
+  未配置 APNs 的机器不会推送，也**不会自动回退**旧 relay→Expo 通道（需要旧通道请在设置页显式
+  关闭「自托管直连 APNs」）
 - 生产证书需要你的域名 DNS-01 签发；`check-deploy.sh` 已在本地成功路径 + 失败路径演练
 - 审计/设备管理暴露给所有已配对设备（owner-equivalent 设计；如需"仅桌面管理"需改为本地审批）
 - iOS 真机 Secure Enclave 身份来源（Keychain/SE）仍需真机确认（代码路径已实现）

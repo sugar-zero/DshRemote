@@ -194,7 +194,7 @@ cd dsh-remoteApp && npm run check:shell
 1. **iOS 原生 WebView 缺导航策略（origin allow-list）**：RN 路径有 `onShouldStartLoadWithRequest` + `originWhitelist`（`WebViewScreen.tsx:134-149, 305, 315`），但原生 mTLS 视图没有 `webView(_:decidePolicyFor:decisionHandler:)`——页面里点任意链接都会在同一个 WebView 里跳走（外链不会走系统浏览器，也无法返回）。建议后续加一个 `allowedOrigin` prop + `decidePolicyFor`（非 tunnel 的 linkActivated 交给 `UIApplication.open`）。**本次不做**：属于行为变更、需要新 prop、且无法真机验证；不在"跳动/重载"范围内。
 2. **Android 注入时机**：目前 `onPageStarted` 里 `evaluateJavascript`，不是严格 documentStart；可用 `androidx.webkit` 的 `WebViewCompat.addDocumentStartJavaScript`（需要额外依赖）。本次不做。
 3. **"页面卡住自动 reload"看门狗**：不采用。DSH 的"加载历史"卡住时 reload 会重新拉 4MB 快照并丢失会话/滚动位置，host 修复后重连会自动恢复；app 侧只做**进程死亡**的恢复，不做页面级看门狗。
-4. **调整既有移动布局 CSS**（`[class*="_frame"]{display:block}`、`_centerCol` 宽高、`_rightbarCol` 隐藏）：本次不动。它们是让 DSH 在手机上可用的关键覆盖，没有证据表明会造成周期跳动；改动的风险大于收益。
+4. **调整既有移动布局 CSS**（`[class*="_frame"]{display:block}`、`_centerCol` 宽高、`_rightbarCol` 隐藏）：本次不动。它们是让 DSH 在手机上可用的关键覆盖，没有证据表明会造成周期跳动；改动的风险大于收益。（后续：`_rightbarCol` 隐藏确实会让 DSH 右侧栏打不开，已在 2026-10-25 单独修复，见 [`05-mobile-right-panel.md`](05-mobile-right-panel.md)。）
 5. **Android 原生侧完整重建 WebView**（不依赖 JS remount）：不做。改为 JS 侧 `key` 重建原生视图（已实现、可测）；Kotlin 未编译验证，native recreate 风险高。
 6. **`_header` 槽位隐藏规则**：当前槽位为空、规则无副作用，保留（见 §2.1）。若未来 DSH 在该槽位放按钮，**保留**能避免与鲸鱼入口重叠；若想彻底去掉，需先真机确认无内置控件。
 

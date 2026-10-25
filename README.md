@@ -49,6 +49,7 @@
 | 看当前真机/构建状态 | **[STATUS.md](STATUS.md)** |
 | 看真实部署踩坑与排错 | **[server/README.md §9 常见坑](server/README.md#9-常见坑与排错实战)** |
 | 看手机端「载入历史很久/失败 + 画面反复跳」的根因与修复 | **[docs/diagnostics/00-root-cause.md](docs/diagnostics/00-root-cause.md)** |
+| 看手机端「右侧栏打不开 / 展开按钮消失」的根因与修复 | **[docs/diagnostics/05-mobile-right-panel.md](docs/diagnostics/05-mobile-right-panel.md)** |
 
 ### 服务器如何配置（摘要）
 
@@ -136,7 +137,7 @@ npm run check:native
 npm run check:ios-env
 ```
 
-> 当前 App 已包含原生 mTLS WebView、配对、设备管理、推送注册和手机侧栏适配；
+> 当前 App 已包含原生 mTLS WebView、配对、设备管理、推送注册、设置页（通知/缓存/版本）和手机侧栏适配；
 > 真机签名/构建步骤见 [dsh-remoteApp/README.md](dsh-remoteApp/README.md)。
 
 ---

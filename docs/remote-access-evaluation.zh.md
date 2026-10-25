@@ -5,6 +5,11 @@
 > 配套材料：[Codex/同类产品调研](../research/codex-reference.md)、[DSH 代码测绘](../research/dsh-architecture.md)、[安全威胁模型](../research/security.md)
 > 架构图：[architecture.png](../mockups/architecture.png) ｜ 入口 UI 稿：[sidebar-entry.png](../mockups/sidebar-entry.png)
 
+> **2026-10-25 实现更新（超出本评估稿）**：推送已改为**主机直连 APNs**（不用 Expo/EAS、
+> relay 不参与），通知标题/正文取自实际会话（会话标题 + 本轮助手回复摘要，截断），
+> **不再坚持「零正文」**。摘要会经 APNs、可能显示在锁屏；介意可在系统设置关闭预览或关闭推送。
+> 旧 relay→Expo 通道仍保留为可选（那条通道仍是通用文案）。
+
 ---
 
 ## 0. 一页结论（TL;DR）
