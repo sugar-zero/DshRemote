@@ -741,7 +741,7 @@ export function currentPairPlatform(): PairPlatform {
   return Platform.OS === 'android' ? 'android' : 'ios';
 }
 
-/** Human-readable default device name used before the user edits it. */
-export function defaultDeviceName(): string {
-  return Platform.OS === 'android' ? '我的 Android 设备' : '我的 iPhone';
-}
+/**
+ * 默认设备名（系统设备名，取不到时回退旧文案）已移到 `./deviceName`：
+ * 配对页需要它，而不需要整个 pairing 传输层。
+ */

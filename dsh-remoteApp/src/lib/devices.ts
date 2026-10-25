@@ -45,17 +45,49 @@ function hostBase(connection: StoredConnection): string {
   return `https://${connection.host}`;
 }
 
-function parseEnvelope<T>(body: string): T {
-  let json: { ok?: boolean; data?: T; error?: { message?: string } };
+/**
+ * 主机 mTLS 管理 API 的失败。`status` 是 HTTP 状态码（0 = 请求没有拿到响应），
+ * `code` 是主机返回的机器可读错误码（`{ok:false,error:{code,message}}`）。
+ *
+ * 401/403 表示设备证书被主机拒绝（已撤销或过期），调用方据此把本地配对记录
+ * 标记为「主机侧已解除配对」。
+ */
+export class HostApiError extends Error {
+  readonly status: number;
+  readonly code?: string;
+
+  constructor(status: number, message: string, code?: string) {
+    super(message);
+    this.name = 'HostApiError';
+    this.status = status;
+    this.code = code;
+    Object.setPrototypeOf(this, HostApiError.prototype);
+  }
+}
+
+function parseEnvelope<T>(body: string, status: number): T {
+  let json: { ok?: boolean; data?: T; error?: { code?: string; message?: string } };
   try {
     json = JSON.parse(body) as typeof json;
   } catch {
-    throw new Error('主机返回了无法解析的响应');
+    throw new HostApiError(status, '主机返回了无法解析的响应');
   }
   if (!json.ok || json.data === undefined) {
-    throw new Error(json.error?.message ?? '请求失败');
+    throw new HostApiError(
+      status,
+      json.error?.message ?? `请求失败（HTTP ${status}）`,
+      typeof json.error?.code === 'string' ? json.error.code : undefined,
+    );
   }
   return json.data;
+}
+
+async function requestHost<T>(connection: StoredConnection, path: string, method = 'GET'): Promise<T> {
+  const response = await requestWithClientCert({
+    url: `${hostBase(connection)}${path}`,
+    method,
+  });
+  return parseEnvelope<T>(response.body, response.status);
 }
 
 export function canManageRemoteDevices(): boolean {
@@ -63,37 +95,26 @@ export function canManageRemoteDevices(): boolean {
 }
 
 export async function fetchAudit(connection: StoredConnection, limit = 10): Promise<AuditEntry[]> {
-  const response = await requestWithClientCert({
-    url: `${hostBase(connection)}/__dsh_remote/audit?limit=${encodeURIComponent(String(limit))}`,
-    method: 'GET',
-  });
-  if (response.status !== 200) throw new Error(`读取审计失败：HTTP ${response.status}`);
-  return parseEnvelope<{ entries: AuditEntry[] }>(response.body).entries ?? [];
+  const data = await requestHost<{ entries: AuditEntry[] }>(
+    connection,
+    `/__dsh_remote/audit?limit=${encodeURIComponent(String(limit))}`,
+  );
+  return data.entries ?? [];
 }
 
 export async function fetchHostStatus(connection: StoredConnection): Promise<HostStatus> {
-  const response = await requestWithClientCert({
-    url: `${hostBase(connection)}/__dsh_remote/status`,
-    method: 'GET',
-  });
-  if (response.status !== 200) throw new Error(`读取主机状态失败：HTTP ${response.status}`);
-  return parseEnvelope<HostStatus>(response.body);
+  return requestHost<HostStatus>(connection, '/__dsh_remote/status');
 }
 
 export async function fetchRemoteDevices(connection: StoredConnection): Promise<RemoteDevice[]> {
-  const response = await requestWithClientCert({
-    url: `${hostBase(connection)}/__dsh_remote/devices`,
-    method: 'GET',
-  });
-  if (response.status !== 200) throw new Error(`读取设备列表失败：HTTP ${response.status}`);
-  return parseEnvelope<{ devices: RemoteDevice[] }>(response.body).devices ?? [];
+  const data = await requestHost<{ devices: RemoteDevice[] }>(connection, '/__dsh_remote/devices');
+  return data.devices ?? [];
 }
 
 export async function revokeRemoteDevice(connection: StoredConnection, deviceId: string): Promise<void> {
-  const response = await requestWithClientCert({
-    url: `${hostBase(connection)}/__dsh_remote/devices/${encodeURIComponent(deviceId)}/revoke`,
-    method: 'POST',
-  });
-  if (response.status !== 200) throw new Error(`撤销设备失败：HTTP ${response.status}`);
-  parseEnvelope<{ device: RemoteDevice }>(response.body);
+  await requestHost<{ device: RemoteDevice }>(
+    connection,
+    `/__dsh_remote/devices/${encodeURIComponent(deviceId)}/revoke`,
+    'POST',
+  );
 }
