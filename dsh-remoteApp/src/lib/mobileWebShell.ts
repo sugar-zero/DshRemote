@@ -124,7 +124,15 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '  html.' + DRAWER_CLASS + ' [class*="_sidebarCol"] { transform: translateX(0) !important; visibility: visible; opacity: 1; pointer-events: auto; transition: transform 220ms ease; }',
       // DSH 用 CSS grid（sidebar, center, rightbar）。sidebar 改为 fixed 后会脱离 grid，
       // 导致 center 落到 56px 的第一列（内容被挤成竖排）。手机端直接改成单列布局。
-      '  [class*="_frame"] { display: block !important; }',
+      // Release 构建的 App 会把这个 WebView 铺到屏幕底部（含 home indicator 区域）：
+      // 在 DSH 页面容器里预留 safe-area 底部（背景用 DSH 主题色），输入框/正文就不会
+      // 被 home indicator 压住，也不会出现 App 背景色的底部黑边。Debug 构建有底部
+      // 信息条，WebView 不贴底，env() 自然为 0，不影响调试布局。
+      '  [class*="_frame"] {',
+      '    display: block !important;',
+      '    box-sizing: border-box !important;',
+      '    padding-bottom: env(safe-area-inset-bottom, 0px) !important;',
+      '  }',
       '  [class*="_centerCol"] { width: 100% !important; height: 100% !important; }',
       // 右栏（@deepseek-ai/dsh-client-ui-sidebar-right）。frame 宽度 < 768px 时 DSH 让右栏
       // 自动全屏：面板本身是 position:absolute; top:0; bottom:0; right:0 + inline width:100vw，
