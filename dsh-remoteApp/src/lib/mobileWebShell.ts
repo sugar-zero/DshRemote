@@ -7,7 +7,10 @@
  *  3. 抽屉以覆盖层出现，不挤压内容区宽度；
  *  4. 右侧栏（DSH sidebar-right 插件）在窄屏下由 DSH 自动以全屏呈现：打开时覆盖
  *     整个 WebView 视口，收起时不可见且不拦截聊天手势（之前整列 display:none，
- *     header 角落的展开按钮点了没反应）。
+ *     header 角落的展开按钮点了没反应）；
+ *  5. 设置弹窗（DSH settings-general 的居中 modal）在手机上改为全屏：分区菜单
+ *     （左 nav）变成离屏抽屉，内容区顶部有手机专用栏（左上返回 = 关闭设置、右侧
+ *     菜单 = 打开抽屉）；点抽屉项/点抽屉外/左滑可收起抽屉。
  *
  * 关键：脚本通过 WKUserScript `.atDocumentStart` 注入，执行时 document.body 还不存在，
  * 因此必须等 DOMContentLoaded / body 可用后再初始化（之前版本在这里静默失败）。
@@ -76,6 +79,15 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
 
   var DRAWER_CLASS = 'dsh-mobile-drawer-open';
   var STYLE_ID = 'dsh-mobile-shell-style';
+  // 设置弹窗（@deepseek-ai/dsh-client-ui-settings-general）在窄屏下的手机壳状态：
+  //  - SETTINGS_MOBILE_CLASS：已装上手机专用顶栏（此时隐藏 DSH 原 header）；
+  //  - SETTINGS_NAV_CLASS：分区菜单抽屉打开。
+  // 设置弹窗根节点带 data-shortcut-modal="settings"（稳定属性，不依赖 CSS Modules 哈希）。
+  var SETTINGS_PANEL_SELECTOR = '[data-shortcut-modal="settings"]';
+  var SETTINGS_MOBILE_CLASS = 'dsh-settings-mobile';
+  var SETTINGS_NAV_CLASS = 'dsh-settings-nav-open';
+  var SETTINGS_BAR_CLASS = 'dsh-mobile-settings-bar';
+  var SETTINGS_BACKDROP_CLASS = 'dsh-mobile-settings-backdrop';
 
   function init() {
     if (!document.body || !document.head) {
@@ -141,6 +153,68 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       // 只有 dsh-client-ui-conversation 引用），今天这条规则不会隐藏任何原生控件；
       // 保留是为了兼容以后在左侧槽位加按钮的 DSH 版本（避免和鲸鱼入口重叠）。
       '  [data-slot="conversation.header.leading"] > :not(.dsh-mobile-native-trigger) { display: none !important; }',
+      // ── 设置弹窗（@deepseek-ai/dsh-client-ui-settings-general）：窄屏全屏 + 分区抽屉 ──
+      // DSH 桌面端把设置做成居中 modal：panel 宽 800、左侧 nav 固定 188px、右侧内容。
+      // 390px 宽的手机上 panel 被 max-width:calc(100vw - 48px) 压到 342px，减去 188px
+      // 的 nav 后内容区只剩 ~154px：表单/说明全部挤成竖排（用户反馈「太局促」）。
+      // 手机端改为：panel 铺满 WebView；nav 变成离屏抽屉（和左侧会话栏同一套交互习惯）；
+      // 内容区顶部由注入的手机栏承担「左上返回关闭设置 + 菜单开抽屉」。
+      // 只改布局/几何，不改 DSH 的分区渲染与关闭语义：返回按钮直接点 DSH 原生 close。
+      // 所有覆盖都挂在 html.dsh-settings-mobile 下：注入失败时设置保持 DSH 原生
+      // （顶栏在右上角、nav 内联）仍可使用，不会出现「抽屉入口没装上、菜单也没了」。
+      '  html.' + SETTINGS_MOBILE_CLASS + ' [data-shortcut-modal="settings"] {',
+      '    position: fixed !important; inset: 0 !important;',
+      '    width: 100% !important; max-width: 100% !important;',
+      '    height: 100% !important; max-height: 100% !important;',
+      '    border-radius: 0 !important; box-shadow: none !important;',
+      '  }',
+      '  html.' + SETTINGS_MOBILE_CLASS + ' [data-shortcut-modal="settings"] > nav {',
+      '    position: fixed !important; left: 0; top: 0; bottom: 0;',
+      '    width: min(86vw, 320px) !important; max-width: 320px !important;',
+      '    z-index: 6; padding-bottom: 20px !important;',
+      '    background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #1b1c1e)) !important;',
+      '    border-right: 1px solid var(--dsw-alias-border-l3, rgba(255, 255, 255, 0.08));',
+      '    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.38);',
+      '    transform: translateX(-103%); visibility: hidden;',
+      '    transition: transform 220ms ease, visibility 0s linear 220ms;',
+      '  }',
+      '  html.' + SETTINGS_MOBILE_CLASS + '.' + SETTINGS_NAV_CLASS + ' [data-shortcut-modal="settings"] > nav {',
+      '    transform: translateX(0); visibility: visible; transition: transform 220ms ease;',
+      '  }',
+      // 抽屉遮罩：盖住内容区但保留抽屉可点；做成真实 DOM（伪元素会被 nav 的
+      // transform 关进抽屉自己，铺不满视口），所以由注入脚本放进 panel。
+      '  .' + SETTINGS_BACKDROP_CLASS + ' {',
+      '    position: absolute; inset: 0; z-index: 5; display: none;',
+      '    background: rgba(0, 0, 0, 0.42);',
+      '  }',
+      '  html.' + SETTINGS_NAV_CLASS + ' .' + SETTINGS_BACKDROP_CLASS + ' { display: block; }',
+      // 装了手机栏之后才隐藏 DSH 原生 header（原生 close 仍在 DOM 里，返回按钮
+      // 通过它触发 DSH 自己的 onClose；注入失败时 header 保留，设置仍可用）。
+      '  html.' + SETTINGS_MOBILE_CLASS + ' [data-shortcut-modal="settings"] > div > [class*="_header"] { display: none !important; }',
+      // 设置全屏时鲸鱼入口（可能因当前没有会话 header 而处于 fixed 兜底位置，z-index 比
+      // 设置弹窗高）会盖住左上返回；设置页有自己的菜单入口，直接隐藏它。
+      '  html.' + SETTINGS_MOBILE_CLASS + ' .dsh-mobile-native-trigger { display: none !important; }',
+      '  .' + SETTINGS_BAR_CLASS + ' {',
+      '    flex: none; box-sizing: border-box; height: 52px; padding: 6px;',
+      '    display: flex; align-items: center; gap: 4px;',
+      '    background: var(--dsw-alias-bg-base, #17181a);',
+      '    border-bottom: 1px solid var(--dsw-alias-border-l3, rgba(255, 255, 255, 0.08));',
+      '  }',
+      '  .' + SETTINGS_BAR_CLASS + '-title {',
+      '    flex: 1 1 auto; min-width: 0; text-align: center;',
+      '    font-size: 16px; font-weight: 600; line-height: 22px;',
+      '    color: var(--dsw-alias-label-primary, #e6e6e6);',
+      '    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;',
+      '  }',
+      '  .' + SETTINGS_BAR_CLASS + '-button {',
+      '    flex: none; width: 40px; height: 40px; padding: 0; margin: 0;',
+      '    display: inline-flex; align-items: center; justify-content: center;',
+      '    border: 0; border-radius: 10px; background: transparent;',
+      '    color: var(--dsw-alias-label-primary, #e6e6e6); cursor: pointer;',
+      '    -webkit-tap-highlight-color: transparent;',
+      '  }',
+      '  .' + SETTINGS_BAR_CLASS + '-button:active { background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08)); }',
+      '  .' + SETTINGS_BAR_CLASS + '-button svg { width: 22px; height: 22px; display: block; }',
       '}',
     ].join('\n');
     document.head.appendChild(style);
@@ -252,8 +326,220 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       }
       document.documentElement.classList.add(DRAWER_CLASS);
     }
+
+    // ── 设置弹窗手机壳（窄屏全屏 + 分区菜单抽屉） ──────────────────────
+    // 设置弹窗根节点带 data-shortcut-modal="settings"（DSH 稳定属性）。
+    // DOM 契约（@deepseek-ai/dsh-client-ui-settings-general，0.2.1-rc.3）：
+    //   [data-shortcut-modal=settings] > nav           分区菜单（_nav/_navTitle/_navList）
+    //                                  > div           内容列（_header/_options）
+    // 注入内容：content 最前面插一条手机栏（返回 + 标题 + 菜单），panel 末尾插抽屉遮罩。
+
+    var ICON_BACK = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 18l-6-6 6-6"/></svg>';
+    var ICON_MENU = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>';
+
+    var settingsPanel = null;
+    var settingsNav = null;
+    var settingsBar = null;
+    var settingsBackdrop = null;
+    var settingsMenuButton = null;
+    var settingsCloseButton = null;
+
+    function isSettingsNavOpen() {
+      return document.documentElement.classList.contains(SETTINGS_NAV_CLASS);
+    }
+    function closeSettingsNav() {
+      if (!isSettingsNavOpen()) return;
+      document.documentElement.classList.remove(SETTINGS_NAV_CLASS);
+      if (settingsMenuButton) settingsMenuButton.setAttribute('aria-expanded', 'false');
+    }
+    function openSettingsNav() {
+      if (!isMobile() || !settingsPanel || !settingsPanel.isConnected) return;
+      document.documentElement.classList.add(SETTINGS_NAV_CLASS);
+      if (settingsMenuButton) settingsMenuButton.setAttribute('aria-expanded', 'true');
+    }
+
+    function directChild(parent, tagName) {
+      for (var i = 0; i < parent.children.length; i += 1) {
+        if (parent.children[i].tagName === tagName) return parent.children[i];
+      }
+      return null;
+    }
+    function directChildWithClass(parent, suffix) {
+      for (var i = 0; i < parent.children.length; i += 1) {
+        var child = parent.children[i];
+        if (typeof child.className === 'string' && child.className.indexOf(suffix) !== -1) return child;
+      }
+      return null;
+    }
+    function childButton(parent) {
+      if (!parent) return null;
+      for (var i = 0; i < parent.children.length; i += 1) {
+        if (parent.children[i].tagName === 'BUTTON') return parent.children[i];
+      }
+      return null;
+    }
+
+    // 退出设置：优先点 DSH 原生 close（走它自己的 onClose/store），失败再点遮罩 /
+    // 发 Escape（DSH 的 useModalLayer 监听 Escape）。注入失败的兜底路径也靠这些。
+    function closeSettingsDialog() {
+      // DSH 重渲染可能整个换掉 _header：缓存失效时按稳定类名后缀重新解析一次。
+      if ((!settingsCloseButton || !settingsCloseButton.isConnected) && settingsPanel && settingsPanel.isConnected) {
+        var contentCol = directChild(settingsPanel, 'DIV');
+        settingsCloseButton = contentCol
+          ? childButton(directChildWithClass(contentCol, '_header'))
+          : null;
+      }
+      if (settingsCloseButton && settingsCloseButton.isConnected) {
+        try { settingsCloseButton.click(); return; } catch (error) { /* 继续兜底 */ }
+      }
+      if (settingsPanel && settingsPanel.parentElement) {
+        var mask = directChildWithClass(settingsPanel.parentElement, '_mask');
+        if (mask) { try { mask.click(); return; } catch (error) { /* 继续兜底 */ } }
+      }
+      try {
+        document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, cancelable: true }));
+      } catch (error) { /* 旧 WebView 不支持构造 KeyboardEvent */ }
+    }
+
+    function teardownSettingsShell() {
+      closeSettingsNav();
+      if (settingsBar && settingsBar.parentElement) settingsBar.parentElement.removeChild(settingsBar);
+      if (settingsBackdrop && settingsBackdrop.parentElement) settingsBackdrop.parentElement.removeChild(settingsBackdrop);
+      document.documentElement.classList.remove(SETTINGS_MOBILE_CLASS);
+      settingsPanel = null;
+      settingsNav = null;
+      settingsBar = null;
+      settingsBackdrop = null;
+      settingsMenuButton = null;
+      settingsCloseButton = null;
+    }
+
+    /**
+     * 给 DSH 设置弹窗装手机壳：内容区顶部插入手机栏，nav 靠 CSS 变抽屉。
+     * 只在窄屏且能识别出 nav/content 时生效；识别不了就保持 DSH 原生布局（可退）。
+     */
+    function installSettingsShell(panel) {
+      if (!isMobile() || !panel || !panel.isConnected) return;
+      var nav = directChild(panel, 'NAV');
+      var content = directChild(panel, 'DIV');
+      if (!nav || !content) return;
+      // 设置已经盖住整屏，会话侧栏抽屉不应再叠一层。
+      closeDrawer();
+      teardownSettingsShell();
+      settingsPanel = panel;
+      settingsNav = nav;
+
+      var navTitle = directChildWithClass(nav, '_navTitle');
+      var titleText = navTitle && navTitle.textContent
+        ? navTitle.textContent.replace(/\s+/g, ' ').trim()
+        : '';
+      settingsCloseButton = childButton(directChildWithClass(content, '_header'));
+
+      var bar = document.createElement('div');
+      bar.className = SETTINGS_BAR_CLASS;
+
+      var back = document.createElement('button');
+      back.type = 'button';
+      back.className = SETTINGS_BAR_CLASS + '-button dsh-mobile-settings-back';
+      back.setAttribute('aria-label', '返回');
+      back.innerHTML = ICON_BACK;
+      back.addEventListener('click', function (event) {
+        event.preventDefault(); event.stopPropagation();
+        closeSettingsDialog();
+      });
+
+      var title = document.createElement('span');
+      title.className = SETTINGS_BAR_CLASS + '-title';
+      title.textContent = titleText || '设置';
+
+      var menu = document.createElement('button');
+      menu.type = 'button';
+      menu.className = SETTINGS_BAR_CLASS + '-button dsh-mobile-settings-menu';
+      menu.setAttribute('aria-label', '设置菜单');
+      menu.setAttribute('aria-expanded', 'false');
+      menu.innerHTML = ICON_MENU;
+      menu.addEventListener('click', function (event) {
+        event.preventDefault(); event.stopPropagation();
+        if (isSettingsNavOpen()) closeSettingsNav(); else openSettingsNav();
+      });
+
+      bar.appendChild(back);
+      bar.appendChild(title);
+      bar.appendChild(menu);
+
+      var backdropEl = document.createElement('div');
+      backdropEl.className = SETTINGS_BACKDROP_CLASS;
+      backdropEl.addEventListener('click', function (event) {
+        event.preventDefault(); event.stopPropagation();
+        closeSettingsNav();
+      });
+
+      // bar 插到 content 最前面（content 是纵向 flex：bar / header(隐藏) / options），
+      // 这样 options 的高度/滚动仍由 DSH 自己管理，不用覆盖它的 overflow/padding。
+      content.insertBefore(bar, content.firstChild);
+      panel.appendChild(backdropEl);
+
+      settingsBar = bar;
+      settingsBackdrop = backdropEl;
+      settingsMenuButton = menu;
+      document.documentElement.classList.add(SETTINGS_MOBILE_CLASS);
+      closeSettingsNav();
+    }
+
+    /**
+     * 设置弹窗的增删同步（MutationObserver 高频路径）。
+     * - 已装（panel 已缓存）：只做 O(1) isConnected 检查，绝不 querySelector
+     *   （token 流式渲染时每批 mutation 都会进来，必须保持零查询）；
+     * - 未装：只在「直接加到 document.body 的节点」里找设置 portal，命中才安装。
+     */
+    function syncSettingsFromMutations(records) {
+      if (settingsPanel) {
+        if (!settingsPanel.isConnected || !isMobile()) {
+          // 同一个 mutation 批次里可能「旧 panel 移除 + 新 panel 加上」，清理后继续往下找。
+          teardownSettingsShell();
+        } else {
+          if (!settingsBar || !settingsBar.isConnected) installSettingsShell(settingsPanel);
+          return;
+        }
+      }
+      if (!isMobile()) return;
+      for (var i = 0; i < records.length; i += 1) {
+        var record = records[i];
+        if (record.target !== document.body) continue;
+        var added = record.addedNodes;
+        for (var j = 0; j < added.length; j += 1) {
+          var node = added[j];
+          if (!node || node.nodeType !== 1) continue;
+          var panel = null;
+          if (node.getAttribute && node.getAttribute('data-shortcut-modal') === 'settings') panel = node;
+          else if (node.querySelector) panel = node.querySelector(SETTINGS_PANEL_SELECTOR);
+          if (panel) { installSettingsShell(panel); return; }
+        }
+      }
+    }
+
+    /** 低频路径（init / resize / pageshow）：设置已经开着时补装一次。 */
+    function syncSettingsPresent() {
+      if (!isMobile()) {
+        if (settingsPanel) teardownSettingsShell();
+        return;
+      }
+      if (settingsPanel && settingsPanel.isConnected) {
+        if (!settingsBar || !settingsBar.isConnected) installSettingsShell(settingsPanel);
+        return;
+      }
+      if (settingsPanel) teardownSettingsShell();
+      var panel = document.querySelector(SETTINGS_PANEL_SELECTOR);
+      if (panel) installSettingsShell(panel);
+    }
+
     function refresh() {
-      if (!isMobile()) { closeDrawer(); }
+      if (!isMobile()) {
+        closeDrawer();
+        teardownSettingsShell();
+      } else {
+        syncSettingsPresent();
+      }
       if (fab.dataset.ready !== '1') fab.dataset.ready = '1';
     }
 
@@ -265,9 +551,24 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     // 侧栏内点击后收起抽屉；工作区/文件夹行保持打开以展开列表。
     // 注意：会话行不做任何额外的自动点击 / React handler 调用，保持 DSH 原生行为。
     document.addEventListener('click', function (event) {
-      if (!isOpen()) return;
       var target = event.target;
       if (!target) return;
+      // 设置页的分区抽屉优先：点抽屉项 → 收起并放行（让 DSH 切分区）；
+      // 点抽屉外 → 收起并吞掉这次点击，避免误触下面的设置项。
+      if (settingsPanel && settingsPanel.isConnected && isSettingsNavOpen()) {
+        // DSH 重渲染可能换掉 nav 节点：缓存失效时按直系子节点重新解析（点击时才做，O(1)）。
+        if (!settingsNav || !settingsNav.isConnected) settingsNav = directChild(settingsPanel, 'NAV');
+        if (settingsNav && settingsNav.contains(target)) {
+          if (target.closest && target.closest('button')) closeSettingsNav();
+          return;
+        }
+        if (target.closest && target.closest('.' + SETTINGS_BAR_CLASS)) return;
+        closeSettingsNav();
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
+      if (!isOpen()) return;
       var bar = sidebar();
       if (bar && bar.contains(target)) {
         if (target.closest('[data-row-key^="workspace:"]')) return;
@@ -278,7 +579,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       closeDrawer();
     }, true);
 
-    // 左边缘右滑打开 / 抽屉上左滑关闭。
+    // 左边缘右滑打开 / 抽屉上左滑关闭（设置页的分区抽屉沿用同一手势）。
     var touchStartX = 0;
     var touchStartY = 0;
     document.addEventListener('touchstart', function (event) {
@@ -293,6 +594,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       var dx = touch.clientX - touchStartX;
       var dy = touch.clientY - touchStartY;
       if (Math.abs(dx) < 60 || Math.abs(dy) > 80) return;
+      if (settingsPanel && settingsPanel.isConnected) {
+        if (!isSettingsNavOpen() && touchStartX < 24 && dx > 0) openSettingsNav();
+        else if (isSettingsNavOpen() && dx < 0) closeSettingsNav();
+        return;
+      }
       if (!isOpen() && touchStartX < 24 && dx > 0) openDrawer();
       else if (isOpen() && dx < 0) closeDrawer();
     }, { passive: true });
@@ -306,7 +612,9 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     // 高频路径（DSH 流式输出 token / 渲染会话历史时）走 O(1) 快路径：按钮仍在缓存的
     // 槽位里就直接返回——不 querySelector、不写 DOM，避免每个 mutation 批次都触发重排。
     // 只有在按钮/背景层真的被 DSH 移除后才补挂（同步执行，赶在下一帧绘制前修好）。
-    var observer = new MutationObserver(function () {
+    var observer = new MutationObserver(function (records) {
+      // 设置弹窗先同步：已装时只有 O(1) 检查；未装时只扫 body 的 addedNodes。
+      syncSettingsFromMutations(records);
       if (
         backdrop.isConnected
         && fab.dataset.nativeMark === '1'
