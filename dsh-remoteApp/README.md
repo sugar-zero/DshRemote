@@ -22,7 +22,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 
 ---
 
-## 当前状态（2026-10-25）
+## 当前状态（2026-10-26）
 
 | 项 | 状态 |
 |---|---|
@@ -34,9 +34,12 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，5s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
 | 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
 | 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层；窄屏设置→全屏 + 分区菜单抽屉（左上返回退出设置）；外链→App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）（`src/lib/mobileWebShell.ts`、`src/screens/WebViewScreen.tsx`；`npm run check:shell` 无头 Chrome 回归） |
+| 主机列表管理 | ✅ 多主机列表；每台可单独删除本机记录（确认框，不进入配对流程）；主机改名自动同步；主机侧撤销设备后卡片显示警示并可删除（0.1.8，真机验证） |
+| 配对默认设备名 | ✅ 使用系统本机设备名（`expo-device`；系统只给通用名时回退机型名），可自定义；不再写死「我的 iPhone」 |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
 
 > 原生构建需要 macOS + Xcode；本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
+> 0.1.8 起新增 `expo-device`（读取系统设备名）——升级安装包需要重新 `pod install` / 构建原生包，不能只换 JS bundle。
 
 ## 目录结构
 
@@ -368,7 +371,7 @@ $ node <protocol.ts 编译后的 Node 自测>
 **功能**
 - 推送：iOS 自托管 APNs 已接入（APNs device token + environment，经原生 mTLS 注册；前台应用内通知；通知点击跳会话已 2026-10-25 真机验证，其余验收项见 `docs/ACCEPTANCE.md`）；Android FCM 未接入。
 - 设备列表/撤销：管理 API 只对本机浏览器开放且远程代理 deny，POC 在桌面端操作；后续可加 mTLS 隧道接口或深链。
-- 多主机切换（一期单主机）；会话列表/审批等原生页面（App 审核 4.2 的长期对策）。
+- 会话列表/审批等原生页面（App 审核 4.2 的长期对策）；多主机列表/删除/主机名同步已实现（0.1.8）。
 - iOS 下拉刷新：`react-native-webview` 无 iOS 下拉刷新，当前用顶部刷新按钮；原生 WebView 落地时可补。
 - 文件上传/下载（WebView 原生选择器、分享面板）未专门处理。
 - Android 的 KeyChain alias 选择/安装后回填、`importP12` 密码校验、AndroidKeyStore 正式路径需真机联调。
