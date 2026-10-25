@@ -14,7 +14,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 
 1. **扫码配对**：扫主机桌面端生成的 `dshremote://pair?...` 二维码（或手动粘贴），本地校验主机地址、完整 SHA-256 指纹、有效期。
 2. **安全存储**：`expo-secure-store`（iOS Keychain / Android EncryptedSharedPreferences）保存 host / deviceId / 证书 PEM；**设备私钥永不进入 JS**。
-3. **加载 DSH Web UI**：`https://<hostId>.<relayDomain>/?dsh_mobile=1`，顶部状态条、刷新；外部链接（`target=_blank` / `window.open`，如查询用量/充值/意见反馈）在 App 内嵌浏览器打开（可一键切系统浏览器）。
+3. **加载 DSH Web UI**：`https://<hostId>.<relayDomain>/?dsh_mobile=1`，顶部状态条显示主机名 + 状态/主机 ID，刷新；外部链接（`target=_blank` / `window.open`，如查询用量/充值/意见反馈）在 App 内嵌浏览器打开（可一键切系统浏览器）；底部连接信息条只在 Debug 构建显示（Release 让位给主界面）。
 4. **mTLS 客户端证书**：自定义原生 WebView（iOS `WKNavigationDelegate.didReceive challenge` + `SecIdentity`；Android `WebViewClient.onReceivedClientCertRequest` + Keystore）在 TLS 握手中出示设备证书。
 
 接口契约见 [`../dsh-remoteService/docs/ADMIN-API.md`](../dsh-remoteService/docs/ADMIN-API.md)，设计依据见

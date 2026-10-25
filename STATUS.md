@@ -7,6 +7,21 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-25 调整：主界面顶栏只显示主机 ID；Release 去掉底部连接信息条
+
+- **顶栏**：标题仍显示主机名；副标题由「已连接 · <hostId>.<relayDomain>[:port]」改为
+  「已连接 · <hostId>」（只保留主机 ID，不再显示完整 relay 域名与端口；直连 IP 保留 IP）。
+  完整地址仍在主页卡片 / 设备与安全页可查。
+- **底部连接信息条**：只在 **Debug 构建**保留（页面标题 + 当前 URL，开发诊断用）；
+  **Release 构建不渲染**，高度让给主界面 WebView，底部改由 `webviewWrap` 预留
+  `safe-area-inset-bottom`，避免内容压到 home indicator。
+- **验证**：`tsc` / `check:native` / `check:shell` 通过；Release **0.1.7 (build 9)** 已构建安装并真机目视：
+  副标题只显示主机 ID、Release 无底部信息条/黑边、页面背景连续、输入框未被 home indicator 遮挡
+  （ACCEPTANCE 第 23/24 项 ✅）。
+- **版本**：本任务最终构建 **0.1.7 (build 9)**（`package.json` / `app.json` / Android
+  `build.gradle` 同步，iOS Info.plist 已同步）；另一会话已推送的 0.1.6 (build 7) 保留不动。
+  同一任务多次构建跳过版本号、只递增构建号（8 → 9）。
+
 ## 2026-10-25 修复：手机端账号页「查询用量 / 充值 / 意见反馈」点击无反应
 
 - **现象**：设置 → 账号与余额里点「更多 → 查询用量 / 充值 / 更多账号信息」，以及账号菜单
