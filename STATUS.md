@@ -7,6 +7,24 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-26 修复：主机设备列表清理 + App 解除配对入口合并（App 0.1.9 / host-plugin 0.1.6）
+
+1. **主机侧「已配对设备」列表无法删除已撤销设备** → host-plugin `DeviceStore.remove()` +
+   本机管理 API `POST /api/remote-access/devices/:id/delete` + 桌面 DSH 设备卡片「删除」
+   按钮（二次确认）；只允许删除**已撤销**设备（有效设备返回 409 `device-active`，需先撤销），
+   同时清理该设备的推送 token 并写审计 `device-delete`。远程隧道 API 不开放删除。
+2. **App「删除本机配对记录」与「清除本地凭据并重新配对」功能重复** → 「设备与安全」页只保留
+   单一「解除本机配对 / 删除本机配对记录」入口（确认框 → 删除记录并返回主机列表；没有其它
+   主机时进入扫码页）；想重新连接同一主机时从主页「＋ 配对新主机」重新扫码。移除重复的
+   “重新配对”按钮与 App 侧 `onRepair` 分支。
+
+**验证**：
+- host-plugin：`npm test` **101/101** 通过（新增 admin 删除接口 3 项 + 设备列表删除按钮
+  smoke 1 项）；`npm run validate:artifacts` 通过；
+- App：`tsc --noEmit` / `check:native` / `check:shell`（49/49）通过；iOS Release **0.1.9 (build 11)**
+  真机构建 + 安装，设备与安全页只剩单一解除入口（ACCEPTANCE #31）。
+- 主机插件改动需**更新 DSH 里的 remote-access 插件并重启 DSH** 才会在桌面 UI 出现删除按钮。
+
 ## 2026-10-26 修复：主机记录管理 / 主机名同步 / 系统设备名（App 0.1.8 build 10）
 
 用户反馈 4 个问题，全部已在真机（iPhone 17 Pro Max / iOS 27.0）修复并验证：
