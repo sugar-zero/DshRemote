@@ -74,9 +74,7 @@ import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 interface DevicesScreenProps {
   connection: StoredConnection;
   onClose: () => void;
-  /** Clear local credentials and return to the pairing screen. */
-  onRepair: () => Promise<void> | void;
-  /** 只删除本机配对记录与设备证书，不进入配对流程。 */
+  /** 删除本机配对记录与设备证书，返回主机列表 / 扫码页（不进入配对流程）。 */
   onDeleteLocal: () => Promise<void> | void;
   /** Called after the POC import updates `certRef` so the WebView picks it up. */
   onConnectionUpdated?: (connection: StoredConnection) => void;
@@ -105,7 +103,6 @@ function DetailRow({ label, value, mono = false }: { label: string; value: strin
 export function DevicesScreen({
   connection,
   onClose,
-  onRepair,
   onDeleteLocal,
   onConnectionUpdated,
 }: DevicesScreenProps) {
@@ -230,15 +227,6 @@ export function DevicesScreen({
       setImporting(false);
     }
   }, [connection, onConnectionUpdated, p12Base64, p12Password]);
-
-  const handleRepair = useCallback(async () => {
-    setBusy(true);
-    try {
-      await onRepair();
-    } finally {
-      setBusy(false);
-    }
-  }, [onRepair]);
 
   const handleDeleteLocal = useCallback(() => {
     Alert.alert(
@@ -383,34 +371,22 @@ export function DevicesScreen({
         </View>
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>重新配对 / 删除本机记录</Text>
+          <Text style={styles.sectionTitle}>解除本机配对</Text>
           <Text style={styles.bodyText}>
-            重新配对会清除本机保存的主机信息与设备证书，并进入扫码页面。若设备已在主机侧被撤销，也需要重新扫码配对。
+            删除本机保存的这台主机的配对信息与设备证书，并返回主机列表（没有其它主机时进入扫码页）。
+            主机上的设备记录不会因此删除——如需彻底解除，请在主机「远程访问」里撤销该设备。
+            想重新连接同一台主机时，从主页「＋ 配对新主机」重新扫码即可。
           </Text>
           <TouchableOpacity
             style={[styles.dangerButton, busy ? styles.disabledButton : null]}
-            onPress={() => void handleRepair()}
+            onPress={handleDeleteLocal}
             disabled={busy}
           >
             {busy ? (
               <ActivityIndicator color={colors.danger} />
             ) : (
-              <Text style={styles.dangerButtonText}>清除本地凭据并重新配对</Text>
+              <Text style={styles.dangerButtonText}>删除本机配对记录</Text>
             )}
-          </TouchableOpacity>
-
-          <View style={styles.divider} />
-
-          <Text style={styles.sectionSubtitle}>只删除本机记录</Text>
-          <Text style={styles.bodyText}>
-            只在手机上清除这台主机的配对记录与设备证书，不进入扫码流程。主机侧的设备记录需要在主机「远程访问」里单独撤销。
-          </Text>
-          <TouchableOpacity
-            style={[styles.secondaryDangerButton, busy ? styles.disabledButton : null]}
-            onPress={handleDeleteLocal}
-            disabled={busy}
-          >
-            <Text style={styles.secondaryDangerButtonText}>删除本机配对记录</Text>
           </TouchableOpacity>
         </View>
 
@@ -553,19 +529,6 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 15,
     fontWeight: '700',
-  },
-  secondaryDangerButton: {
-    marginTop: spacing.md,
-    borderWidth: StyleSheet.hairlineWidth,
-    borderColor: colors.danger,
-    borderRadius: radii.md,
-    paddingVertical: spacing.md,
-    alignItems: 'center',
-  },
-  secondaryDangerButtonText: {
-    color: colors.danger,
-    fontSize: 14,
-    fontWeight: '600',
   },
   revokedCard: {
     borderColor: colors.danger,
