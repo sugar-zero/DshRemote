@@ -96,6 +96,10 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
 
+  // 原生 WebView 崩溃 / 被系统回收后的自动重建预算：60s 内最多 2 次，
+  // 避免“重建 → 又崩溃 → 再重建”的死循环（超出后保留错误条，交给用户手动重试）。
+  const nativeRecoveryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
+
   const NativeMtlsWebView = useMemo(() => getDshMtlsWebView(), []);
   /**
    * Use the native mTLS web view only when both the native module and a device
@@ -107,6 +111,9 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
   const reload = useCallback(() => {
     setErrorMessage(null);
     setStatus('connecting');
+    // 用户主动重试时重新给自动恢复预算（否则 60s 内再被回收只能一直手点）。
+    nativeRecoveryRef.current.count = 0;
+    nativeRecoveryRef.current.since = 0;
     if (useNativeMtlsView) {
       // Native view has no ref API in the POC skeleton; remount to reload.
       setReloadKey((key) => key + 1);
@@ -160,6 +167,46 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
     setErrorMessage(description ?? '无法加载 DSH 页面。');
   }, []);
 
+  /**
+   * Rebuild the native WebView after its renderer died.
+   *
+   * Android kills the WebView renderer under memory pressure (`onRenderProcessGone`);
+   * the instance cannot be reused afterwards, so the only recovery is remounting the
+   * native view (`key={reloadKey}`) — the Swift/Kotlin module then allocates a fresh
+   * WKWebView/WebView. Guarded so a crash loop cannot turn into a reload loop.
+   */
+  const recoverNativeView = useCallback(() => {
+    const now = Date.now();
+    const state = nativeRecoveryRef.current;
+    if (state.since === 0 || now - state.since > 60_000) {
+      state.count = 0;
+      state.since = now;
+    }
+    if (state.count >= 2) return;
+    state.count += 1;
+    setStatus('connecting');
+    setReloadKey((key) => key + 1);
+  }, []);
+
+  const handleNativeLoadingFinish = useCallback(() => {
+    // 与 react-native-webview 路径对齐：加载成功后清掉上一次的（自动恢复）错误条，
+    // 否则一次进程回收/自动 reload 之后错误条会永久留在页面上，挤压 WebView 布局。
+    setStatus('online');
+    setErrorMessage(null);
+  }, []);
+
+  const handleNativeError = useCallback(
+    (event: DshMtlsWebViewErrorEvent) => {
+      const { description, reason } = event.nativeEvent;
+      handleError(description);
+      if (reason === 'render-process-gone') {
+        // iOS 的 content-process-terminated 由原生侧自己 reload；Android 必须重建视图。
+        recoverNativeView();
+      }
+    },
+    [handleError, recoverNativeView],
+  );
+
   const handleHttpError = useCallback((statusCode: number) => {
     if (statusCode === 401 || statusCode === 403) {
       setStatus('error');
@@ -201,11 +248,13 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
           </TouchableOpacity>
         </View>
 
-        {status === 'connecting' ? (
-          <View style={styles.progressTrack}>
-            <View style={[styles.progressFill, { width: '45%' }]} />
-          </View>
-        ) : null}
+        {/*
+          * 进度条槽位常驻（只改 opacity）：之前是条件渲染，每次「开始加载/加载完成」
+          * 都会让 topBar 高度变化 10px，WebView 随之上下跳一下。常驻后布局稳定。
+          */}
+        <View style={[styles.progressTrack, { opacity: status === 'connecting' ? 1 : 0 }]}>
+          <View style={[styles.progressFill, { width: '45%' }]} />
+        </View>
       </View>
 
       {useNativeMtlsView ? (
@@ -223,15 +272,6 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
         </Pressable>
       )}
 
-      {errorMessage ? (
-        <View style={styles.errorBar}>
-          <Text style={styles.errorText}>{errorMessage}</Text>
-          <TouchableOpacity style={styles.retryButton} onPress={reload}>
-            <Text style={styles.retryText}>重试</Text>
-          </TouchableOpacity>
-        </View>
-      ) : null}
-
       <View style={styles.webviewWrap}>
         {useNativeMtlsView && NativeMtlsWebView ? (
           <NativeMtlsWebView
@@ -241,10 +281,8 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             injectedJavaScript={MOBILE_WEB_SHELL_JS}
             style={styles.webview}
             onLoadingStart={(_event: DshMtlsWebViewLoadingEvent) => setStatus('connecting')}
-            onLoadingFinish={(_event: DshMtlsWebViewLoadingEvent) => setStatus('online')}
-            onLoadingError={(event: DshMtlsWebViewErrorEvent) =>
-              handleError(event.nativeEvent.description)
-            }
+            onLoadingFinish={handleNativeLoadingFinish}
+            onLoadingError={handleNativeError}
           />
         ) : (
           <DshWebView
@@ -281,6 +319,20 @@ export function WebViewScreen({ connection, onClose, onOpenDevices }: WebViewScr
             applicationNameForUserAgent="DSHRemote/0.1 (Expo)"
           />
         )}
+
+        {/*
+          * 错误条做成 WebView 上方的覆盖层（absolute，且在 WebView 之后渲染以盖住它）。
+          * 之前它插在 WebView 上方，出现/消失会把 WebView 高度挤掉/还回 ~50px——
+          * 一次进程回收/自动恢复、或一次瞬时导航失败就会让整屏“跳一下”。
+          */}
+        {errorMessage ? (
+          <View style={styles.errorBarOverlay}>
+            <Text style={styles.errorText}>{errorMessage}</Text>
+            <TouchableOpacity style={styles.retryButton} onPress={reload}>
+              <Text style={styles.retryText}>重试</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
       </View>
 
       <View style={[styles.bottomBar, { paddingBottom: insets.bottom + spacing.xs }]}>
@@ -380,11 +432,19 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 16,
   },
-  errorBar: {
+  errorBarOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    zIndex: 10,
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.md,
-    backgroundColor: 'rgba(242, 99, 122, 0.12)',
+    // 覆盖层需要实色背景，否则叠在网页内容上读不清。
+    backgroundColor: colors.surface,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+    borderBottomColor: colors.danger,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },

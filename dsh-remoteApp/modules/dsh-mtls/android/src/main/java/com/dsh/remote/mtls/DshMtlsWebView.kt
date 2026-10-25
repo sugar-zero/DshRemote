@@ -16,6 +16,7 @@ package com.dsh.remote.mtls
 
 import android.annotation.SuppressLint
 import android.content.Context
+import android.view.ViewGroup
 import android.view.ViewGroup.LayoutParams
 import android.webkit.JavascriptInterface
 import android.webkit.WebSettings
@@ -35,6 +36,8 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
 
   private var loadedUrl: String? = null
   private var injectedJavaScript: String? = null
+  /** 渲染进程被系统回收后，这个 WebView 实例不可再使用（等 JS 重建原生视图）。 */
+  private var renderProcessGone = false
 
   /** KeyChain/Keystore alias of the client identity (falls back to the module config). */
   var clientIdentityLabel: String? = null
@@ -43,16 +46,40 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
     identityLabelProvider = { clientIdentityLabel ?: DshMtlsIdentityStore.configuredLabel },
     onPageStarted = { url ->
       onLoadingStart(mapOf("url" to (url ?: loadedUrl)))
-      injectedJavaScript?.let { script ->
-        // POC: evaluated on every page start rather than at documentStart.
-        // TODO: inject a <script> via shouldInterceptRequest or use
-        // WebViewCompat.addDocumentStartJavaScript for proper ordering.
-        webView.evaluateJavascript(script, null)
+      if (!renderProcessGone) {
+        injectedJavaScript?.let { script ->
+          // POC: evaluated on every page start rather than at documentStart.
+          // TODO: inject a <script> via shouldInterceptRequest or use
+          // WebViewCompat.addDocumentStartJavaScript for proper ordering.
+          webView.evaluateJavascript(script, null)
+        }
       }
     },
-    onPageFinished = { url -> onLoadingFinish(mapOf("url" to (url ?: loadedUrl))) },
+    onPageFinished = { url ->
+      onLoadingFinish(mapOf("url" to (url ?: loadedUrl)))
+    },
     onError = { code, description, url ->
       onLoadingError(mapOf("code" to code, "description" to description, "url" to (url ?: loadedUrl)))
+    },
+    onRenderProcessGone = { didCrash ->
+      // 默认实现会让 App 直接崩溃；这里把事件交给 JS（显示错误条并重建原生视图）。
+      renderProcessGone = true
+      val reasonText = if (didCrash) {
+        "网页渲染进程崩溃，已停止使用该 WebView；请点「重试」重新加载。"
+      } else {
+        "系统回收了网页渲染进程（内存压力）；请点「重试」重新加载。"
+      }
+      onLoadingError(
+        mapOf(
+          "code" to -1,
+          "description" to reasonText,
+          "url" to loadedUrl,
+          "reason" to "render-process-gone",
+          "recoverable" to true
+        )
+      )
+      // 返回 true 之后该 WebView 不可再碰：先从视图树摘掉，等 detach 时 destroy。
+      (webView.parent as? ViewGroup)?.removeView(webView)
     }
   )
 
@@ -87,13 +114,22 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
   }
 
   fun applyUrl(url: String?) {
-    if (url.isNullOrEmpty() || url == loadedUrl) return
+    // 渲染进程已回收的 WebView 不可再用（loadUrl 会抛 IllegalStateException）。
+    if (url.isNullOrEmpty() || url == loadedUrl || renderProcessGone) return
     loadedUrl = url
     webView.loadUrl(url)
   }
 
   fun applyInjectedJavaScript(script: String?) {
     injectedJavaScript = script
+  }
+
+  override fun onDetachedFromWindow() {
+    // 渲染进程已死亡的 WebView 必须显式 destroy，否则其渲染进程资源会长期泄漏。
+    if (renderProcessGone) {
+      try { webView.destroy() } catch (_: Exception) { /* 已销毁 */ }
+    }
+    super.onDetachedFromWindow()
   }
 
   /** Bridge exposed to the page as `window.dshMtlsBridge`. */
