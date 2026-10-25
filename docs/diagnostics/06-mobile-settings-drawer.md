@@ -23,8 +23,10 @@
 3. **可退**：所有覆盖挂在 `html.dsh-settings-mobile` 下（注入成功才加），且只用
    `data-shortcut-modal="settings"` 稳定属性 + panel 直系子节点/稳定类名后缀定位：
    DSH 改版导致识别失败时，最坏退化为原生居中 modal，设置仍可用。
-4. **验证**：`npm run check:shell` 新增真实 DOM/CSS 的设置 fixture 与 20 项断言，
-   43/43 通过；同一 fixture 换旧注入壳跑 16 项失败，并复现 342×796 / 内容 154×742。
+4. **验证**：`npm run check:shell` 的设置 fixture 共 26 项断言（23 项设置手机壳 +
+   3 项外链，后者见诊断 07），全套 49/49 通过；同一 fixture 换旧注入壳跑 19 项失败，
+   并复现 342×796 / 内容 154×742。另有 2 个 mutant 验证「nav / close 缓存重解析」
+   断言不是假通过。
 5. **生效**：纯 JS（注入壳），**无需重建原生**；dev client Metro reload，发布包重打
    JS bundle。App 版本不变（0.1.5 build 6）。
 
@@ -83,17 +85,20 @@ html.dsh-settings-mobile [data-shortcut-modal="settings"] > nav {
   width: min(86vw, 320px) !important; max-width: 320px !important;
   z-index: 6;
   background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #1b1c1e)) !important;
-  transform: translateX(-103%); visibility: hidden;
+  transform: translateX(-103%); visibility: hidden; pointer-events: none;
   transition: transform 220ms ease, visibility 0s linear 220ms;
 }
 html.dsh-settings-mobile.dsh-settings-nav-open [data-shortcut-modal="settings"] > nav {
-  transform: translateX(0); visibility: visible; transition: transform 220ms ease;
+  transform: translateX(0); visibility: visible; pointer-events: auto; transition: transform 220ms ease;
 }
 ```
 
 - `nav` 原宽 188/无背景，改成抽屉后补了不透明背景（否则透出下面内容）。
 - 打开/关闭统一由 `html.dsh-settings-nav-open` 驱动（注入脚本负责加/删，和侧栏
   抽屉 `html.dsh-mobile-drawer-open` 同一套思路）。
+- 收起态同时加 `pointer-events:none`（关闭动画 220ms 内不会误点正在滑出的菜单项）
+  和 DOM `inert`（见 2.5）：DSH 的焦点陷阱只过滤 `[inert]/[hidden]`，不加会被
+  iPad 外接键盘 Tab 到隐藏的分区按钮上。
 - `_navList` 原本就是 `overflow-y:auto`，抽屉高度被 fixed 上下边约束后仍可滚动。
 
 ### 2.3 抽屉遮罩 + 「点外不误触」
@@ -130,22 +135,30 @@ html.dsh-settings-mobile.dsh-settings-nav-open [data-shortcut-modal="settings"] 
 - 设置打开期间隐藏手机壳自己的鲸鱼入口：没有会话 header 时它走 fixed 兜底
   （`z-index:9001`），会盖住左上返回。
 
-### 2.5 状态同步（高频路径零查询）
+### 2.5 状态同步 / 自愈 / 可访问性（高频路径零查询）
 
 设置弹窗由 React 按需挂载/卸载，注入壳在 `MutationObserver` 里同步：
 
 - **未装**：只在「直接加到 `document.body` 的节点」里找
   `[data-shortcut-modal="settings"]`（body portal 的 overlay），命中才安装；
-- **已装**：只做 `isConnected` 的 O(1) 检查；bar 被 DSH 重渲染移除时重装。
-  这保持了右栏修复时定下的约束：token 流式渲染时每批 mutation 都进来，
-  **稳态不允许 querySelector / 写 DOM**（`check:shell` 的 churn 断言）。
+- **已装**：只做 O(1) 检查——`panel.isConnected`、`bar`/`backdrop` 的 `isConnected`、
+  `html.dsh-settings-mobile` 是否还在；任一缺失就整套重装（DSH 重渲染理论上可能
+  单独换掉某个节点）。稳态**不触发 `Document.querySelector`、不写 DOM**；
+  设置打开期间的流式 DOM 变更（20 批）实测 `Document.querySelector × 0`。
+- **节点被换掉时的重解析**（都在点击/关闭这种低频路径，O(1)）：
+  - nav 被换掉：点击分区时按 panel 直系 `nav` 重新解析，避免把合法点击当成
+    「抽屉外」吞掉；
+  - `_header` 被换掉：返回按钮按 `_content` / `_header` / `_close` 稳定后缀重解析
+    原生 close，取不到再退回「header 里第一个 button」；
+  - content / close 不依赖「第一个 div / 第一个 button」的顺序。
 - `resize` / `pageshow` 走低频补装：>760px 时整体拆掉手机壳、恢复 DSH 原生；
   转回窄屏时若设置还开着则重新装上。
-- 设置关闭（portal 卸载）：清 `html.dsh-settings-mobile` / `dsh-settings-nav-open`
-  与缓存引用（bar/backdrop 随 panel 一起被移除）。
+- 设置关闭（portal 卸载）：清 `html.dsh-settings-mobile` / `dsh-settings-nav-open` /
+  nav `inert` 与缓存引用（bar/backdrop 随 panel 一起被移除）。
 
 不修改 DSH 的 React 树结构与事件语义：只新增 2 个 DOM 节点（手机栏、遮罩）+ html
-状态类，DSH 的分区切换、设置读写、关闭逻辑都保持原样。
+状态类 + 抽屉收起时给 nav 加 `inert`（卸载时移除），DSH 的分区切换、设置读写、
+关闭逻辑都保持原样。
 
 ## 3. 验证
 
@@ -153,34 +166,39 @@ html.dsh-settings-mobile.dsh-settings-nav-open [data-shortcut-modal="settings"] 
 cd dsh-remoteApp
 npx tsc --noEmit          # 通过
 npm run check:native      # 通过
-npm run check:shell       # 43/43 通过（新增 20 项设置断言）
+npm run check:shell       # 49/49 通过（设置 fixture 共 26 项断言）
 ```
 
 `check:shell` 新增的第三份 fixture（`SETTINGS_FIXTURE_HTML`）按真实 DSH 0.2.1-rc.3
 的 DOM/CSS 复刻设置弹窗（portal 结构、`data-shortcut-modal="settings"`、
 `_panel/_nav/_content/_header/_close/_options` 关键规则逐字保留；分区内容用占位
-节点代替真实 React 表单），断言覆盖：
+节点代替真实 React 表单；CSS 规则是 DSH 客户端样式的只读摘录，仅用于本地回归
+fixture，与右栏 fixture 同一做法），断言覆盖：
 
 1. 打开设置后装上手机壳（手机栏 + html 状态类）；
 2. panel 全屏 rect = 0,0,390,844（误差 ≤1px）；
 3. DSH 原生 `_header` 隐藏；
 4. 手机栏在顶部（高 52）、标题取自 DSH `设置`；
 5. 返回按钮在左上（≤12px）；
-6. 分区菜单默认收起（visibility hidden、抽屉整体在负屏外）；
+6. 分区菜单默认收起（visibility hidden、抽屉整体在负屏外、inert、pointer-events none）；
 7. 内容区从手机栏下方开始且占满 390 宽；
 8. 设置打开时鲸鱼入口隐藏；
-9. 点菜单 → 抽屉 320px 宽、从左侧进入、遮罩出现；
+9. 点菜单 → 抽屉 320px 宽、从左侧进入、遮罩出现、inert 解除；
 10. 抽屉打开后左分区可命中；
 11. 点抽屉外只收抽屉、不触发内容按钮（点击计数保持 0）；
 12. 收抽屉后内容区恢复可点（计数 +1）；
 13. 点分区项 → 收抽屉 + DSH 分区切换生效；
 14. 点左上返回 → DSH 原生 close 执行、portal 卸载、手机壳状态清理；
 15. 再次打开设置 → 手机壳重新装上；
-16. DSH 重渲染换掉 nav 节点后，抽屉仍可开、点分区仍能收起（缓存失效时按直系子节点重解析）；
-17. 手机栏被 DSH 重渲染移除后，按 `isConnected` 自动补装；
-18. 宽屏 1000×800 → 恢复 DSH 原生（panel 800、nav static、无手机栏）；
-19. 宽屏转回窄屏 → 已打开的设置重新装上手机壳（resize 补装）；
-20. 全程无未捕获 JS 异常。
+16. 抽屉打开后 DSH 重渲染换掉 nav 节点：点新 nav 的分区按钮仍被放行并切到对应
+    分区（去掉「点击时重解析 nav」会退化为 `section=1`，该断言能抓住）；
+17. 手机栏 + 遮罩被 DSH 重渲染移除后，按 `isConnected` 自动补装；
+18. 设置关闭后鲸鱼入口恢复显示（不再被 `html.dsh-settings-mobile` 隐藏）；
+19. 设置打开期间 20 批流式 DOM 变更：`Document.querySelector × 0`（稳态零查询）；
+20. `_header` 被整体换掉后，左上返回仍能退出设置（按 `_close` 后缀重解析 close）；
+21. 宽屏 1000×800 → 恢复 DSH 原生（panel 800、nav static、无手机栏）；
+22. 宽屏转回窄屏 → 已打开的设置重新装上手机壳（resize 补装）；
+23. 全程无未捕获 JS 异常。
 
 回归对照（证明用例能抓住旧行为）：
 
@@ -189,7 +207,7 @@ npm run check:shell       # 43/43 通过（新增 20 项设置断言）
 git show 3112409:dsh-remoteApp/src/lib/mobileWebShell.ts > /tmp/mobileWebShell-old.ts
 cd dsh-remoteApp
 node scripts/check-injected-shell.mjs --shell-js /tmp/mobileWebShell-old.ts
-# → 16/43 失败；其中：
+# → 19/49 失败；其中：
 #   窄屏设置全屏   rect=24,24,366,820（342×796）
 #   内容占满全宽   options=212,78,366,820（154×742）
 ```
@@ -208,4 +226,10 @@ node scripts/check-injected-shell.mjs --shell-js /tmp/mobileWebShell-old.ts
   （仍是可用状态，不会白屏/锁死）。
 - **断点**：>760px（平板/横屏）沿用 DSH 原生居中 modal，和侧栏/右栏的手机壳断点一致。
 - **未覆盖**：iOS 真机上的安全区/键盘弹出目视效果；iOS 26 的玻璃材质主题差异
-  （只改了几何与层叠，未覆盖主题变量）。
+  （只改了几何与层叠，未覆盖主题变量）；`inert`（iPad 硬件键盘焦点）只做了 DOM 断言，
+  未在真机键盘上目视。
+- **i18n**：手机栏的 aria-label / 兜底标题仍是中文（App 本身是中文产品）；若 DSH 切
+  英文界面，标题会取到 `Settings`，但按钮读屏文案仍是中文。
+- **原生 header 隐藏的副作用**：`settings.action`（「打开配置文件」）只在 DSH 本机
+  loopback 场景注册，远程手机 WebView 当前没有该 action；若未来插件在 header 加
+  手机端也需要的行为，需要重新评估。

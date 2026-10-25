@@ -7,6 +7,29 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-25 修复：手机端账号页「查询用量 / 充值 / 意见反馈」点击无反应
+
+- **现象**：设置 → 账号与余额里点「更多 → 查询用量 / 充值 / 更多账号信息」，以及账号菜单
+  「意见反馈」，在 App 里完全没有反应。
+- **根因**：这些入口依赖打开新页面 —— 桌面 DSH 由 Electron 的 `dshPlatform` 桥打开内嵌
+  平台页，浏览器里是 `<a target="_blank">` 新标签页；而 App 的原生 mTLS WebView 没有
+  新窗口能力（iOS 无 `WKUIDelegate`，Android `setSupportMultipleWindows(false)` 且未处理
+  `onCreateWindow`），点击被 WebKit 直接丢弃。不是页面被隐藏，也与安全 deny list 无关。
+- **修复**（`mobileWebShell.ts` + `WebViewScreen.tsx` + 新增 `ExternalPageScreen.tsx`）：
+  - 注入壳拦截外链锚点与 `window.open` 的 http(s) 地址，通过现有桥上报
+    `dsh-remote/open-external`；
+  - App 校验只放行 http(s)、拒绝隧道主机（没设备证书），在 **App 内嵌浏览器**
+    （react-native-webview 全屏覆盖层：返回/刷新/在浏览器打开、底部 URL）里打开，
+    等价桌面 DSH 的内嵌平台页；同源/非 http(s) 链接保持原样；
+  - 左上返回始终关闭内嵌页回 DSH（平台页 pushState 不会把按钮卡住），Android 返回键同样；App 锁屏时自动关闭内嵌页。
+- **验证**：`check:shell` 新增 3 项断言（锚点拦截、同源不拦截、window.open 拦截），
+  **49/49** 通过；删掉锚点拦截 / window.open 拦截的两个 mutant 各 **1/49** 失败；
+  旧注入壳 19/49 失败。`tsc --noEmit`、`check:native`、服务端 97 测试通过。
+- **生效**：纯 JS（react-native-webview 已在原生工程链接，无需重建原生）。
+- **真机验证**：2026-10-25，iPhone 17 Pro Max / iOS 27.0 / 0.1.5 build 6（Release，
+  `xcodebuild` + `devicectl`）：账号页外链在 App 内嵌浏览器打开、左上返回关闭回 DSH、
+  `↗` 切系统浏览器、关闭 App 重开后登录态仍在（ACCEPTANCE 第 22 项 ✅）。详情：[`docs/diagnostics/07-mobile-external-links.md`](docs/diagnostics/07-mobile-external-links.md)。
+
 ## 2026-10-25 修复：手机端设置页太挤（全屏 + 分区菜单抽屉）
 
 - **现象**：App 里从左侧栏进入「设置」后，设置保持桌面端左右布局（左菜单 188px +
@@ -21,11 +44,14 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
     DSH `settings.header` 文案）、右侧菜单按钮；原生 header 隐藏；
   - 状态类 `html.dsh-settings-mobile` 只在装上手机栏后才生效，识别失败时退化为
     DSH 原生居中 modal（不会白屏/锁死）；>760px 继续走 DSH 原生布局。
-- **验证**：`check:shell` 新增真实 DOM/CSS 设置 fixture（20 项断言），**43/43** 通过；
-  同一 fixture 用旧注入壳跑 **16 项失败**并复现 `panel 342×796 / 内容 154×742`；
+- **验证**：`check:shell` 设置 fixture 共 **26 项断言**（23 项设置手机壳 + 3 项外链），
+  全套 **49/49** 通过；同一 fixture 用旧注入壳跑 **19 项失败**并复现 `panel 342×796 / 内容 154×742`；
+  另用 2 个 mutant（删 nav / close 缓存重解析）确认新断言能抓住回归；
   `tsc --noEmit`、`check:native` 通过。
-- **生效**：纯 JS（注入壳），**无需重建原生包**，App 版本不变（0.1.5 build 6）；
-  dev client Metro reload / 发布包重打 JS bundle。真机目视验收见 ACCEPTANCE 第 21 项。
+- **生效**：纯 JS（注入壳），**无需重建原生包**，App 版本不变（0.1.5 build 6）。
+- **真机验证**：2026-10-25，iPhone 17 Pro Max / iOS 27.0 / 0.1.5 build 6（Release，
+  `xcodebuild` + `devicectl`）：全屏、抽屉、分区切换、左上返回、横竖屏切换通过
+  （ACCEPTANCE 第 21 项 ✅）。
 - 详情与效果示意：[`docs/diagnostics/06-mobile-settings-drawer.md`](docs/diagnostics/06-mobile-settings-drawer.md)。
 
 ## 2026-10-25 修复：手机端「载入历史很久/失败 + 画面反复跳」
@@ -222,7 +248,7 @@ npm run poc:docker          # ✅ 真实镜像 + 容器 + host 插件 + mTLS 全
 cd dsh-remoteApp
 npx tsc --noEmit            # ✅ 0 error
 npm run check:native        # ✅ JS bridge ↔ iOS/Android 接口一致
-npm run check:shell         # ✅ 43/43（含设置页全屏/抽屉、右栏全屏、流式零查询）
+npm run check:shell         # ✅ 49/49（含设置页全屏/抽屉/inert、外链、右栏全屏、流式零查询）
 npm run check:ios-env       # ❌ 本机缺完整 Xcode（脚本给出修复步骤，属预期）
 npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 ```
