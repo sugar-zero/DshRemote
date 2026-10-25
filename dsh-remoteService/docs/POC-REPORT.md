@@ -10,6 +10,10 @@
 | # | POC | 状态 | 证据 |
 |---|---|---|---|
 | 1 | WebView mTLS | ✅ **macOS WKWebView 已验证**（`npm run poc:webview`：真实 WKWebView 出示客户端证书，服务器确认 `CN=dsh-poc-device`）；⏳ iOS 真机待 Xcode | `poc/webview-mtls/`（Swift 测试工具 + 测试 CA/HTTPS server）；与 iOS 同一套 `WKNavigationDelegate.didReceive challenge` API |
+| 1.44 | 推送点击跳转会话 + 当前会话不弹应用内通知 | ✅ APNs payload `body` 字典带 `{kind, sessionId, host}`（expo iOS 映射 `content.data`）；host Client 半注入 `uiWorkspace`，上报当前会话并通过 `__DSH_REMOTE_OPEN_SESSION__` / `openSession` 跳会话；App 原生 `evaluateJavaScript` + response/cold-start 处理，多主机按 host 路由；当前会话前台不弹卡片。host 测试 97/97、静态检查通过；**2026-10-25 真机验证成功**（非当前会话推送、系统通知点击跳转、当前会话不提示） | `packages/host-plugin/lib/apns.js`、`push.js`、`client.js`、`dsh-remoteApp/modules/dsh-mtls`、`src/screens/WebViewScreen.tsx`、`App.tsx` |
+| 1.43 | 手机 WebView 后台恢复后的状态一致性 | ✅ host Client 半监听 `visibilitychange`：远程 WebView 隐藏 ≥10s 后恢复时调用 DSH `connection.reconnect()`，强制重建 generation、重新下发 tail 快照，并借现有热缓存断线清理避免旧状态复用；阈值可用 `__DSH_REMOTE_RESUME_RECONNECT_MS__` 覆盖。`client-smoke` 新增用例；真机旧值闪烁待复测 | `packages/host-plugin/client.js`、`test/client-smoke.test.js` |
+| 1.42 | App 设置页 + 前台应用内通知 + 清理缓存 | ✅ Home 右上角设置入口：版本（expo-application）、应用内通知开关（SecureStore 持久化；前台用顶部卡片代替系统横幅）、通知权限/发送测试通知、原生 `clearWebCache`（iOS WKWebsiteDataStore+URLCache / Android HTTP 磁盘缓存+Cookie+WebStorage+表单/认证缓存）、设备与安全入口。静态检查（tsc/check:native/check:shell）通过；iOS Release 编译通过；真机行为待验收 | `dsh-remoteApp/src/screens/SettingsScreen.tsx`、`src/components/InAppNotificationBanner.tsx`、`src/lib/settings.ts`、`modules/dsh-mtls/...` |
+| 1.41 | 自托管 APNs 推送（方案 A） | ✅ 主机插件直连 Apple：`lib/apns.js`（ES256 provider token + HTTP/2 + 会话摘要 payload（标题/正文截断）+ 410/Unregistered 清理（`BadDeviceToken` 等视为配置错误，不删 token））；App 注册 APNs device token + `aps-environment`；默认 `pushProvider=apns`，旧 relay→Expo 通道保留为可选。测试覆盖 JWT 签名/缓存、sandbox/production 路由、错误分类、会话摘要（标题/用户消息/助手回复/turn 重置/截断）、notifier 分流、失效 token 清理端到端 | `packages/host-plugin/lib/apns.js`、`test/apns.test.js`、`test/push-apns-e2e.test.js`、`dsh-remoteApp/src/lib/notifications.ts` |
 | 1.40 | 禁用页面/输入框自动缩放 | ✅ 三层：注入并重设 viewport（maximum-scale=1, user-scalable=no）；输入框/可编辑区 font-size:16px 防止 iOS 聚焦缩放；原生 WKWebView `maximumZoomScale=1` + 关闭 pinch，Android `setSupportZoom(false)`。Release 已安装 | `mobileWebShell.ts`、`modules/dsh-mtls` |
 | 1.39 | 回退“会话单击”相关改动 | ✅ 按用户要求撤销所有试图让会话一次点击进入的代码：移除自动补第二次 click、React `__reactProps.onClick` 直调、会话行特殊处理；保留手机抽屉、鲸鱼入口、关闭隐藏、工作区/设置行为。会话行恢复 DSH 原生行为 | `mobileWebShell.ts` |
 | 1.37 | 会话单击进入（React handler 直调） | ✅ 真机确认 WKWebView 会拦截合成 click（自动补第二次 click 不生效）。改为从会话行 DOM 的 `__reactProps$*.onClick` 直接调用 DSH 自己的 onOpen，跳过合成事件/信任检查；Chrome 验证一次调用即切换会话。Release 已安装 | `mobileWebShell.ts`、Chrome DOM 验证 |
@@ -112,7 +116,7 @@ POC 使用独立临时 `$DSH_HOME`（不会碰用户的真实 DSH 数据），�
 1. **iOS 真机 WebView mTLS**：macOS WKWebView + Swift CSR 均已独立验证；剩余用 Xcode + iPhone 验证 Secure Enclave/Keychain 身份来源与 App 集成。
 2. **App 原生密钥/CSR + 原生 mTLS HTTP**：✅ iOS Swift 生成器 + `installCertificate` + `requestWithClientCert`（URLSession）已实现并独立验证；⏳ 需 Xcode 编译 + 真机 Keychain/Secure Enclave 验收；Android（Keystore+BouncyCastle）待实现。
 3. **生产证书自动化**：当前按 `DEPLOY.md` 用 acme.sh 手工/定时签发；可加 relay 侧 ACME DNS-01 helper（B2 仍要求 DNS 凭据只在主机）。
-4. **推送**：✅ host/relay 零内容推送链路 + 测试；⏳ App 原生 mTLS HTTP 客户端（`requestWithClientCert`）与 EAS/APNs 凭据（真机里程碑）。
+4. **推送**：✅ 自托管 APNs（会话标题 + 助手回复摘要；旧 relay/Expo 通道保留）+ 测试；⏳ 真机推送验收需配置 APNs key（见 `dsh-remoteApp/docs/ACCEPTANCE.md` §5）。
 5. **client UI 桌面确认按钮**：✅ 已补齐（pending 卡片 + 允许/拒绝 + 刷新 + 测试）。
 6. **生产部署**：需要用户提供 VPS + 域名（或按 `DEPLOY.md` 自行部署）；relay 控制面必须用真实证书（`--dev` 仅本机）。
 7. **加固收尾**：✅ 远程响应安全头/请求体上限/`/open-in-app` deny、relay per-IP 连接限制、断线重连；⏳ Android 编译、换机/撤销演练、CSP 评估。

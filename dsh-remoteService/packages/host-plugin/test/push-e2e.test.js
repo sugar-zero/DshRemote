@@ -53,6 +53,7 @@ test('push end-to-end: session turn end -> connector -> relay -> Expo endpoint (
     requireApproval: true,
     pushEnabled: true,
     pushCooldownSeconds: 0,
+    pushProvider: 'expo',
   });
   writeJson(paths.pushTokens(), {
     version: 1,

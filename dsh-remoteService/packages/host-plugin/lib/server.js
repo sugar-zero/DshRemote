@@ -12,6 +12,42 @@ import { readJsonBody, pathnameOf, sendError, sendJson } from './http-utils.js';
 import { createPeerVerifier, createRemoteTlsServer } from './mtls.js';
 
 const MAX_PUSH_TOKENS = 20;
+const PUSH_PROVIDERS = new Set(['apns', 'expo', 'fcm']);
+const PUSH_ENVIRONMENTS = new Set(['development', 'production']);
+
+/**
+ * 规范化 `POST /__dsh_remote/push-token` 请求体。
+ * 本轮自托管推送只使用 provider='apns'（APNs device token + aps-environment）；
+ * 'expo' 为旧版经 relay 的通道，保留兼容。
+ *
+ * @param {Record<string, any>} [body]
+ * @returns {{provider: string, token: string, environment?: 'development'|'production'}}
+ */
+export function normalizePushTokenBody(body = {}) {
+  const provider = String(body?.provider ?? 'expo').trim().toLowerCase();
+  if (!PUSH_PROVIDERS.has(provider)) {
+    throw Object.assign(new Error(`不支持的推送 provider: ${provider}`), { status: 400, code: 'unsupported-provider' });
+  }
+  const token = String(body?.token ?? '').trim();
+  if (token === '' || token.length > 4096) {
+    throw Object.assign(new Error('推送 token 非法'), { status: 400, code: 'invalid-token' });
+  }
+  if (provider === 'apns' && !/^[0-9a-f]{64}$/i.test(token)) {
+    throw Object.assign(new Error('APNs device token 必须是 64 位十六进制'), { status: 400, code: 'invalid-token' });
+  }
+  let environment;
+  if (provider === 'apns') {
+    const raw = body?.environment;
+    if (raw !== undefined && raw !== null && String(raw) !== '') {
+      const value = String(raw).trim().toLowerCase();
+      if (!PUSH_ENVIRONMENTS.has(value)) {
+        throw Object.assign(new Error('APNs environment 只能是 development 或 production'), { status: 400, code: 'invalid-environment' });
+      }
+      environment = value;
+    }
+  }
+  return { provider, token, ...(environment ? { environment } : {}) };
+}
 
 /**
  * 主机插件远程 TLS 监听：配对入口 + 设备 mTLS + 反向代理。
@@ -138,11 +174,16 @@ export function createRemoteServer({
       if (req.method !== 'POST') { sendError(res, 405, 'method-not-allowed', '仅支持 POST'); return; }
       try {
         const body = await readJsonBody(req, 16 * 1024);
-        const provider = String(body.provider || 'expo');
-        const token = String(body.token || '');
-        if (!token || token.length > 4096) throw Object.assign(new Error('token 非法'), { status: 400, code: 'invalid-token' });
-        savePushToken?.({ provider, token, deviceId: peer.device.id, ts: Date.now() });
-        sendJson(res, 200, { ok: true, data: { registered: true, provider } });
+        const tokenInfo = normalizePushTokenBody(body);
+        savePushToken?.({ ...tokenInfo, deviceId: peer.device.id, ts: Date.now() });
+        sendJson(res, 200, {
+          ok: true,
+          data: {
+            registered: true,
+            provider: tokenInfo.provider,
+            environment: tokenInfo.environment ?? null,
+          },
+        });
       } catch (error) {
         sendError(res, error.status ?? 400, error.code ?? 'invalid-push-token', error.message);
       }

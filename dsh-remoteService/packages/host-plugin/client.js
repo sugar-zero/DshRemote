@@ -20,6 +20,8 @@ window.__ModuleLoader__.load({
     const API = '/api/remote-access';
     /** 远程/手机 WebView 下保留的「最近会话」数量（超过按 LRU 释放额外 retain）。 */
     const DEFAULT_SESSION_CACHE_SIZE = 3;
+    /** 手机 WebView 从后台恢复超过该时长后，主动重连以刷新会话状态（可用 globalThis 覆盖）。 */
+    const RESUME_RECONNECT_AFTER_MS = 10_000;
     const POLL_MS = 2000;
     const FLASH_GOOD_MS = 2600;
     const FLASH_WARN_MS = 5200;
@@ -77,9 +79,18 @@ window.__ModuleLoader__.load({
       'sw.requireApproval': '新设备配对需要本机确认',
       'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
       'sw.pushEnabled': '推送提醒',
-      'sw.pushEnabledNote': '一轮任务结束/出错时，通过 relay 发一条不含内容的通用提醒。推送通道由 relay 配置（默认 Expo）。',
+      'sw.pushEnabledNote': '一轮任务结束/出错时发提醒：标题取会话标题、正文取本轮助手回复摘要（截断）；默认由主机直连 APNs（不经 relay、不用 Expo 账号）。锁屏会显示摘要。',
+      'sw.pushSelfHosted': '自托管直连 APNs',
+      'sw.pushSelfHostedNote': '开启：主机用 APNs 私钥直接发到 Apple；关闭：回退到旧版经 relay 的 Expo 推送。key 的 Environment 建议选 Sandbox & Production（只选 Sandbox 只能发开发包）。',
       'field.pushCooldown': '同会话推送冷却（秒）',
       'field.pushCooldownHint': '默认 30 秒，避免连续轮次刷屏',
+      'field.apnsKeyFile': 'APNs 私钥路径',
+      'field.apnsKeyFileHint': '/path/AuthKey_<KEY_ID>.p8（0600，勿放仓库）',
+      'field.apnsKeyId': 'APNs Key ID',
+      'field.apnsTeamId': 'Apple Team ID',
+      'field.apnsTopic': 'APNs Topic（bundle ID）',
+      'field.apnsTopicHint': 'com.example.app',
+      'push.warnings': 'APNs 配置未完成：{errors}',
 
       'field.relayUrl': '中继地址',
       'field.relayUrlHint': 'wss://relay.example.com:8443',
@@ -234,9 +245,18 @@ window.__ModuleLoader__.load({
       'sw.requireApproval': 'Require confirmation on this computer for new pairings',
       'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
       'sw.pushEnabled': 'Push notifications',
-      'sw.pushEnabledNote': 'Send a content-free generic reminder through the relay when a turn completes or fails. The relay configures the provider (Expo by default).',
+      'sw.pushEnabledNote': 'Notify when a turn completes or fails: the title is the session title and the body is a truncated summary of the turn\'s final assistant reply. The host talks to APNs directly (no relay, no Expo account). Summaries may appear on the lock screen.',
+      'sw.pushSelfHosted': 'Self-hosted direct APNs',
+      'sw.pushSelfHostedNote': 'On: the host signs and sends to Apple with its APNs key. Off: fall back to the legacy Expo push via the relay. Prefer an APNs key scoped to Sandbox & Production (a Sandbox-only key cannot reach release builds).',
       'field.pushCooldown': 'Per-session push cooldown (seconds)',
       'field.pushCooldownHint': 'Default 30s, to avoid notification spam across turns',
+      'field.apnsKeyFile': 'APNs private key path',
+      'field.apnsKeyFileHint': '/path/AuthKey_<KEY_ID>.p8 (0600, keep outside the repo)',
+      'field.apnsKeyId': 'APNs Key ID',
+      'field.apnsTeamId': 'Apple Team ID',
+      'field.apnsTopic': 'APNs topic (bundle ID)',
+      'field.apnsTopicHint': 'com.example.app',
+      'push.warnings': 'APNs is not configured yet: {errors}',
 
       'field.relayUrl': 'Relay URL',
       'field.relayUrlHint': 'wss://relay.example.com:8443',
@@ -506,6 +526,12 @@ window.__ModuleLoader__.load({
         requireApproval: pickRequireApproval(status),
         pushEnabled: config.pushEnabled !== undefined ? config.pushEnabled !== false : (prev.pushEnabled !== undefined ? prev.pushEnabled : true),
         pushCooldownSeconds: stringOrPrevious(config.pushCooldownSeconds, prev.pushCooldownSeconds !== undefined ? String(prev.pushCooldownSeconds) : '30'),
+        pushProvider: config.pushProvider === 'expo' ? 'expo' : (config.pushProvider === 'apns' ? 'apns' : (prev.pushProvider === 'expo' ? 'expo' : 'apns')),
+        apnsKeyFile: stringOrPrevious(config.apnsKeyFile, prev.apnsKeyFile || ''),
+        apnsKeyId: stringOrPrevious(config.apnsKeyId, prev.apnsKeyId || ''),
+        apnsTeamId: stringOrPrevious(config.apnsTeamId, prev.apnsTeamId || ''),
+        apnsTopic: stringOrPrevious(config.apnsTopic, prev.apnsTopic || ''),
+        apnsEnvironment: stringOrPrevious(config.apnsEnvironment, prev.apnsEnvironment || 'auto'),
         tlsCertFileConfigured,
         tlsKeyFileConfigured,
         hostTokenConfigured,
@@ -1353,6 +1379,16 @@ window.__ModuleLoader__.load({
         if (hostToken !== '') patch.hostToken = hostToken;
         if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
         if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
+        const pushProvider = draft.pushProvider === 'expo' ? 'expo' : 'apns';
+        if (pushProvider !== baseline.pushProvider) patch.pushProvider = pushProvider;
+        const apnsKeyFile = draft.apnsKeyFile.trim();
+        if (apnsKeyFile !== baseline.apnsKeyFile) patch.apnsKeyFile = apnsKeyFile;
+        const apnsKeyId = draft.apnsKeyId.trim();
+        if (apnsKeyId !== baseline.apnsKeyId) patch.apnsKeyId = apnsKeyId;
+        const apnsTeamId = draft.apnsTeamId.trim();
+        if (apnsTeamId !== baseline.apnsTeamId) patch.apnsTeamId = apnsTeamId;
+        const apnsTopic = draft.apnsTopic.trim();
+        if (apnsTopic !== baseline.apnsTopic) patch.apnsTopic = apnsTopic;
         const cooldown = Number.parseInt(String(draft.pushCooldownSeconds), 10);
         if (Number.isFinite(cooldown) && cooldown >= 0 && String(cooldown) !== String(baseline.pushCooldownSeconds)) {
           patch.pushCooldownSeconds = cooldown;
@@ -1484,6 +1520,7 @@ window.__ModuleLoader__.load({
         }),
         h(InfoRow, { label: t('host.version'), value: status.version || '—' }));
 
+      const pushWarnings = status && status.push && Array.isArray(status.push.warnings) ? status.push.warnings : [];
       const connectionSection = h(Section, { title: t('section.connection') },
         h(Row, { label: t('sw.enabled'), note: t('sw.enabledNote') },
           h(Toggle, {
@@ -1561,6 +1598,41 @@ window.__ModuleLoader__.load({
             disabled,
             label: t('sw.pushEnabled'),
             onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
+          })),
+        h(Row, { label: t('sw.pushSelfHosted'), note: t('sw.pushSelfHostedNote') },
+          h(Toggle, {
+            checked: draft.pushProvider === 'apns',
+            disabled,
+            label: t('sw.pushSelfHosted'),
+            onChange: (value) => setDraft({ ...draft, pushProvider: value ? 'apns' : 'expo' }),
+          })),
+        pushWarnings.length > 0 && draft.pushEnabled && draft.pushProvider === 'apns'
+          ? h('div', { 'data-ra-note': '' }, t('push.warnings', { errors: pushWarnings.join('；') }))
+          : null,
+        h('div', { 'data-ra-grid': '' },
+          h(Field, {
+            label: t('field.apnsKeyFile'),
+            value: draft.apnsKeyFile,
+            placeholder: t('field.apnsKeyFileHint'),
+            onChange: (value) => setDraft({ ...draft, apnsKeyFile: value }),
+          }),
+          h(Field, {
+            label: t('field.apnsKeyId'),
+            value: draft.apnsKeyId,
+            placeholder: 'ABC123DEF4',
+            onChange: (value) => setDraft({ ...draft, apnsKeyId: value }),
+          }),
+          h(Field, {
+            label: t('field.apnsTeamId'),
+            value: draft.apnsTeamId,
+            placeholder: 'TEAM123456',
+            onChange: (value) => setDraft({ ...draft, apnsTeamId: value }),
+          }),
+          h(Field, {
+            label: t('field.apnsTopic'),
+            value: draft.apnsTopic,
+            placeholder: t('field.apnsTopicHint'),
+            onChange: (value) => setDraft({ ...draft, apnsTopic: value }),
           })),
         h('div', { 'data-ra-grid': '' },
           h(Field, {
@@ -1876,6 +1948,158 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /**
+     * 手机 WebView 从后台恢复时主动重建 DSH 连接，让 session follow / 投影重新对齐。
+     *
+     * 为什么需要：iOS 后台会挂起 WKWebView 的 JS 和定时器；如果原 WebSocket 看上去还
+     * 活着，DSH 客户端不会重连，恢复后 UI 可能先显示后台前的旧状态（例如运行中计时
+     * 停在“4 分钟”），随后又被一次重连刷新成真实值（“20 分钟”），表现为闪烁/信息不对等。
+     * 这里在页面隐藏 ≥ 阈值后再次可见时调用 connection.reconnect()，强制重建 generation
+     * 并让 gateway 重新下发 tail 快照。
+     *
+     * 阈值可通过 `globalThis.__DSH_REMOTE_RESUME_RECONNECT_MS__` 覆盖（调试用）。
+     *
+     * @param {{connection?: any, effect?: Function}} scope 已 inject "connection" 的上下文
+     */
+    function installResumeReconnect(scope) {
+      if (!scope || typeof scope.effect !== 'function') return;
+      const connection = scope.connection;
+      if (!connection || typeof connection.reconnect !== 'function') return;
+      if (typeof document === 'undefined'
+        || typeof document.addEventListener !== 'function'
+        || typeof document.visibilityState !== 'string') return;
+      const override = Number(globalThis.__DSH_REMOTE_RESUME_RECONNECT_MS__);
+      const thresholdMs = Number.isFinite(override) && override >= 0 ? override : RESUME_RECONNECT_AFTER_MS;
+      let hiddenAt = 0;
+      const onVisibilityChange = () => {
+        try {
+          if (document.visibilityState === 'hidden') {
+            hiddenAt = Date.now();
+            return;
+          }
+          if (document.visibilityState !== 'visible') return;
+          const previous = hiddenAt;
+          hiddenAt = 0;
+          if (previous === 0 || Date.now() - previous < thresholdMs) return;
+          connection.reconnect();
+          if (typeof console !== 'undefined' && typeof console.info === 'function') {
+            console.info('[dsh-remote] resumed after', Math.round((Date.now() - previous) / 1000), 's; reconnecting to reconcile session state');
+          }
+        } catch { /* 恢复失败不影响页面 */ }
+      };
+      document.addEventListener('visibilitychange', onVisibilityChange);
+      scope.effect(() => () => {
+        try { document.removeEventListener('visibilitychange', onVisibilityChange); } catch { /* ignore */ }
+      }, 'remote-access: resume reconnect');
+    }
+
+    /**
+     * 手机 WebView 的会话桥：
+     *  - 订阅 `uiWorkspace.selection`，把当前会话（host + sessionId）通过原生 WebView 桥
+     *    报给 App（App 用于「当前会话不弹应用内通知」）；
+     *  - 暴露 `window.__DSH_REMOTE_OPEN_SESSION__(id)` 与 `dsh-remote:open-session` 事件，
+     *    内部调用 `uiWorkspace.openSession(id)`，供 App 在点击推送后跳到对应会话；
+     *  - 插件加载前收到的打开请求会暂存在 `__DSH_REMOTE_OPEN_SESSION_PENDING__`，
+     *    安装完成后消费。
+     *
+     * `uiWorkspace` 是 DSH 内部 service（提供 selection/openSession）；拿不到时静默降级，
+     * 通知仍可正常显示/打开主机，只是不会自动跳会话。
+     *
+     * @param {{inject?: Function}} ctx Client 上下文
+     */
+    function installSessionBridge(ctx) {
+      if (!ctx || typeof ctx.inject !== 'function') return;
+      try {
+        ctx.inject(['uiWorkspace'], (scope) => {
+          const workspace = scope && scope.uiWorkspace;
+          if (!workspace) return;
+          const locationHost = (() => {
+            try { return String(globalThis.location?.host ?? ''); } catch { return ''; }
+          })();
+
+          const postNative = (payload) => {
+            try {
+              const text = JSON.stringify(payload);
+              const webkitHandlers = globalThis.webkit && globalThis.webkit.messageHandlers;
+              if (webkitHandlers && webkitHandlers.dshMtlsBridge
+                && typeof webkitHandlers.dshMtlsBridge.postMessage === 'function') {
+                webkitHandlers.dshMtlsBridge.postMessage(text);
+                return true;
+              }
+              if (globalThis.dshMtlsBridge && typeof globalThis.dshMtlsBridge.postMessage === 'function') {
+                globalThis.dshMtlsBridge.postMessage(text);
+                return true;
+              }
+              if (globalThis.ReactNativeWebView && typeof globalThis.ReactNativeWebView.postMessage === 'function') {
+                globalThis.ReactNativeWebView.postMessage(text);
+                return true;
+              }
+            } catch { /* 原生桥不可用时忽略 */ }
+            return false;
+          };
+
+          const selection = workspace.selection;
+          if (selection && typeof selection.getSnapshot === 'function' && typeof selection.subscribe === 'function') {
+            const publishCurrentSession = () => {
+              try {
+                // 空 selection（离开/归档当前会话）也要上报空 sessionId，让 App 清掉
+                // 过期的“当前会话”，否则会误抑制那个会话的应用内通知。
+                const raw = selection.getSnapshot()?.sessionId;
+                const sessionId = typeof raw === 'string' ? raw : '';
+                globalThis.__DSH_REMOTE_CURRENT_SESSION__ = { host: locationHost, sessionId };
+                postNative({ type: 'dsh-remote/current-session', host: locationHost, sessionId });
+              } catch { /* ignore */ }
+            };
+            publishCurrentSession();
+            const unsubscribe = selection.subscribe(publishCurrentSession);
+            scope.effect?.(() => () => {
+              try { unsubscribe?.(); } catch { /* ignore */ }
+            }, 'remote-access: current session bridge');
+          }
+
+          if (typeof workspace.openSession === 'function') {
+            const open = (sessionId) => {
+              if (typeof sessionId !== 'string' || sessionId === '') return false;
+              try {
+                workspace.openSession(sessionId);
+                return true;
+              } catch {
+                return false;
+              }
+            };
+            globalThis.__DSH_REMOTE_OPEN_SESSION__ = open;
+            const onOpenEvent = (event) => {
+              const detail = event && typeof event === 'object' ? event.detail : undefined;
+              const sessionId = typeof detail === 'string'
+                ? detail
+                : detail && typeof detail === 'object'
+                  ? detail.sessionId
+                  : undefined;
+              if (typeof sessionId === 'string') open(sessionId);
+            };
+            try { globalThis.addEventListener?.('dsh-remote:open-session', onOpenEvent); } catch { /* ignore */ }
+            try {
+              const pending = globalThis.__DSH_REMOTE_OPEN_SESSION_PENDING__;
+              if (typeof pending === 'string' && pending !== '') {
+                try { delete globalThis.__DSH_REMOTE_OPEN_SESSION_PENDING__; } catch { /* ignore */ }
+                open(pending);
+              }
+            } catch { /* ignore */ }
+            scope.effect?.(() => () => {
+              try { globalThis.removeEventListener?.('dsh-remote:open-session', onOpenEvent); } catch { /* ignore */ }
+              try {
+                if (globalThis.__DSH_REMOTE_OPEN_SESSION__ === open) delete globalThis.__DSH_REMOTE_OPEN_SESSION__;
+              } catch { /* ignore */ }
+            }, 'remote-access: session navigation');
+          }
+        });
+      } catch (error) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[dsh-remote] session bridge unavailable:', error);
+        }
+      }
+    }
+
     /** 远程/手机 WebView 下安装会话热缓存；任何失败都只降级，不影响主 UI。 */
     function installRemoteSessionCache(ctx) {
       if (!ctx || typeof ctx.inject !== 'function') return;
@@ -1889,6 +2113,13 @@ window.__ModuleLoader__.load({
               console.warn('[dsh-remote] session warm cache unavailable:', error);
             }
           }
+          try {
+            installResumeReconnect(scope);
+          } catch (error) {
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+              console.warn('[dsh-remote] resume reconnect unavailable:', error);
+            }
+          }
         });
       } catch (error) {
         if (typeof console !== 'undefined' && typeof console.warn === 'function') {
@@ -1900,7 +2131,7 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       // 仅供 packages/host-plugin/test/client-smoke.test.js 使用；DSH 运行时只消费 inject/apply。
-      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus, installSessionWarmCache, DEFAULT_SESSION_CACHE_SIZE },
+      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus, installSessionWarmCache, installResumeReconnect, installSessionBridge, DEFAULT_SESSION_CACHE_SIZE },
       apply(ctx) {
         ctx.effect(injectStyles, 'remote-access: 样式');
 
@@ -1918,7 +2149,10 @@ window.__ModuleLoader__.load({
           && globalThis.location
           && typeof globalThis.location.search === 'string'
           && /(?:^|[?&])dsh_mobile=1(?:&|$)/.test(globalThis.location.search);
-        if (isRemoteWebView) installRemoteSessionCache(ctx);
+        if (isRemoteWebView) {
+          installRemoteSessionCache(ctx);
+          installSessionBridge(ctx);
+        }
 
         const hasLocale = !!(locale && typeof locale.register === 'function');
         const slots = typeof ctx.get === 'function'

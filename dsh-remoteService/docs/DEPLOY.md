@@ -200,23 +200,68 @@ tail -f /tmp/dsh-web.err.log
 | 主机休眠 | 远程不可用；桌面「防止睡眠」/常开设备（Codex 同样要求） |
 | 日志 | relay 不记内容；主机 audit.jsonl 只记动作/资源/哈希，0600 |
 
-## 6.1 推送提醒（可选，零正文）
+## 6.1 推送提醒（自托管 APNs，会话摘要）
 
-本仓库实现了「host 插件触发 → relay → APNs/FCM/Expo」的**内容无关**推送链路（POC 先接 Expo Push）：
+默认 **主机直连 APNs**（方案 A）：host 插件在 DSH 一轮结束/出错时，用本机 APNs
+Auth Key 直接调 Apple，不经过 relay，也不需要 Expo/EAS 账号。
 
-1. 在 Expo 项目里为 App 配置 EAS projectId（App 侧 `EXPO_PUBLIC_EAS_PROJECT_ID`），并上传 APNs/FCM 凭据到 Expo（Expo 文档步骤）。
-2. relay 配置（`relay.json` 或环境变量）：
-   ```json
-   { "push": { "enabled": true, "endpoint": "https://exp.host/--/api/v2/push/send",
-               "title": "DSH", "body": "有任务需要你" } }
+1. Apple Developer（付费）→ Keys → 新建 **Apple Push Notifications service (APNs)** key：
+   - **Environment**：选 **Sandbox & Production**（推荐一把 key 覆盖开发和发布；只选
+     Sandbox 的 key 只能发给开发包，上架/Ad Hoc 前需要覆盖生产环境的 key）；
+   - **Key Restriction**：**Team Scoped (All Topics)**（或 Topic Specific 选 bundle ID）；
+   - 下载 `AuthKey_<KEY_ID>.p8`（只能下载一次），记下 Key ID；Team ID 在 Apple Developer
+     会员信息里。
+2. 把 `.p8` 放到 DSH 主机仓库外，建议 `~/.dsh/remote-access/apns/`，权限 `600`：
+
+   ```bash
+   mkdir -p ~/.dsh/remote-access/apns
+   cp /path/to/AuthKey_<KEY_ID>.p8 ~/.dsh/remote-access/apns/
+   chmod 600 ~/.dsh/remote-access/apns/AuthKey_<KEY_ID>.p8
    ```
-   也可用 `RELAY_PUSH_ENDPOINT / RELAY_PUSH_ACCESS_TOKEN / RELAY_PUSH_TITLE / RELAY_PUSH_BODY`。
-3. 主机插件设置（管理 API 或后续 UI）：`pushEnabled: true`（默认）、`pushCooldownSeconds: 30`。
-   生效条件：手机在 App 内成功注册 push token（`POST /__dsh_remote/push-token`，mTLS）。
-4. 触发：DSH 一轮结束/出错时，host 插件只发 `kind=attention`；relay 只发通用标题/正文，**不含会话名、消息、文件路径**。手机收到后自行连回来看详情。
 
-> 安全边界：relay 只按 hostId 存不透明 token（内存，最多 20 台/主机），不存内容；推送 payload 不含任何业务信息；日志不含 token 明文。
-> 当前状态：host/relay 链路与测试已完成；App 侧 JS 已接入 expo-notifications，但**原生 mTLS 请求（`requestWithClientCert`）与 EAS/APNs 凭据仍需在真机里程碑完成**。未完成前推送会返回 "native transport unavailable"，不打断主流程。
+3. DSH 设置 → 远程访问 → 推送：
+   - 推送提醒：开
+   - 自托管直连 APNs：开（默认）
+   - APNs 私钥路径 / Key ID / Team ID / Topic（App bundle ID，例如 `com.example.dshremote`）
+   - 同会话冷却（默认 30s）
+
+   等价的 `/config` 字段：`pushProvider: "apns"`、`apnsKeyFile`、`apnsKeyId`、
+   `apnsTeamId`、`apnsTopic`（可选 `apnsEnvironment: auto|development|production`）。
+4. 手机 App 配对/打开主机后自动注册（mTLS）：
+   `POST /__dsh_remote/push-token`
+   `{ "provider": "apns", "token": "<64 位 hex>", "environment": "development"|"production" }`。
+   主机按 environment 选 `api.sandbox.push.apple.com`（开发签名包）或
+   `api.push.apple.com`（发布签名包）。**所以 key 的环境范围必须覆盖 App 实际包的环境**。
+5. 触发：`turn/end`（completed/error/max-tokens/blocked）、非子代理会话、同会话 30s
+   冷却。通知内容取自实际会话：**标题 = 最新会话标题（无则首条用户消息）；正文 = 本轮
+   最后一条助手回复的截断摘要**（失败时加 `⚠️`；无文本时用状态兜底文案）。payload 只含
+   标题/正文 + `{kind, sessionId, host}`（`sessionId`/`host` 仅用于点击通知跳会话），
+   不额外附加路径/命令/工具输出等字段。
+6. 失效处理：APNs 返回 **410 / Unregistered** 时自动删除该设备 token
+   （内存 + `~/.dsh/remote-access/push-tokens.json`），审计记 `push-token-pruned`。
+   `BadDeviceToken` / `DeviceTokenNotForTopic` 通常表示 **topic 或环境配置错误**
+   （不是 token 失效），不会删 token，只在日志/状态提示检查 `apnsTopic` / `apnsEnvironment`。
+   日志出现 `403 InvalidProviderToken` 时检查 key 环境范围 / Key ID / Team ID。
+
+验证：
+
+```bash
+# 主机侧（App 注册成功后）
+cat ~/.dsh/remote-access/push-tokens.json          # provider=apns + environment
+grep -E 'push-(trigger|token-pruned)' ~/.dsh/remote-access/audit.jsonl | tail
+```
+
+DSH 一轮对话结束后锁屏/后台应收到通知；主机日志
+`push trigger: completed … channel=apns delivered=1`。
+
+> 旧版 Expo 通道（可选）：设置 `pushProvider: "expo"` 时仍走 relay → Expo Push；
+> relay 侧配置见 [`../packages/relay/README.md`](../packages/relay/README.md) §6.1
+> （`RELAY_PUSH_*` / relay.json）。默认不启用。
+>
+> 隐私提示：通知标题/正文会进入 APNs payload，可能显示在锁屏/通知中心（并经过 Apple
+> 的推送网络）。若不想让会话摘要出现在锁屏，请关闭推送或隐藏锁屏通知预览。
+> 安全边界：APNs 私钥与设备 token 都只留在主机；relay 不参与该通道、也看不到 token；
+> 日志不含私钥、token 与通知正文。
 
 ---
 
@@ -229,7 +274,7 @@ tail -f /tmp/dsh-web.err.log
 - [ ] 手机/中继不持有 DSH launch token 或 30 天 cookie
 - [ ] 配对一次一密（≤120s、单次）+ 桌面 SAS 确认；QR 里无长期 token
 - [ ] 设备可撤销；丢手机走撤销流程
-- [ ] 推送只用通用可见文案（不含内容）；relay token 仅内存、日志不含 token；日志/崩溃报告不含 token/正文
+- [ ] 推送通知含会话标题/摘要（锁屏可见，按需关闭或隐藏预览）；APNs 私钥/设备 token 只留在主机（不放仓库）；日志/崩溃报告不含私钥、token 与通知正文
 - [ ] relay 与主机不共享 `$DSH_HOME`；relay 容器非 root/最小权限
 - [ ] 802/8443 防火墙最小放行；relay 控制面证书有效（不要 `--dev` 上公网）
 

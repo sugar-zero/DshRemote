@@ -1,3 +1,4 @@
+import { existsSync } from 'node:fs';
 import { paths, readJson, writeJson } from './paths.js';
 
 /** 默认配置；所有字段都可在管理 API 里覆盖。 */
@@ -19,6 +20,12 @@ export const DEFAULT_CONFIG = Object.freeze({
   denyPrefixes: ['/connect', '/oauth', '/open-in-app', '/api/remote-access', '/__dsh_remote'],
   pushEnabled: true,
   pushCooldownSeconds: 30,
+  pushProvider: 'apns',    // 'apns' = 自托管直连 Apple（推荐）；'expo' = 旧版经 relay 的 Expo 推送
+  apnsKeyFile: '',         // APNs Auth Key (.p8) 的本地路径；建议放在仓库外，0600
+  apnsKeyId: '',           // AuthKey_<KEY_ID>.p8 里的 KEY_ID
+  apnsTeamId: '',          // Apple Developer Team ID
+  apnsTopic: '',           // App bundle ID，例如 com.example.app
+  apnsEnvironment: 'auto', // auto = 按设备注册时上报的 aps-environment；也可固定 development/production
   upstream: { protocol: 'http', host: '127.0.0.1' },
 });
 
@@ -26,6 +33,8 @@ const ALLOWED_KEYS = new Set([
   'enabled', 'hostName', 'relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken',
   'relayTlsInsecure', 'tlsCertFile', 'tlsKeyFile', 'requireApproval', 'listenPort', 'denyPrefixes',
   'pushEnabled', 'pushCooldownSeconds', 'maxRequestBytes',
+  'pushProvider',
+  'apnsKeyFile', 'apnsKeyId', 'apnsTeamId', 'apnsTopic', 'apnsEnvironment',
 ]);
 
 /** 加载配置（不存在时返回默认值）。 */
@@ -49,6 +58,8 @@ export function saveConfig(patch) {
   if (Array.isArray(next.denyPrefixes)) {
     next.denyPrefixes = next.denyPrefixes.map(String).filter((p) => p.startsWith('/'));
   }
+  if (next.pushProvider !== 'apns' && next.pushProvider !== 'expo') next.pushProvider = 'apns';
+  if (!['auto', 'development', 'production'].includes(next.apnsEnvironment)) next.apnsEnvironment = 'auto';
   writeJson(paths.config(), next);
   return next;
 }
@@ -74,6 +85,35 @@ export function validateConfig(config) {
     }
     if ((config.tlsCertFile && !config.tlsKeyFile) || (!config.tlsCertFile && config.tlsKeyFile)) errors.push('tlsCertFile 与 tlsKeyFile 必须成对提供');
   }
+  return errors;
+}
+
+/**
+ * 推送通道：'apns' = 主机直连 Apple（不经过 relay）；'expo' = 旧版经 relay 的 Expo 推送。
+ * 未配置/非法值一律退回 apns（自托管默认）。
+ * @param {Record<string, any>} [config]
+ * @returns {'apns'|'expo'}
+ */
+export function pushProviderOf(config = {}) {
+  return config.pushProvider === 'expo' ? 'expo' : 'apns';
+}
+
+/**
+ * 推送配置自检：不阻止远程访问启动，只用于设置页提示与状态展示。
+ * 仅在 pushEnabled 且 provider=apns 时检查 APNs 字段。
+ * @param {Record<string, any>} [config]
+ * @returns {string[]}
+ */
+export function validatePushConfig(config = {}) {
+  const errors = [];
+  if (config.pushEnabled === false) return errors;
+  if (pushProviderOf(config) === 'expo') return errors; // 旧通道由 relay 配置，无需本机字段
+  const keyFile = String(config.apnsKeyFile ?? '').trim();
+  if (keyFile === '') errors.push('APNs 私钥路径（apnsKeyFile）未配置');
+  else if (!existsSync(keyFile)) errors.push('APNs 私钥文件不存在');
+  if (String(config.apnsKeyId ?? '').trim() === '') errors.push('APNs Key ID 未配置');
+  if (String(config.apnsTeamId ?? '').trim() === '') errors.push('Apple Team ID 未配置');
+  if (String(config.apnsTopic ?? '').trim() === '') errors.push('APNs Topic（App bundle ID）未配置');
   return errors;
 }
 

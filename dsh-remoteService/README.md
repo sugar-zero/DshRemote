@@ -30,12 +30,12 @@ docs/                  # ADMIN-API.md / DEPLOY.md / POC-REPORT.md
 | 项 | 状态 |
 |---|---|
 | 协议 / host 插件 / relay / 客户端 UI / 管理 API | ✅ 已实现 |
-| 单元+集成测试 `npm test` | ✅ 58 tests / 0 fail |
+| 单元+集成测试 `npm test` | ✅ 94 tests / 0 fail（含 APNs、会话摘要、后台恢复重连与通知跳转） |
 | 端到端 POC `node poc/run-poc.js`（配对→mTLS→relay→DSH UI/WS） | ✅ PASS |
 | 真实 DSH 内入口 & 配对弹窗（截图验证） | ✅ PASS（`../mockups/live-pairing.png`） |
 | B2 生产部署文档（域名/DNS-01/acme.sh/运维/安全红线） | ✅ `docs/DEPLOY.md` |
 | WebView mTLS | ✅ macOS WKWebView 已验证；⏳ iOS 真机需 Xcode |
-| 推送（host/relay 链路） | ✅ 已实现 + 测试（App 原生 mTLS 请求待真机） |
+| 推送（自托管 APNs，会话摘要） | ✅ 主机直连 Apple（.p8 + device token；标题/正文取会话摘要）；旧 relay→Expo 通道可选 |
 | 原生 CSR / Android 编译 | ⏳ 下一里程碑 |
 
 ## 开发与验收

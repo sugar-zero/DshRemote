@@ -247,7 +247,11 @@ curl -sI http://relay.example.com/  # 301 Location: https://relay.example.com/
 
 ---
 
-## 6.1 推送（可选）
+## 6.1 推送（可选，旧版通道）
+
+> **默认不参与推送**：主机插件默认 `pushProvider=apns`，直接用自己的 APNs Auth Key 把
+> 会话摘要发到 Apple，不把 token 注册到 relay（见 host-plugin README「推送」）。本节是旧版
+> relay → Expo Push 通道，只有显式配置 `pushProvider: "expo"` 时才会用到。
 
 relay 接收 host 控制面的两类 push 消息（均需已通过 host.hello 鉴权）：
 
@@ -260,7 +264,7 @@ relay → host: {t:'push.result', action:'register'|'send', ok, delivered, faile
 - token 只存内存、按 hostId 隔离（每主机最多 20 台）；relay 重启后由 App 下次打开重新注册。
 - 发送内容**固定为通用标题/正文 + `{kind}`**，绝不含会话名/消息/文件路径。
 - 配置：`relay.json` 的 `push: {enabled,endpoint,accessToken,title,body}` 或环境变量 `RELAY_PUSH_*`；默认 endpoint 为 Expo Push API。
-- 当前 provider 仅支持 `expo`（APNs/FCM 直连为后续里程碑）；`/healthz` 的 `pushTokens` 字段为当前注册设备数。
+- 此旧通道 provider 仅支持 `expo`；`/healthz` 的 `pushTokens` 字段为当前注册设备数（默认直连 APNs 模式下为 0）。
 
 ---
 

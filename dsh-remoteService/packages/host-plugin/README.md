@@ -52,6 +52,12 @@ DSH 设置 → 远程访问：
 | TLS 证书路径 | 主机子域证书 `fullchain.pem` 的本机绝对路径 |
 | TLS 私钥路径 | 主机子域私钥 `privkey.pem` 的本机绝对路径 |
 | 新设备配对需要本机确认 | 开启后，手机扫码后需在桌面点「允许」 |
+| 推送提醒 | 一轮结束/出错时发提醒（标题/正文取会话摘要，默认开启） |
+| 自托管直连 APNs | 开：主机用 APNs 私钥直发 Apple（默认）；关：旧版经 relay 的 Expo |
+| APNs 私钥路径 | `AuthKey_<KEY_ID>.p8` 本机绝对路径（0600，仓库外） |
+| APNs Key ID / Apple Team ID | Apple Developer → Keys / 会员信息 |
+| APNs Topic | App bundle ID（例如 `com.example.dshremote`） |
+| 同会话推送冷却 | 默认 30 秒 |
 
 ### 证书从哪来
 
@@ -107,6 +113,51 @@ volumes:
 ```
 
 插件里填容器内路径，例如 `/root/.dsh/remote-access/certs/fullchain.pem`。
+
+---
+
+### 推送（自托管 APNs，会话摘要）
+
+默认 `pushProvider=apns`：主机插件在 DSH 会话一轮结束/出错时，用本机 APNs Auth Key
+**直接调用 Apple**，不经过 relay、不需要 Expo 账号。
+
+1. Apple Developer（付费）→ Keys → 新建 **Apple Push Notifications service (APNs)** key：
+   - **Environment** 选 **Sandbox & Production**（推荐；只选 Sandbox 的 key 只能发开发包，
+     上架/Ad Hoc 前必须换成覆盖生产环境的 key 或新建一把）；
+   - **Key Restriction** 选 **Team Scoped (All Topics)**（或 Topic Specific 选 App 的 bundle ID）；
+   - 下载 `AuthKey_<KEY_ID>.p8`（只能下载一次），记下 Key ID；Team ID 在会员信息里。
+2. 把 `.p8` 放到仓库外（例如 `~/.dsh/remote-access/apns/`），`chmod 600`。
+3. 设置页「推送提醒」开启、「自托管直连 APNs」开启，填私钥路径 / Key ID / Team ID /
+   Topic（App 的 bundle ID）。
+4. App 进入主机后会通过 mTLS 注册 `POST /__dsh_remote/push-token`
+   （provider=apns + APNs device token + aps-environment）。开发签名包自动走
+   `api.sandbox.push.apple.com`，发布签名包走 `api.push.apple.com`（由主机按注册时上报的
+   environment 选择）。
+5. 触发条件：`turn/end` 且原因为 completed/error/max-tokens/blocked、非子代理会话、
+   同会话 30s 冷却。
+   通知内容取自实际会话：**标题 = 最新会话标题（无则首条用户消息）；正文 = 本轮最后一条
+   助手回复的截断摘要**（失败时加 `⚠️`；没有文本时用状态兜底文案）。只截断文本，不额外
+   附带路径/命令/工具输出等字段；payload 只含标题/正文 + `{kind, sessionId, host}`
+   （`sessionId`/`host` 仅用于点击通知跳会话，见第 7 点）。
+6. APNs 返回 **410 / Unregistered** 时自动清理失效 token（内存 + `push-tokens.json`）；
+   `BadDeviceToken` / `DeviceTokenNotForTopic` 多为 **topic / 环境配置错误**，不删 token，
+   只在日志/状态提示检查 `apnsTopic` / `apnsEnvironment`（避免一个 typo 清空所有 token）。
+7. **点通知跳会话**（App 0.1.5+）：payload 顶层 `body` 字典带 `{kind, sessionId, host}`
+   （expo-notifications iOS 只把 `userInfo["body"]` 映射成 `content.data`，不能放根字段）。
+   App 点击后通过原生 `evaluateJavaScript` 调用 host Client 半注册的
+   `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)`（内部 `uiWorkspace.openSession`）；
+   同一时刻 host Client 半还会通过 WebView 桥上报当前会话，App 用它判断「前台推送是否
+   属于当前正在看的会话」——是则应用内卡片和系统横幅都不显示；其它会话仍提示。
+   `uiWorkspace` 不可用时自动降级为只打开主机。
+   如果日志出现 `403 InvalidProviderToken`，通常是 **key 的环境范围/权限与运行包不匹配**，
+   或 Key ID/Team ID 填错。
+
+> 隐私提示：通知标题/正文会进入 APNs payload，可能显示在锁屏/通知中心（并经过 Apple 的
+> 推送网络）；payload 的 `body` 还会带 `host` 与 `sessionId`（仅用于点击跳转，不新增会话
+> 内容）。若不想让会话摘要出现在锁屏，请关闭推送或隐藏锁屏通知预览。
+> 旧版通道：`pushProvider=expo` 时沿用 relay → Expo Push（relay 侧仍是通用文案，不含会话
+> 内容），配置见 [`../relay/README.md`](../relay/README.md) §6.1；默认不启用。
+> 安全边界：`.p8` 与设备 token 都只在本机；relay 不参与自托管 APNs 通道，也看不到 token。
 
 ---
 
@@ -180,6 +231,9 @@ DSH Web 客户端采用引用计数式 retention：切换会话时旧会话实�
 
 > 该改动是浏览器 bundle，随插件包由 host 提供：**不需要重新构建 App**；在 App 内刷新/
 > 重开页面即可加载（若 DSH 缓存了启动 bundle，需重启 DSH 一次）。
+> 另外，手机 WebView 隐藏 ≥10s 再恢复时会主动调用 DSH `connection.reconnect()`，重建
+> 连接并重新下发 tail 快照，避免后台挂起造成的旧计时/旧状态与主机不一致
+> （阈值可用 `globalThis.__DSH_REMOTE_RESUME_RECONNECT_MS__` 覆盖）。
 > 细节与限制见 [`docs/diagnostics/04-session-switch-cache.md`](../../../docs/diagnostics/04-session-switch-cache.md)。
 
 ---

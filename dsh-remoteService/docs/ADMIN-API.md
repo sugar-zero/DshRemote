@@ -42,6 +42,14 @@
     },
     "devices": [ { "id": "d_xxx", "name": "iPhone 15 Pro", "platform": "ios", "createdAt": 0, "lastSeenAt": 0, "revokedAt": null } ],
     "listenPort": 51234,
+    "push": {
+      "provider": "apns",
+      "enabled": true,
+      "configured": false,
+      "tokens": 0,
+      "error": null,
+      "warnings": ["APNs 私钥路径（apnsKeyFile）未配置"]
+    },
     "config": {
       "enabled": true,
       "relayUrl": "wss://relay.example.com:8443",
@@ -52,6 +60,12 @@
       "requireApproval": true,
       "pushEnabled": true,
       "pushCooldownSeconds": 30,
+      "pushProvider": "apns",
+      "apnsKeyFile": "/path/AuthKey_<KEY_ID>.p8",
+      "apnsKeyId": "<KEY_ID>",
+      "apnsTeamId": "<TEAM_ID>",
+      "apnsTopic": "com.example.dshremote",
+      "apnsEnvironment": "auto",
       "maxRequestBytes": 268435456,
       "relayTlsInsecure": false,
       "listenPort": 0,
@@ -80,9 +94,20 @@ Body（全部可选，只改传入字段）：
   "hostName": "Example Mac",
   "pushEnabled": true,
   "pushCooldownSeconds": 30,
+  "pushProvider": "apns",
+  "apnsKeyFile": "/path/AuthKey_<KEY_ID>.p8",
+  "apnsKeyId": "<KEY_ID>",
+  "apnsTeamId": "<TEAM_ID>",
+  "apnsTopic": "com.example.dshremote",
+  "apnsEnvironment": "auto",
   "maxRequestBytes": 268435456
 }
 ```
+`pushProvider`：`apns`（默认，自托管直连 Apple）或 `expo`（旧版经 relay）。
+自托管 APNs 的通知标题/正文取自实际会话（会话标题 + 本轮助手回复摘要，截断），不再支持
+配置固定标题/正文。
+`apnsEnvironment`：`auto`（默认，按设备注册时上报的 `aps-environment`）/ `development` / `production`。
+`apnsKeyFile` 只接受本机路径，私钥内容永远不会通过 API 下发。
 返回同 `/status`。
 
 ### POST `/pairing/start`
@@ -121,7 +146,17 @@ Body：
 `{ "status": "pending" | "paired" | "denied" | "expired", ...同 paired 字段 }`
 
 ### POST `/__dsh_remote/push-token`（要求 mTLS）
-Body：`{ "provider": "expo" | "apns" | "fcm", "token": "..." }`
+
+自托管 APNs（默认）：
+
+```json
+{ "provider": "apns", "token": "<64 位十六进制 APNs device token>", "environment": "development" | "production" }
+```
+
+- `environment` 可省略（主机按 `production` 兜底）；开发签名包应为 `development`（sandbox），
+  发布签名包为 `production`。主机据此选择 `api.sandbox.push.apple.com` / `api.push.apple.com`。
+- 400 错误码：`invalid-token`（非 64 位 hex）、`invalid-environment`、`unsupported-provider`。
+- 旧版 Expo 通道兼容：`{ "provider": "expo", "token": "ExponentPushToken[...]" }`。
 
 ### GET `/__dsh_remote/status`（要求 mTLS）
 返回主机状态（App 诊断页用，不含敏感内容）：
