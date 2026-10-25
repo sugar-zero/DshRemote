@@ -48,6 +48,7 @@
 | 看 POC 验收记录/截图 | **[dsh-remoteService/docs/POC-REPORT.md](dsh-remoteService/docs/POC-REPORT.md)**、[STATUS.md](STATUS.md) |
 | 看当前真机/构建状态 | **[STATUS.md](STATUS.md)** |
 | 看真实部署踩坑与排错 | **[server/README.md §9 常见坑](server/README.md#9-常见坑与排错实战)** |
+| 看手机端「载入历史很久/失败 + 画面反复跳」的根因与修复 | **[docs/diagnostics/00-root-cause.md](docs/diagnostics/00-root-cause.md)** |
 
 ### 服务器如何配置（摘要）
 

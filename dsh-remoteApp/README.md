@@ -115,6 +115,52 @@ open ios/*.xcworkspace     # 在 Xcode 中打开
 
 > `bundleIdentifier` / `android.package` 已固定为 `com.amesucre.dshremote`。
 
+### 局域网（无线）安装到 iPhone（不插 USB）
+
+前提：iPhone 至少插过一次 USB 并在 Xcode → Window → Devices and Simulators 里勾选
+**Connect via network**；之后 CoreDevice 会通过同一局域网管理它（`Transport Type: localNetwork`）。
+本项目实测可行（Mac 有线 + iPhone Wi-Fi 同一网段，`devicectl install` 约 2 秒完成）。
+
+```bash
+# 0) 确认设备已被 CoreDevice 通过局域网发现
+xcrun devicectl list devices
+xcrun devicectl device info details --device <UDID> | grep -E "Transport Type|Developer Mode"
+
+# 1) 查签名材料（描述文件必须包含该设备 UDID；开发描述文件有有效期）
+security find-identity -v -p codesigning
+ls ~/Library/MobileDevice/Provisioning\ Profiles/
+
+# 2) 构建已签名的 Release（内嵌 JS bundle，不依赖 Metro）
+cd dsh-remoteApp
+xcodebuild -workspace ios/DSHRemote.xcworkspace -scheme DSHRemote -configuration Release \
+  -destination 'generic/platform=iOS' -derivedDataPath /tmp/dsh-ios-release \
+  CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=<TEAM_ID> \
+  PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID> \
+  CODE_SIGN_IDENTITY='Apple Development: <NAME> (<CERT_ID>)' build
+
+# 3) 局域网安装 + 启动（走 Wi-Fi，无需 USB）
+xcrun devicectl device install app --device <UDID> \
+  /tmp/dsh-ios-release/Build/Products/Release-iphoneos/DSHRemote.app
+xcrun devicectl device process launch --device <UDID> com.amesucre.dshremote
+
+# 4) 验证（可选）
+xcrun devicectl device info apps --device <UDID> --bundle-id com.amesucre.dshremote
+xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/phone.png
+```
+
+> 注意：
+> - Release 构建把 JS 打进 `main.jsbundle`（Hermes 字节码），手机端不需要 Metro/开发服务器。
+> - 改了 `app.json` 的 `version`/`buildNumber` 后，`xcodebuild` 实际读的是 prebuild 生成的
+>   `ios/DSHRemote/Info.plist`；不重新 `expo prebuild` 的话要手动同步该文件，否则装上去仍显示旧版本号。
+> - 描述文件的**有效期与签名证书无关**：正常的开发描述文件 `TimeToLive` 是 **365 天**（证书也是约 1 年）。如果只有 7 天，通常是创建时选了某些短时效选项（例如门户里的「离线支持」选项），或当前生效的是免费个人团队（Personal Team）的资源。创建后、安装前先校验：
+>   ```bash
+>   security cms -D -i <描述文件>.mobileprovision | plutil -p - | grep -E '"Name"|"ExpirationDate"|"TimeToLive"'
+>   # 正常应看到 TimeToLive => 365、ExpirationDate 约一年后
+>   security cms -D -i <App>.app/embedded.mobileprovision | plutil -p - | grep -E '"ExpirationDate"|"TimeToLive"'
+>   ```
+>   描述文件过期后 App 会启动失败，需要重新签名安装（设备 UDID 不在描述文件里同理）。
+> - 同一 bundle id 覆盖安装会保留 App 数据（SecureStore 里的配对信息不丢，无需重新配对）。
+
 Android（结构已就绪，未在本机验证）：
 
 ```bash

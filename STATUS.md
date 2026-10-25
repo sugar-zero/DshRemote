@@ -7,6 +7,23 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-25 修复：手机端「载入历史很久/失败 + 画面反复跳」
+
+- **根因**：DSH `/api/remote.mux` 心跳（2s Ping、2 个周期无 Pong 即 terminate）与
+  relay 慢速下行冲突——打开大会话时 `session/follow` 首帧是 ~4MB 历史快照，
+  Ping/Pong 被排在其后，DSH 在 ~6s 误杀 mux，前端反复重连（画面跳）。
+  另发现主机→relay 二进制帧在背压下会**乱序**（TLS 密文损坏）。
+- **修复**（`dsh-remoteService/packages/host-plugin`）：
+  - `lib/ws-keepalive.js`（新）：WS 帧增量扫描 + masked Pong 构造；
+  - `lib/proxy.js`：101 响应头先切分再扫描；Ping→即时 Pong；拥塞时每秒主动
+    Pong；非 101 记审计并退化透传；
+  - `lib/connector.js`：发送队列严格 FIFO + 本地 socket 背压。
+- **验证**：`npm test` 73/73；`poc/heartbeat-verify.js` + `poc/heartbeat-runner.js`
+  在真实 DSH/真实设备证书/限速链路下端到端对照（旧代码 600KB/s 下 4.6s 被踢，
+  新代码 300KB/s 下 13.7s 大帧仍完整、连接存活）。
+- **生效**：Host 插件版本 **0.1.1**（重启 DSH 生效，手机无需重新配对）；App 版本 **0.1.2 (build 3)** 需重新构建原生包（含一个修复：`configuration.preferences.isInspectable` 的 pre-existing 编译错误，否则下次 iOS rebuild 会失败）。
+- 详情：[`docs/diagnostics/00-root-cause.md`](docs/diagnostics/00-root-cause.md)。
+
 ## 可自验证据（当前机器即可跑）
 
 ```bash

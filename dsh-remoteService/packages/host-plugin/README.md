@@ -139,6 +139,33 @@ Host 半注册在 DSH 本机 webServer：
 
 ---
 
+## 4.1 反向代理的 WebSocket 心跳桥（重要）
+
+DSH Web 的 `/api/remote.mux` 每 **2s** 发 Ping，连续 2 个周期没有 Pong 就
+`terminate()`。打开大会话时，`session/follow` 的首帧是**数 MB 的历史快照**
+（单个 WS text message）；经 relay 慢速下行时 Ping/Pong 被排在这帧后面，
+手机根本来不及在 ~6s 内 Pong → DSH 误判失联、踢掉 mux → 前端反复重连
+（表现：载入历史很久/失败 + 画面反复跳）。
+
+主机插件的反代因此内置了一个 **WS 心跳桥**（`lib/ws-keepalive.js` +
+`lib/proxy.js`）：
+
+1. 先按 `\r\n\r\n` 切出上游 101 响应头，之后才开始解析 WS 帧；
+2. 收到 DSH 的 Ping 时立刻替隧道链路回一个 masked Pong（reactive）；
+3. 检测到下行拥塞（代理暂停读上游 / 客户端 TLS 写缓冲 >64KB）时，**每秒主动**
+   向 DSH 发一个 masked Pong（proactive）——因为拥塞时 Ping 本身被排在
+   数 MB payload 后面，等看到 Ping 再回就已经超时；
+4. 上游不是 101 时退化为纯字节透传，并记审计 `ws-upgrade-failed`。
+
+安全语义：这只影响「半开 TCP 连接」的心跳清理；真正的客户端断开仍由 socket
+close → `upstream.destroy()` 检测，mTLS/鉴权/deny list 全部不变。仅对
+`/api/remote.mux` 生效。
+
+> 该修复需要重启 DSH 才会加载新插件代码；手机无需重新配对。
+> 相关根因与实验证据：[`docs/diagnostics/00-root-cause.md`](../../../docs/diagnostics/00-root-cause.md)。
+
+---
+
 ## 5. 排障
 
 | 现象 | 检查 |
@@ -151,6 +178,7 @@ Host 半注册在 DSH 本机 webServer：
 | App 扫描后“网络连接失败” | 先重新生成二维码；确认 host 带 `:端口`；再查 `*.relayDomain` 泛解析、手机代理/VPN、云安全组、主机数据面证书 SAN |
 | 设置里 publicPort 又变回 0 | Host 半还是旧代码；重启 DSH；确认 `~/.dsh/remote-access/config.json` 有 `publicPort` |
 | 主机在线但 App 连不上 | 控制面 8443 和数据面不是一条链路；看 [server/README.md §9.2](../../../server/README.md#92-主机显示在线但-app-配对网络连接失败) |
+| 打开大会话「载入历史」很久/失败、画面反复跳 | ① 插件是否已重启加载新代码（旧代码没有 WS 心跳桥，慢链路上 mux 会被 DSH 心跳误杀）；② relay 带宽/线路是否过慢（4MB 历史快照 / 5Mbps ≈ 7s）；详见 [`docs/diagnostics/00-root-cause.md`](../../../docs/diagnostics/00-root-cause.md) |
 
 ---
 
