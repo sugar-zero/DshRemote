@@ -7,6 +7,27 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-25 修复：手机端设置页太挤（全屏 + 分区菜单抽屉）
+
+- **现象**：App 里从左侧栏进入「设置」后，设置保持桌面端左右布局（左菜单 188px +
+  右内容），390px 宽手机上内容区只剩 **154px**，表单/说明挤成竖排。
+- **根因**：DSH 的设置是 body portal 的居中 modal（panel 800 / `max-width:calc(100vw-48px)`，
+  左 nav 固定 188px），手机宽度下内容列被压到 154×742。
+- **修复**（`dsh-remoteApp/src/lib/mobileWebShell.ts`，纯注入壳，不改 DSH 源码）：
+  - 窄屏（≤760px）设置 panel 固定铺满 WebView；
+  - 左分区菜单变成左侧离屏抽屉（`min(86vw, 320px)`）：菜单按钮 / 左缘右滑打开，
+    点分区项 / 点抽屉外 / 左滑收起，点抽屉外会吞掉点击避免误触设置控件；
+  - 内容区顶部注入手机栏：**左上返回**（调 DSH 原生 close 退出设置）、标题（取
+    DSH `settings.header` 文案）、右侧菜单按钮；原生 header 隐藏；
+  - 状态类 `html.dsh-settings-mobile` 只在装上手机栏后才生效，识别失败时退化为
+    DSH 原生居中 modal（不会白屏/锁死）；>760px 继续走 DSH 原生布局。
+- **验证**：`check:shell` 新增真实 DOM/CSS 设置 fixture（20 项断言），**43/43** 通过；
+  同一 fixture 用旧注入壳跑 **16 项失败**并复现 `panel 342×796 / 内容 154×742`；
+  `tsc --noEmit`、`check:native` 通过。
+- **生效**：纯 JS（注入壳），**无需重建原生包**，App 版本不变（0.1.5 build 6）；
+  dev client Metro reload / 发布包重打 JS bundle。真机目视验收见 ACCEPTANCE 第 21 项。
+- 详情与效果示意：[`docs/diagnostics/06-mobile-settings-drawer.md`](docs/diagnostics/06-mobile-settings-drawer.md)。
+
 ## 2026-10-25 修复：手机端「载入历史很久/失败 + 画面反复跳」
 
 - **根因**：DSH `/api/remote.mux` 心跳（2s Ping、2 个周期无 Pong 即 terminate）与
@@ -201,6 +222,7 @@ npm run poc:docker          # ✅ 真实镜像 + 容器 + host 插件 + mTLS 全
 cd dsh-remoteApp
 npx tsc --noEmit            # ✅ 0 error
 npm run check:native        # ✅ JS bridge ↔ iOS/Android 接口一致
+npm run check:shell         # ✅ 43/43（含设置页全屏/抽屉、右栏全屏、流式零查询）
 npm run check:ios-env       # ❌ 本机缺完整 Xcode（脚本给出修复步骤，属预期）
 npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 ```
@@ -225,7 +247,8 @@ npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 - 原生：iOS Secure Enclave 优先的 P-256 密钥 + PKCS#10 CSR + 证书安装 + URLSession mTLS；Android AndroidKeyStore + 手写 PKCS#10 + setKeyEntry + HttpsURLConnection mTLS（源码完成，未编译）
 - 设备管理（列表/撤销）、主机状态、安全审计（均走 mTLS tunnel API）
 - 推送注册、生物识别 App 锁、诊断页；设置页（版本 / 应用内通知开关 / 通知权限 / 清理 WebView 缓存）；前台推送应用内卡片
-- 注入式手机壳：会话侧栏 → 左侧抽屉、窄屏单列布局、右栏（sidebar-right）全屏覆盖层（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归）
+- 注入式手机壳：会话侧栏 → 左侧抽屉、窄屏单列布局、右栏（sidebar-right）全屏覆盖层、
+  设置弹窗全屏 + 分区菜单抽屉（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归）
 - 环境检查、原生源码一致性检查、Expo prebuild（iOS/Android 生成成功、autolinking 识别 `dsh-mtls`）、真机验收手册
 
 ## 安全属性（已实现）
@@ -322,3 +345,4 @@ cd dsh-remoteService
 - [部署指南](dsh-remoteService/docs/DEPLOY.md)
 - [管理 API](dsh-remoteService/docs/ADMIN-API.md)
 - [App 真机验收手册](dsh-remoteApp/docs/ACCEPTANCE.md)
+- [手机端设置页全屏 + 抽屉（诊断 06）](docs/diagnostics/06-mobile-settings-drawer.md)

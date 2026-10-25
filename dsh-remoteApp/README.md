@@ -33,7 +33,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | iOS 推送 | ✅ 自托管 APNs 直连（APNs device token + aps-environment；通知取会话标题+助手回复摘要；点击通知跳对应会话，2026-10-25 真机验证；App 锁屏时按系统通知显示）；Android FCM 未接入 |
 | 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，5s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
 | 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
-| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归） |
+| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层；窄屏设置→全屏 + 分区菜单抽屉（左上返回退出设置）（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归） |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
 
 > 原生构建需要 macOS + Xcode；本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
