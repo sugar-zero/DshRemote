@@ -18,6 +18,8 @@ window.__ModuleLoader__.load({
 
     const NS = 'remote-access';
     const API = '/api/remote-access';
+    /** 远程/手机 WebView 下保留的「最近会话」数量（超过按 LRU 释放额外 retain）。 */
+    const DEFAULT_SESSION_CACHE_SIZE = 3;
     const POLL_MS = 2000;
     const FLASH_GOOD_MS = 2600;
     const FLASH_WARN_MS = 5200;
@@ -1687,10 +1689,218 @@ window.__ModuleLoader__.load({
       };
     }
 
+    /* ────────────────────── 会话热缓存（远程 / 手机 WebView） ────────────────────── */
+
+    /**
+     * 把最近看过的几个 Session 以「额外 retain」的方式钉在客户端内存里。
+     *
+     * 为什么需要：DSH Web Client 用引用计数式 retention —— 主视图只对「当前会话」
+     * 持有 source="mainView" 的 retain，切换会话时旧 retain 立刻释放，Session 实例
+     * （含已加载历史 + 正在跟进的 event stream）随即被 dispose；再切回来要新建实例
+     * 并重新拉 `session/follow` 的整段历史快照。本机局域网很快，但经 relay 的远程/
+     * 手机访问时一个大会话快照可达数 MB，就表现为「每次切会话都要重新同步」。
+     *
+     * 这里为最近 max 个「用户真正打开过」的会话额外 retain（source="dsh-remote-cache"）：
+     *   - 切走时实例不销毁，历史与 event stream 留在内存；
+     *   - event stream 在连接断开/重连时按 cursor 续传（只补差异，不重拉快照）；
+     *   - 切回时 `Session.open()` 已是 open 状态，直接复用，瞬间完成；
+     *   - 超过 max 个按 LRU 释放我们这一份 retain（只撤缓存；当前正被查看的会话
+     *     仍由 mainView 持有，不会被误销毁）；
+     *   - 连接断开/重连期间主动释放「非当前查看」的缓存：mux 恢复后 DSH 会为每个
+     *     仍打开的 event stream 重发一次 tail 快照，若缓存太多会在弱网重连时放大
+     *     流量；这里只保留当前会话（它的流本来就要恢复），恢复后随用户切换重新填充。
+     *
+     * 只在 `?dsh_mobile=1`（手机远程 WebView）下启用，避免影响桌面本机内存占用；
+     * 可通过 `globalThis.__DSH_REMOTE_SESSION_CACHE__ = { max }` 调整数量（调试用）。
+     *
+     * @param {{ sessions?: any, effect?: Function }} scope 已 inject "sessions" 的上下文
+     * @param {{ max?: number, source?: string }} [options]
+     * @returns {{ pin: Function, sync: Function, size: Function, pinnedIds: Function, dispose: Function } | null}
+     */
+    function installSessionWarmCache(scope, options) {
+      const sessions = scope && scope.sessions;
+      if (!sessions
+        || typeof sessions.retain !== 'function'
+        || typeof sessions.retainInfo !== 'function'
+        || typeof scope.effect !== 'function') return null;
+      const opts = options && typeof options === 'object' ? options : {};
+      const max = Number.isInteger(opts.max) && opts.max > 0
+        ? Math.min(opts.max, 10)
+        : DEFAULT_SESSION_CACHE_SIZE;
+      const source = typeof opts.source === 'string' && opts.source !== '' ? opts.source : 'dsh-remote-cache';
+      const connection = opts.connection;
+      /** @type {Map<string, { release: () => void, usedAt: number }>} */
+      const pinned = new Map();
+      /** @type {Map<string, () => void>} */
+      const watchers = new Map();
+      /** 上一次 list 快照里出现过的会话（用于识别被删除的会话并释放缓存）。 */
+      const knownIds = new Set();
+      let listUnsubscribe = null;
+      let disposed = false;
+
+      const retentionOf = (id) => {
+        try {
+          const snapshot = sessions.retainInfo(id)?.getSnapshot?.();
+          return snapshot && typeof snapshot === 'object' ? snapshot : null;
+        } catch { return null; }
+      };
+      const isActivelyViewed = (id) => {
+        const retainedBy = retentionOf(id)?.retainedBy;
+        if (!retainedBy || typeof retainedBy !== 'object') return false;
+        return (retainedBy.mainView || 0) > 0 || (retainedBy.sidebarView || 0) > 0;
+      };
+      const evictOverflow = () => {
+        while (pinned.size > max) {
+          // 只淘汰当前没在看的会话：淘汰 viewed 会话会立刻触发 retention 变化 → 又被 pin
+          // 回来（抖动/递归），而它释放与否本来也不影响 UI 持有的实例。
+          let oldestId = null;
+          let oldestUsedAt = Infinity;
+          for (const [id, entry] of pinned) {
+            if (isActivelyViewed(id)) continue;
+            if (entry.usedAt < oldestUsedAt) { oldestId = id; oldestUsedAt = entry.usedAt; }
+          }
+          if (oldestId === null) return;
+          const entry = pinned.get(oldestId);
+          pinned.delete(oldestId);
+          try { entry.release(); } catch { /* ignore */ }
+        }
+      };
+      /** 正在 pin 中的会话 id（防重入：sessions.retain 会同步发布 retention 变化）。 */
+      const pinning = new Set();
+      const pin = (id) => {
+        if (disposed || typeof id !== 'string' || id === '') return;
+        const existing = pinned.get(id);
+        if (existing !== undefined) { existing.usedAt = Date.now(); return; }
+        if (pinning.has(id)) return;
+        pinning.add(id);
+        // 关键：先占位再 retain。`sessions.retain()` 会**同步**发布 retention 变化，
+        // 订阅回调会再次进入 pin；如果这时 pinned 里还没有这条记录，就会无限递归
+        // （真机/浏览器表现为 RangeError: Maximum call stack size exceeded，会话打不开）。
+        const entry = { usedAt: Date.now(), release: () => {} };
+        pinned.set(id, entry);
+        let reference = null;
+        try {
+          reference = sessions.retain(id, { source });
+        } catch {
+          pinned.delete(id);
+          pinning.delete(id);
+          return; /* 会话已删除 / 不可打开 */
+        }
+        if (reference && reference.ready && typeof reference.ready.catch === 'function') reference.ready.catch(() => {});
+        entry.release = () => { try { reference?.release?.(); } catch { /* ignore */ } };
+        pinning.delete(id);
+        evictOverflow();
+      };
+      const unwatch = (id) => {
+        const dispose = watchers.get(id);
+        watchers.delete(id);
+        if (typeof dispose === 'function') { try { dispose(); } catch { /* ignore */ } }
+      };
+      const watch = (id) => {
+        if (disposed || watchers.has(id)) return;
+        let unsubscribe = null;
+        try {
+          const info = sessions.retainInfo(id);
+          if (info && typeof info.subscribe === 'function') {
+            unsubscribe = info.subscribe(() => { if (isActivelyViewed(id)) pin(id); });
+          }
+        } catch { /* ignore */ }
+        watchers.set(id, () => { try { unsubscribe?.(); } catch { /* ignore */ } });
+        // 插件可能晚于当前会话挂载：此时不会再有 retention 变化事件，直接检查一次。
+        if (isActivelyViewed(id)) pin(id);
+      };
+      const sync = () => {
+        if (disposed) return;
+        let snapshot = null;
+        try { snapshot = sessions.list?.getSnapshot?.(); } catch { snapshot = null; }
+        if (!snapshot || typeof snapshot !== 'object') return;
+        const ids = Array.isArray(snapshot.ids)
+          ? snapshot.ids.filter((id) => typeof id === 'string')
+          : Object.keys(snapshot.byId || {});
+        const seen = new Set(ids);
+        for (const id of ids) watch(id);
+        for (const id of [...watchers.keys()]) if (!seen.has(id)) unwatch(id);
+        // 已从会话列表消失（删除/归档不可见）的会话：释放缓存，避免泄漏与误保留。
+        for (const id of [...pinned.keys()]) {
+          if (seen.has(id) || !knownIds.has(id)) continue;
+          const entry = pinned.get(id);
+          pinned.delete(id);
+          try { entry.release(); } catch { /* ignore */ }
+        }
+        knownIds.clear();
+        for (const id of ids) knownIds.add(id);
+      };
+      /** 连接断开/重连时只保留当前正在查看的会话，避免恢复时放大 tail 快照流量。 */
+      const releaseInactivePins = () => {
+        for (const [id, entry] of [...pinned.entries()]) {
+          if (isActivelyViewed(id)) continue;
+          pinned.delete(id);
+          try { entry.release(); } catch { /* ignore */ }
+        }
+      };
+      let connectionUnsubscribe = null;
+      try {
+        const state = connection && connection.state;
+        if (state && typeof state.subscribe === 'function') {
+          connectionUnsubscribe = state.subscribe(() => {
+            let current = null;
+            try { current = state.getSnapshot?.(); } catch { current = null; }
+            if (current !== 'connected') releaseInactivePins();
+          });
+        }
+      } catch { connectionUnsubscribe = null; }
+      const dispose = () => {
+        if (disposed) return;
+        disposed = true;
+        if (typeof listUnsubscribe === 'function') { try { listUnsubscribe(); } catch { /* ignore */ } }
+        listUnsubscribe = null;
+        if (typeof connectionUnsubscribe === 'function') { try { connectionUnsubscribe(); } catch { /* ignore */ } }
+        connectionUnsubscribe = null;
+        for (const id of [...watchers.keys()]) unwatch(id);
+        for (const entry of pinned.values()) { try { entry.release(); } catch { /* ignore */ } }
+        pinned.clear();
+      };
+      try {
+        listUnsubscribe = sessions.list?.subscribe?.(sync) ?? null;
+      } catch { listUnsubscribe = null; }
+      scope.effect(() => {
+        sync();
+        return dispose;
+      }, 'remote-access: session warm cache');
+      return {
+        pin,
+        sync,
+        size: () => pinned.size,
+        pinnedIds: () => [...pinned.keys()],
+        dispose,
+      };
+    }
+
+    /** 远程/手机 WebView 下安装会话热缓存；任何失败都只降级，不影响主 UI。 */
+    function installRemoteSessionCache(ctx) {
+      if (!ctx || typeof ctx.inject !== 'function') return;
+      try {
+        ctx.inject(['sessions', 'connection'], (scope) => {
+          try {
+            const overrides = globalThis.__DSH_REMOTE_SESSION_CACHE__;
+            installSessionWarmCache(scope, { ...(overrides && typeof overrides === 'object' ? overrides : {}), connection: scope.connection });
+          } catch (error) {
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+              console.warn('[dsh-remote] session warm cache unavailable:', error);
+            }
+          }
+        });
+      } catch (error) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[dsh-remote] sessions service unavailable:', error);
+        }
+      }
+    }
+
     return {
       inject: ['slots', 'locale'],
       // 仅供 packages/host-plugin/test/client-smoke.test.js 使用；DSH 运行时只消费 inject/apply。
-      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus },
+      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus, installSessionWarmCache, DEFAULT_SESSION_CACHE_SIZE },
       apply(ctx) {
         ctx.effect(injectStyles, 'remote-access: 样式');
 
@@ -1701,6 +1911,14 @@ window.__ModuleLoader__.load({
           translate = locale.bind(NS);
         }
         if (typeof translate !== 'function') translate = makeTranslator({ zh, en });
+
+        // 手机远程 WebView（host 反代注入 ?dsh_mobile=1）：本机管理页不应出现；
+        // 同时也只有这个场景需要「会话热缓存」来避免每次切会话重新同步整段历史。
+        const isRemoteWebView = typeof globalThis === 'object'
+          && globalThis.location
+          && typeof globalThis.location.search === 'string'
+          && /(?:^|[?&])dsh_mobile=1(?:&|$)/.test(globalThis.location.search);
+        if (isRemoteWebView) installRemoteSessionCache(ctx);
 
         const hasLocale = !!(locale && typeof locale.register === 'function');
         const slots = typeof ctx.get === 'function'
@@ -1728,13 +1946,8 @@ window.__ModuleLoader__.load({
           return h(SettingsPage, { ...positionProps, t: positionProps && positionProps.t ? positionProps.t : translate });
         }
 
-        // 手机远程 WebView（host 反代注入 ?dsh_mobile=1）：本机管理页不应出现。
         // /api/remote-access/* 被代理 deny（403）正是安全边界；若显示入口，DSH 设置页
         // 拉不到 status 会误导为「403 中继离线」。远程管理请用 App 自己的设备页。
-        const isRemoteWebView = typeof globalThis === 'object'
-          && globalThis.location
-          && typeof globalThis.location.search === 'string'
-          && /(?:^|[?&])dsh_mobile=1(?:&|$)/.test(globalThis.location.search);
         if (!isRemoteWebView) {
           slots.inject('sidebar.footer.action', () => slots.register(entryOptions, EntrySeat));
           slots.inject('settings.section', () => slots.register(settingsOptions, SettingsSeat));

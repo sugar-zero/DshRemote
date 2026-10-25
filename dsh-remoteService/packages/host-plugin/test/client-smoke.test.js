@@ -237,6 +237,7 @@ function loadBundle(options = {}) {
         },
       },
     },
+    ...options.location === undefined ? {} : { location: options.location },
     document: documentStub,
     fetch: options.fetchImpl || defaultFetch,
     console,
@@ -258,6 +259,8 @@ function createFakeCtx(options = {}) {
   const registered = [];
   const effects = [];
   const localeRegistrations = [];
+  const injectedServices = [];
+  const disposers = [];
 
   const slots = {
     inject(name, callback) {
@@ -273,13 +276,21 @@ function createFakeCtx(options = {}) {
   const ctx = {
     effect(callback, label) {
       effects.push(label || '');
-      const disposer = callback();
-      return typeof disposer === 'function' ? disposer : () => {};
+      const result = callback();
+      const disposer = typeof result === 'function' ? result : () => {};
+      disposers.push(disposer);
+      return disposer;
     },
     get(name) {
       return name === 'slots' ? slots : undefined;
     },
     slots,
+  };
+  ctx.inject = (dependencies, callback) => {
+    injectedServices.push([...dependencies]);
+    const scope = Object.create(ctx);
+    if (options.sessions !== undefined) scope.sessions = options.sessions;
+    return callback(scope);
   };
 
   if (options.locale !== false) {
@@ -298,7 +309,7 @@ function createFakeCtx(options = {}) {
     ctx.locale = locale;
   }
 
-  return { ctx, injected, registered, effects, localeRegistrations };
+  return { ctx, injected, registered, effects, localeRegistrations, injectedServices, disposers };
 }
 
 /** factory + apply + t 一次性准备好；reactImpl 可换成有状态 hooks（见 createStatefulRenderer）。 */
@@ -570,4 +581,188 @@ test('设置页初值优先读 status.config（密钥字段只有 configured 布
   const legacy = clientModule.__test.draftFromStatus(null, { relayUrl: 'wss://typed.example' });
   assert.equal(legacy.relayUrl, 'wss://typed.example', '无 status 时保留上次编辑值');
   assert.equal(legacy.tlsCertFileConfigured, false);
+});
+
+function createFakeConnection() {
+  const listeners = new Set();
+  let state = 'connected';
+  return {
+    state: {
+      getSnapshot: () => state,
+      subscribe: (listener) => {
+        listeners.add(listener);
+        return () => { listeners.delete(listener); };
+      },
+    },
+    set(next) {
+      state = next;
+      for (const listener of [...listeners]) listener();
+    },
+  };
+}
+
+/* ────────────────────── 远程会话热缓存（warm cache） ────────────────────── */
+
+function createFakeSessions(ids) {
+  const records = new Map();
+  const retained = [];
+  const released = [];
+  const listListeners = new Set();
+  let order = [...ids];
+  for (const id of ids) records.set(id, { retainedBy: {}, listeners: new Set() });
+  const update = (id, mutate) => {
+    const record = records.get(id);
+    mutate(record);
+    for (const listener of [...record.listeners]) listener();
+  };
+  const sessions = {
+    list: {
+      getSnapshot: () => ({ ids: [...order], byId: {} }),
+      subscribe: (listener) => {
+        listListeners.add(listener);
+        return () => { listListeners.delete(listener); };
+      },
+    },
+    retainInfo(id) {
+      const record = records.get(id);
+      if (!record) throw new Error(`unknown session ${id}`);
+      return {
+        getSnapshot: () => ({ retainedBy: { ...record.retainedBy } }),
+        subscribe: (listener) => {
+          record.listeners.add(listener);
+          return () => record.listeners.delete(listener);
+        },
+      };
+    },
+    retain(id, retentionOptions) {
+      const token = { id, source: retentionOptions && retentionOptions.source, active: true };
+      retained.push(token);
+      // 真实 DSH 的 `sessions.retain()` 会同步发布 retention 变化；这里同样通知，
+      // 用于覆盖「pin → retain → 订阅回调 → pin」的重入递归回归。
+      const record = records.get(id);
+      if (record) for (const listener of [...record.listeners]) listener();
+      return {
+        sessionId: id,
+        ready: Promise.resolve(),
+        release() {
+          if (!token.active) return;
+          token.active = false;
+          released.push(id);
+          const current = records.get(id);
+          if (current) for (const listener of [...current.listeners]) listener();
+        },
+      };
+    },
+  };
+  return {
+    sessions,
+    retained,
+    released,
+    activeIds: () => retained.filter((token) => token.active).map((token) => token.id),
+    view: (id) => update(id, (record) => { record.retainedBy = { ...record.retainedBy, mainView: 1 }; }),
+    drop: (id) => {
+      order = order.filter((candidate) => candidate !== id);
+      for (const listener of listListeners) listener();
+    },
+    leave: (id) => update(id, (record) => {
+      record.retainedBy = { ...record.retainedBy };
+      delete record.retainedBy.mainView;
+    }),
+  };
+}
+
+test('远程会话热缓存：最近会话按 LRU 保留，切回时复用（不重新打开）', () => {
+  const { captured } = loadBundle();
+  const clientModule = captured.factory(() => createFakeReact());
+  const fake = createFakeSessions(['s1', 's2', 's3', 's4']);
+  const connection = createFakeConnection();
+  const disposers = [];
+  const scope = {
+    sessions: fake.sessions,
+    effect(callback) {
+      const disposer = callback();
+      disposers.push(disposer);
+      return disposer;
+    },
+  };
+  const cache = clientModule.__test.installSessionWarmCache(scope, { max: 3, connection });
+  assert.ok(cache, '应安装会话热缓存');
+  assert.deepEqual(fake.activeIds(), [], '没有打开过会话时不应 retain');
+
+  fake.view('s1');
+  assert.deepEqual(fake.activeIds(), ['s1'], '打开会话时钉住');
+  fake.leave('s1');
+  fake.view('s2');
+  assert.deepEqual(fake.activeIds(), ['s1', 's2'], '切走 s1 后缓存保留，s2 进入缓存');
+  fake.leave('s2');
+  fake.view('s3');
+  assert.deepEqual(fake.activeIds(), ['s1', 's2', 's3'], '最多保留 3 个');
+
+  fake.leave('s3');
+  fake.view('s4');
+  assert.deepEqual(fake.activeIds(), ['s2', 's3', 's4'], '超过上限时淘汰最久未用的 s1');
+  assert.ok(fake.released.includes('s1'), '被淘汰的会话应释放额外 retain');
+
+  // 连接断开：释放「非当前查看」的缓存，避免重连时放大 tail 快照流量
+  connection.set('connecting');
+  assert.deepEqual(fake.activeIds(), ['s4'], '断线时只保留当前查看的会话');
+  assert.ok(fake.released.includes('s2') && fake.released.includes('s3'));
+  connection.set('connected');
+
+  // 恢复后切到 s2：重新钉住；缓存命中不重复 retain
+  fake.leave('s4');
+  fake.view('s2');
+  assert.deepEqual(fake.activeIds().sort(), ['s2', 's4'].sort());
+  assert.equal(fake.retained.filter((token) => token.id === 's2' && token.active).length, 1, '缓存命中不应重复 retain');
+
+  // 会话从列表消失（删除/归档）：释放对应缓存
+  fake.drop('s2');
+  assert.deepEqual(fake.activeIds(), ['s4'], '列表里消失的会话应释放缓存 retain');
+  assert.ok(fake.released.includes('s2'));
+
+  assert.doesNotThrow(() => cache.pin('unknown-session'), '未知/已删除会话不应抛错');
+
+  // 插件卸载时释放所有缓存 retain
+  cache.dispose();
+  assert.deepEqual(fake.activeIds(), [], 'dispose 后应释放全部缓存 retain');
+  disposers.forEach((dispose) => { if (typeof dispose === 'function') dispose(); });
+});
+
+test('会话热缓存：retain 同步发布 retention 时不会重入递归（回归 Max call stack）', () => {
+  const { captured } = loadBundle();
+  const clientModule = captured.factory(() => createFakeReact());
+  const fake = createFakeSessions(['s1']);
+  // 安装前 UI 已经 retain 了 s1（真实场景：插件晚于当前会话挂载）
+  fake.view('s1');
+  const scope = {
+    sessions: fake.sessions,
+    effect(callback) {
+      const disposer = callback();
+      return disposer;
+    },
+  };
+  let cache = null;
+  assert.doesNotThrow(() => {
+    cache = clientModule.__test.installSessionWarmCache(scope, { max: 3 });
+  }, '安装缓存不应抛 RangeError（重入递归）');
+  assert.ok(cache, '应安装成功');
+  assert.equal(fake.retained.filter((token) => token.id === 's1').length, 1, 'sync retention 通知下也只 retain 一次');
+  assert.deepEqual(fake.activeIds(), ['s1']);
+  cache.dispose();
+});
+
+test('会话热缓存只在远程 WebView（?dsh_mobile=1）安装，桌面本机不启用', () => {
+  const fake = createFakeSessions(['s1']);
+
+  const mobileBundle = loadBundle({ location: { search: '?dsh_mobile=1' } });
+  const mobileModule = mobileBundle.captured.factory(() => createFakeReact());
+  const mobileCtx = createFakeCtx({ sessions: fake.sessions });
+  mobileModule.apply(mobileCtx.ctx);
+  assert.deepEqual(mobileCtx.injectedServices, [['sessions', 'connection']], '远程 WebView 应注入 sessions/connection 服务');
+
+  const localBundle = loadBundle();
+  const localModule = localBundle.captured.factory(() => createFakeReact());
+  const localCtx = createFakeCtx({ sessions: fake.sessions });
+  localModule.apply(localCtx.ctx);
+  assert.deepEqual(localCtx.injectedServices, [], '桌面本机不启用会话热缓存');
 });
