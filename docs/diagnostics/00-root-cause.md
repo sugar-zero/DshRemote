@@ -130,3 +130,4 @@ DSH 写 4MB 帧后，后续 2s Ping 帧是**排在同一个发送队列的字节
 | [`01-dsh-heartbeat.md`](01-dsh-heartbeat.md) | DSH 心跳/重连/快照的源码级分析（file:line）、Ping 顺序实验、配置 patch 方案与风险 |
 | [`02-heartbeat-harness.md`](02-heartbeat-harness.md) | 慢链路心跳复现/验收工具（`poc/heartbeat-verify.js` + `poc/heartbeat-runner.js`）的用法与实测数据 |
 | [`03-app-webview.md`](03-app-webview.md) | App 侧跳动源/进程回收恢复/误报的排查与修复、真机验收清单 |
+| [`04-session-switch-cache.md`](04-session-switch-cache.md) | 会话切换重复同步/重连重载的客户端本地缓存（warm cache）与差异更新 |

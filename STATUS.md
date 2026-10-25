@@ -24,6 +24,23 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
 - **生效**：Host 插件版本 **0.1.1**（重启 DSH 生效，手机无需重新配对）；App 版本 **0.1.2 (build 3)** 需重新构建原生包（含一个修复：`configuration.preferences.isInspectable` 的 pre-existing 编译错误，否则下次 iOS rebuild 会失败）。
 - 详情：[`docs/diagnostics/00-root-cause.md`](docs/diagnostics/00-root-cause.md)。
 
+## 2026-10-25 修复：会话切换重复同步（本地缓存 + 差异更新）
+
+- **现象**：手机 App 里每次切换会话都要重新同步（大会话数秒，像重新加载）。
+- **根因**：DSH Web 客户端的 retention 模型——切走会话即销毁 Session 实例（历史 +
+  event stream），切回新建实例并重拉 `session/follow` 的整段快照；经 relay 时一个大会话
+  快照 3.5–4.5MB（协议也没有 cursor 续传参数，重连至少重拉当前会话 tail 快照）。
+- **修复**（`dsh-remoteService/packages/host-plugin/client.js`，Client 半）：
+  - 仅在手机远程 WebView（`?dsh_mobile=1`）下为最近打开的 3 个会话保留额外 retain：
+    切走不销毁、切回 0 请求瞬间恢复，event stream 继续做增量更新；
+  - 超过 3 个 LRU 释放；连接断开时只保留当前会话，避免重连放大快照流量；
+  - 会话删除/归档时释放缓存；服务缺失时静默降级。桌面本机不启用。
+- **验证**：`npm test` 全量通过（新增 client-smoke 缓存测试）；另有 headless-Chrome
+  端到端测量（见 `docs/diagnostics/04-session-switch-cache.md`）。
+- **生效**：Client bundle 由 host 提供，**App 无需重新构建**；在 App 内刷新/重开页面即可，
+  若 DSH 缓存启动 bundle 则重启 DSH 一次。
+- 详情：[`docs/diagnostics/04-session-switch-cache.md`](docs/diagnostics/04-session-switch-cache.md)。
+
 ## 可自验证据（当前机器即可跑）
 
 ```bash

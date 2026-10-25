@@ -166,6 +166,24 @@ close → `upstream.destroy()` 检测，mTLS/鉴权/deny list 全部不变。仅
 
 ---
 
+## 4.2 会话切换的本地缓存（Client 半）
+
+DSH Web 客户端采用引用计数式 retention：切换会话时旧会话实例（历史 + event stream）
+会被销毁，切回时重新拉 `session/follow` 的整段快照。本机很快，但手机经 relay 访问时
+一个大会话快照可达数 MB，表现为「每次切会话都重新同步」。
+
+插件的 **Client 半**（`client.js`）在手机远程 WebView（`?dsh_mobile=1`）下为**最近
+打开过的 3 个会话**额外保留一份客户端 retain：切走不销毁、切回直接复用（0 快照请求、
+瞬间渲染），其 event stream 继续接收增量事件；超过 3 个按 LRU 释放；连接断开时只保留
+当前会话（避免重连时放大快照流量）。可通过 `globalThis.__DSH_REMOTE_SESSION_CACHE__ = { max }`
+调整数量（调试用）。
+
+> 该改动是浏览器 bundle，随插件包由 host 提供：**不需要重新构建 App**；在 App 内刷新/
+> 重开页面即可加载（若 DSH 缓存了启动 bundle，需重启 DSH 一次）。
+> 细节与限制见 [`docs/diagnostics/04-session-switch-cache.md`](../../../docs/diagnostics/04-session-switch-cache.md)。
+
+---
+
 ## 5. 排障
 
 | 现象 | 检查 |
