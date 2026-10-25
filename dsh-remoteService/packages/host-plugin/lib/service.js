@@ -13,7 +13,7 @@ import { createRemoteServer } from './server.js';
 import { createPushNotifier } from './push.js';
 import { createApnsClient } from './apns.js';
 
-const VERSION = '0.1.5';
+const VERSION = '0.1.6';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -205,6 +205,35 @@ export class RemoteService {
     const device = this.devices.get(deviceId);
     if (!device) return 0;
     return this.listener.disconnectDevice(device.serial);
+  }
+
+  /**
+   * 删除一条**已撤销**设备记录（桌面设备列表清理）。
+   * 仍有效的设备必须先撤销再删除，避免误删正在使用的设备。
+   * @param {string} deviceId
+   * @returns {{device: object}}
+   */
+  deleteDevice(deviceId) {
+    const device = this.devices.get(deviceId);
+    if (!device) {
+      const error = new Error('设备不存在');
+      error.status = 404;
+      error.code = 'device-not-found';
+      throw error;
+    }
+    if (!device.revokedAt) {
+      const error = new Error('请先撤销设备，再删除记录');
+      error.status = 409;
+      error.code = 'device-active';
+      throw error;
+    }
+    const removed = this.devices.remove(device.id);
+    if (removed && this.pushTokens.has(removed.id)) {
+      this.pushTokens.delete(removed.id);
+      this.#persistPushTokens();
+    }
+    this.audit.append({ deviceId: removed?.id ?? device.id, action: 'device-delete', result: 'ok' });
+    return { device: removed ?? device };
   }
 
   /**

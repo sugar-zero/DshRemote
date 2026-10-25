@@ -882,3 +882,58 @@ test('手机 WebView 会话桥：上报当前会话 / 清空会话 + 打开会�
     inject: (dependencies, callback) => callback({ uiWorkspace: { selection: uiWorkspace.selection }, effect: (fn) => fn() }),
   });
 });
+
+test('设备列表：已撤销设备提供「删除」（二次确认）并 POST /devices/:id/delete', async () => {
+  const revokedAt = Date.now() - 60_000;
+  const baseStatus = {
+    enabled: true,
+    relay: { url: 'wss://relay.example.com:8443', connected: true },
+    host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [
+      { id: 'd_revoked', name: 'Old iPhone', platform: 'ios', lastSeenAt: revokedAt, revokedAt },
+      { id: 'd_active', name: 'New iPhone', platform: 'ios', lastSeenAt: Date.now(), revokedAt: null },
+    ],
+    config: {},
+  };
+  const afterDelete = { ...baseStatus, devices: [baseStatus.devices[1]] };
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/devices/d_revoked/delete')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { device: { id: 'd_revoked' } } }; } };
+    }
+    if (String(url).includes('/status')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: afterDelete }; } };
+    }
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data: {} }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+
+  assert.equal(findAll(tree, (el) => el.props['data-ra-action'] === 'device-delete').length, 1, '已撤销设备应有删除按钮');
+  assert.equal(findAll(tree, (el) => el.props['data-ra-action'] === 'device-revoke').length, 1, '有效设备仍是撤销按钮');
+  assert.match(collectText(tree), /旧设备|Old iPhone/);
+
+  // 第一次点击只进入确认态，不发请求
+  findAll(tree, (el) => el.props['data-ra-action'] === 'device-delete')[0].props.onClick();
+  tree = renderer.render();
+  const confirmButtons = findAll(tree, (el) => el.props['data-ra-action'] === 'device-delete');
+  assert.equal(confirmButtons.length, 1);
+  assert.match(collectText(confirmButtons[0]), /确认删除|Confirm delete/);
+  assert.equal(calls.filter((call) => call.url.includes('/delete')).length, 0, '首次点击不应发请求');
+
+  // 第二次点击真正删除
+  confirmButtons[0].props.onClick();
+  await flushAsync();
+  const deleteCall = calls.find((call) => call.url.includes('/devices/d_revoked/delete'));
+  assert.ok(deleteCall, '应 POST /devices/:id/delete');
+  assert.equal(deleteCall.options.method, 'POST');
+  assert.ok(calls.some((call) => call.url.includes('/status')), '删除后应刷新 status');
+  tree = renderer.render();
+  assert.equal(findAll(tree, (el) => el.props['data-ra-action'] === 'device-delete').length, 0, '删除后该设备不再出现');
+});

@@ -57,6 +57,8 @@ window.__ModuleLoader__.load({
       'msg.loadFailed': '读取失败：{message}',
       'msg.revoked': '设备已撤销',
       'msg.revokeFailed': '撤销失败：{message}',
+      'msg.deleted': '设备记录已删除',
+      'msg.deleteFailed': '删除失败：{message}',
       'msg.pairCanceled': '已取消配对',
       'msg.pairFailed': '配对操作失败：{message}',
       'msg.paired': '设备已加入',
@@ -73,6 +75,8 @@ window.__ModuleLoader__.load({
       'btn.denyPairing': '拒绝',
       'btn.revoke': '撤销',
       'btn.revokeConfirm': '确认撤销？',
+      'btn.delete': '删除',
+      'btn.deleteConfirm': '确认删除？',
 
       'sw.enabled': '启用远程访问',
       'sw.enabledNote': '关闭后中继断开，手机将无法访问这台电脑。',
@@ -223,6 +227,8 @@ window.__ModuleLoader__.load({
       'msg.loadFailed': 'Load failed: {message}',
       'msg.revoked': 'Device revoked',
       'msg.revokeFailed': 'Revoke failed: {message}',
+      'msg.deleted': 'Device record deleted',
+      'msg.deleteFailed': 'Delete failed: {message}',
       'msg.pairCanceled': 'Pairing canceled',
       'msg.pairFailed': 'Pairing action failed: {message}',
       'msg.paired': 'Device added',
@@ -239,6 +245,8 @@ window.__ModuleLoader__.load({
       'btn.denyPairing': 'Deny',
       'btn.revoke': 'Revoke',
       'btn.revokeConfirm': 'Confirm revoke?',
+      'btn.delete': 'Delete',
+      'btn.deleteConfirm': 'Confirm delete?',
 
       'sw.enabled': 'Enable remote access',
       'sw.enabledNote': 'Disabling disconnects the relay; the phone can no longer reach this computer.',
@@ -1271,25 +1279,31 @@ window.__ModuleLoader__.load({
 
     function SettingsPage(props) {
       const t = props.t || ((key) => key);
-      const [status, setStatus] = useState(null);
+      // 测试专用：直接注入一份已加载的 status，跳过 effect 里的网络请求。
+      const seedStatus = props.initialStatus ?? null;
+      const seedDraft = seedStatus ? draftFromStatus(seedStatus, null) : null;
+      const [status, setStatus] = useState(seedStatus);
       const [audit, setAudit] = useState(null);
       const [auditError, setAuditError] = useState('');
       const [loadError, setLoadError] = useState('');
-      const [draft, setDraft] = useState(null);
-      const [baseline, setBaseline] = useState(null);
+      const [draft, setDraft] = useState(seedDraft);
+      const [baseline, setBaseline] = useState(seedDraft);
       const [busy, setBusy] = useState('');
       const [revokeId, setRevokeId] = useState(null);
+      const [deleteId, setDeleteId] = useState(null);
       const [pairingOpen, setPairingOpen] = useState(false);
       const [flash, showFlash, dismissFlash] = useFlash();
       const now = useNow(1000);
       const aliveRef = useRef(true);
       const revokeTimerRef = useRef(null);
+      const deleteTimerRef = useRef(null);
 
       useEffect(() => {
         aliveRef.current = true;
         return () => {
           aliveRef.current = false;
           if (revokeTimerRef.current !== null) globalThis.clearTimeout(revokeTimerRef.current);
+          if (deleteTimerRef.current !== null) globalThis.clearTimeout(deleteTimerRef.current);
         };
       }, []);
 
@@ -1465,6 +1479,40 @@ window.__ModuleLoader__.load({
           void loadAudit();
         } catch (error) {
           if (aliveRef.current) showFlash('warn', t('msg.revokeFailed', { message: formatError(error) }));
+        } finally {
+          if (aliveRef.current) setBusy('');
+        }
+      };
+
+      const deleteDevice = async (device) => {
+        if (!device || !device.id) return;
+        if (deleteId !== device.id) {
+          setDeleteId(device.id);
+          if (deleteTimerRef.current !== null) globalThis.clearTimeout(deleteTimerRef.current);
+          deleteTimerRef.current = globalThis.setTimeout(() => {
+            deleteTimerRef.current = null;
+            setDeleteId(null);
+          }, 4000);
+          return;
+        }
+        if (deleteTimerRef.current !== null) {
+          globalThis.clearTimeout(deleteTimerRef.current);
+          deleteTimerRef.current = null;
+        }
+        setDeleteId(null);
+        setBusy(`delete:${device.id}`);
+        try {
+          await jpost(`/devices/${encodeURIComponent(device.id)}/delete`, {});
+          if (aliveRef.current) showFlash('good', t('msg.deleted'));
+          try {
+            const next = await jget('/status');
+            if (aliveRef.current) setStatus(next);
+          } catch {
+            /* ignore */
+          }
+          void loadAudit();
+        } catch (error) {
+          if (aliveRef.current) showFlash('warn', t('msg.deleteFailed', { message: formatError(error) }));
         } finally {
           if (aliveRef.current) setBusy('');
         }
@@ -1685,13 +1733,14 @@ window.__ModuleLoader__.load({
               h('span', { 'data-ra-badge': '', 'data-tone': revoked ? 'warn' : 'good' },
                 revoked ? t('devices.revoked') : t('devices.active'))),
             h('div', { 'data-ra-card-sub': '' }, meta)),
-          revoked
-            ? null
-            : h(Btn, {
-              danger: true,
-              disabled: busy === `revoke:${device.id}`,
-              onClick: () => { void revoke(device); },
-            }, revokeId === device.id ? t('btn.revokeConfirm') : t('btn.revoke')));
+          h(Btn, {
+            danger: true,
+            action: revoked ? 'device-delete' : 'device-revoke',
+            disabled: busy === `${revoked ? 'delete' : 'revoke'}:${device.id}`,
+            onClick: () => { void (revoked ? deleteDevice(device) : revoke(device)); },
+          }, revoked
+            ? (deleteId === device.id ? t('btn.deleteConfirm') : t('btn.delete'))
+            : (revokeId === device.id ? t('btn.revokeConfirm') : t('btn.revoke'))));
       };
 
       const devicesSection = h(Section, { title: t('section.devices') },

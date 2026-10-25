@@ -68,6 +68,15 @@ export function createAdminHandler({ ctx, service, authDisabled = false }) {
         sendOk(res, { device });
         return;
       }
+      const deleteMatch = /^\/devices\/([^/]+)\/delete$/.exec(sub);
+      if (deleteMatch && method === 'POST') {
+        try {
+          sendOk(res, service.deleteDevice(decodeURIComponent(deleteMatch[1])));
+        } catch (error) {
+          sendError(res, error.status ?? 500, error.code ?? 'internal', error.message);
+        }
+        return;
+      }
       if (sub === '/audit' && method === 'GET') {
         const limit = Number(new URL(req.url, 'https://localhost').searchParams.get('limit') ?? 100);
         sendOk(res, { entries: service.audit.tail(Number.isFinite(limit) ? limit : 100) });
