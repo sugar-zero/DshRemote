@@ -413,17 +413,6 @@ export default function App() {
     setExternalPage({ url: externalUrl });
   }, []);
 
-  const handleRepair = useCallback(async () => {
-    if (connection) {
-      await removeConnection(connection);
-      await clearCertificate(connection.hostFingerprint);
-    }
-    setConnection(null);
-    await refreshConnections();
-    // 「重新配对」直接把用户带到扫码页；还有其它主机时可从配对页返回列表。
-    setRoute('pairing');
-  }, [connection, refreshConnections]);
-
   /**
    * 删除一台主机的本机记录（不进入配对流程）：
    * 清除 SecureStore 里的配对信息与设备证书。主机侧记录不会被远端删除，
@@ -494,7 +483,6 @@ export default function App() {
           <DevicesScreen
             connection={connection}
             onClose={() => setRoute('home')}
-            onRepair={handleRepair}
             onDeleteLocal={() => handleDeleteConnection(connection)}
             onConnectionUpdated={setConnection}
           />
