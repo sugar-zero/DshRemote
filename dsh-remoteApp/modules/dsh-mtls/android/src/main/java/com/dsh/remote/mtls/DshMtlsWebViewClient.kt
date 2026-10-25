@@ -14,9 +14,12 @@
 
 package com.dsh.remote.mtls
 
+import android.annotation.TargetApi
 import android.graphics.Bitmap
 import android.net.http.SslError
+import android.os.Build
 import android.webkit.ClientCertRequest
+import android.webkit.RenderProcessGoneDetail
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
@@ -27,7 +30,9 @@ class DshMtlsWebViewClient(
   private val identityLabelProvider: () -> String?,
   private val onPageStarted: (String?) -> Unit,
   private val onPageFinished: (String?) -> Unit,
-  private val onError: (Int, String?, String?) -> Unit
+  private val onError: (Int, String?, String?) -> Unit,
+  /** 渲染进程被系统回收（崩溃 / OOM）。参数 = didCrash。 */
+  private val onRenderProcessGone: (Boolean) -> Unit
 ) : WebViewClient() {
 
   override fun onPageStarted(view: WebView?, url: String?, favicon: Bitmap?) {
@@ -47,6 +52,9 @@ class DshMtlsWebViewClient(
     error: WebResourceError?
   ) {
     super.onReceivedError(view, request, error)
+    // 子资源失败（图片/字体/favicon…）不代表隧道断开；上报会在 JS 侧弹出错误条、
+    // 挤压 WebView 布局（可见“跳一下”）。只上报主框架导航失败。
+    if (request != null && !request.isForMainFrame) return
     onError(error?.errorCode ?: -1, error?.description?.toString(), request?.url?.toString())
   }
 
@@ -60,6 +68,20 @@ class DshMtlsWebViewClient(
   ) {
     super.onReceivedError(view, errorCode, description, failingUrl)
     onError(errorCode, description, failingUrl)
+  }
+
+  /**
+   * Android 会在渲染进程崩溃 / 被 OOM 回收时回调这里。默认实现会让整个 App 崩溃，
+   * 所以必须 override 并返回 true（表示“已处理，不要杀进程”）。返回 true 后这个
+   * WebView 实例不可再使用：由 DshMtlsWebView 移除它，JS 侧重建原生视图。
+   */
+  @TargetApi(Build.VERSION_CODES.O)
+  override fun onRenderProcessGone(
+    view: WebView?,
+    detail: RenderProcessGoneDetail?
+  ): Boolean {
+    onRenderProcessGone(detail?.didCrash() ?: false)
+    return true
   }
 
   override fun onReceivedSslError(view: WebView?, handler: SslErrorHandler?, error: SslError?) {

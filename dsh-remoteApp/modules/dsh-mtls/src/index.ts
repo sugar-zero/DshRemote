@@ -200,7 +200,20 @@ export interface DshMtlsWebViewMessageEvent {
 }
 
 export interface DshMtlsWebViewErrorEvent {
-  nativeEvent: { code?: number; description?: string; url?: string };
+  nativeEvent: {
+    code?: number;
+    description?: string;
+    url?: string;
+    /**
+     * 原生侧的机器可读原因（非所有错误都有）：
+     *  - `content-process-terminated`：iOS WebContent 进程被系统回收（原生侧已尝试自动 reload）
+     *  - `render-process-gone`：Android 渲染进程崩溃/被回收（当前 WebView 实例不可再用，
+     *    需要 JS 侧重建原生视图）
+     */
+    reason?: string;
+    /** 原生侧是否已经/能够自动恢复；false 表示需要用户手动重试。 */
+    recoverable?: boolean;
+  };
 }
 
 export interface DshMtlsWebViewLoadingEvent {

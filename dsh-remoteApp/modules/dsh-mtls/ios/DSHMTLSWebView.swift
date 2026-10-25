@@ -26,6 +26,7 @@
 //      proxies through URLSession with the same identity (bigger change).
 
 import ExpoModulesCore
+import UIKit
 import WebKit
 
 public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessageHandler {
@@ -41,6 +42,17 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   private let webView: WKWebView
   private var loadedUrlString: String?
   private var userScript: WKUserScript?
+  private var injectedJavaScriptSource: String?
+
+  /// WebContent 进程被系统回收后的自动恢复预算（防止 reload 循环）。
+  private var contentProcessTerminationCount = 0
+  private var lastContentProcessTerminationAt: Date?
+  /// 后台被回收时延后到回前台再 reload。
+  private var pendingForegroundReload = false
+  /// 首次加载被推迟的 URL：等 injectedJavaScript 在同一个 props 批次里注册完再导航，
+  /// 否则首个页面可能完全没有注入手机壳（WKUserScript 只对添加之后开始的导航生效）。
+  private var pendingLoadUrlString: String?
+  private var foregroundObserver: NSObjectProtocol?
 
   /// Keychain label of the client identity to present. Falls back to the
   /// globally configured label when the prop is not set.
@@ -52,10 +64,6 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     // the app does not re-download the DSH web bundle every time. The WebView is
     // still scoped to one paired host and the app has its own lock screen.
     configuration.websiteDataStore = .default()
-    #if DEBUG
-    // Allow Safari Web Inspector on a physical device while tuning load times.
-    configuration.preferences.isInspectable = true
-    #endif
     let contentController = WKUserContentController()
     configuration.userContentController = contentController
     self.webView = WKWebView(frame: .zero, configuration: configuration)
@@ -63,6 +71,12 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     super.init(appContext: appContext)
 
     contentController.add(self, name: Self.bridgeName)
+    #if DEBUG
+    // Allow Safari Web Inspector on a physical device while tuning load times.
+    // 注意：isInspectable 是 WKWebView 的属性（iOS 16.4+），不是 WKPreferences 的；
+    // 之前写成 configuration.preferences.isInspectable 会直接编译失败。
+    webView.isInspectable = true
+    #endif
     webView.navigationDelegate = self
     // Mobile shell: no pinch/double-tap zoom; iOS otherwise zooms the page when
     // a focused input's font is < 16px, which breaks the conversation layout.
@@ -79,9 +93,23 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
       webView.bottomAnchor.constraint(equalTo: bottomAnchor)
     ])
     backgroundColor = .clear
+
+    // 若 WebContent 进程在后台被系统回收，回前台时补一次 reload。
+    foregroundObserver = NotificationCenter.default.addObserver(
+      forName: UIApplication.didBecomeActiveNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      guard let self, self.pendingForegroundReload else { return }
+      self.pendingForegroundReload = false
+      self.reloadLoadedPage()
+    }
   }
 
   deinit {
+    if let observer = foregroundObserver {
+      NotificationCenter.default.removeObserver(observer)
+    }
     webView.configuration.userContentController.removeScriptMessageHandler(forName: Self.bridgeName)
     webView.navigationDelegate = nil
   }
@@ -92,17 +120,35 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     guard let urlString, let url = URL(string: urlString) else { return }
     guard loadedUrlString != urlString else { return }
     loadedUrlString = urlString
+    // WKUserScript 只对“添加之后开始”的导航生效，而 Expo 的 props 应用顺序不保证
+    // url 在 injectedJavaScript 之后。这里先让出一个 runloop：同一个 props 批次里的
+    // 脚本注册会先完成，然后我们再开始加载（避免首个页面漏注入手机壳）。
+    guard userScript != nil else {
+      pendingLoadUrlString = urlString
+      DispatchQueue.main.async { [weak self] in
+        guard let self, let pending = self.pendingLoadUrlString else { return }
+        self.pendingLoadUrlString = nil
+        guard let pendingUrl = URL(string: pending) else { return }
+        self.webView.load(URLRequest(url: pendingUrl))
+      }
+      return
+    }
+    pendingLoadUrlString = nil
     webView.load(URLRequest(url: url))
   }
 
   func applyInjectedJavaScript(_ script: String?) {
+    guard let script, !script.isEmpty else {
+      // 不要因为空脚本把已有的脚本清掉（props 更新时可能先传 nil）。
+      return
+    }
+    if script == injectedJavaScriptSource, userScript != nil { return }
     if userScript != nil {
       // iOS 的 WKUserContentController 没有 removeUserScript；这个 WebView 只注入
       // 我们自己的脚本，直接清空后重新添加。
       webView.configuration.userContentController.removeAllUserScripts()
       userScript = nil
     }
-    guard let script, !script.isEmpty else { return }
     let newScript = WKUserScript(
       source: script,
       injectionTime: .atDocumentStart,
@@ -110,6 +156,14 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     )
     webView.configuration.userContentController.addUserScript(newScript)
     userScript = newScript
+    injectedJavaScriptSource = script
+    // 脚本在首次加载被推迟后才到达：现在导航，保证首个页面也注入手机壳。
+    if let pending = pendingLoadUrlString {
+      pendingLoadUrlString = nil
+      if let pendingUrl = URL(string: pending) {
+        webView.load(URLRequest(url: pendingUrl))
+      }
+    }
   }
 
   // MARK: - WKNavigationDelegate: mTLS client certificate challenge
@@ -162,6 +216,9 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   }
 
   public func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+    // 页面成功加载 = 上一次 WebContent 进程回收已经恢复，重置自动 reload 预算。
+    contentProcessTerminationCount = 0
+    lastContentProcessTerminationAt = nil
     onLoadingFinish(["url": webView.url?.absoluteString ?? ""])
   }
 
@@ -181,10 +238,59 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     emitLoadingError(error, url: webView.url?.absoluteString)
   }
 
-  private func emitLoadingError(_ error: Error, url: String?) {
+  // MARK: - WKNavigationDelegate: WebContent 进程回收恢复
+  //
+  // iOS 会在内存压力 / watchdog 时杀掉 WKWebView 的 WebContent 进程（会话历史很大、
+  // 页面持有 4MB 级 WebSocket 快照时更容易发生）。此时页面会变成空白或停在最后一帧，
+  // 但 *不会* 触发 didFail，JS 也收不到任何事件——用户看到的就是“页面卡住/一直加载”。
+  // 这里自动 reload（60s 窗口内最多 2 次）避免恢复循环；超限则把错误交给 JS，
+  // 由用户点「重试」（JS 重建原生视图，预算随之清零）。
+  public func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+    let now = Date()
+    if let last = lastContentProcessTerminationAt, now.timeIntervalSince(last) > 60 {
+      contentProcessTerminationCount = 0
+    }
+    lastContentProcessTerminationAt = now
+    contentProcessTerminationCount += 1
+    let canAutoRecover = contentProcessTerminationCount <= 2
     onLoadingError([
-      "code": (error as NSError).code,
-      "description": error.localizedDescription,
+      "code": -1,
+      "description": canAutoRecover
+        ? "系统回收了网页进程（内存压力），正在自动重新加载…"
+        : "系统多次回收网页进程（内存压力），请点「重试」重新加载。",
+      "url": webView.url?.absoluteString ?? loadedUrlString ?? "",
+      "reason": "content-process-terminated",
+      "recoverable": canAutoRecover
+    ])
+    guard canAutoRecover else { return }
+    reloadLoadedPage()
+  }
+
+  /// Reload whatever URL this view last loaded (used by the termination recovery).
+  private func reloadLoadedPage() {
+    // 后台不能可靠地 reload（WebKit 可能忽略或失败）：记下来，回前台再执行。
+    guard UIApplication.shared.applicationState == .active else {
+      pendingForegroundReload = true
+      return
+    }
+    if webView.url != nil {
+      webView.reload()
+      return
+    }
+    if let urlString = loadedUrlString, let url = URL(string: urlString) {
+      webView.load(URLRequest(url: url))
+    }
+  }
+
+  private func emitLoadingError(_ error: Error, url: String?) {
+    let nsError = error as NSError
+    // -999 NSURLErrorCancelled：导航被主动取消（重定向、页面自己跳转、外链改走系统
+    // 浏览器、WebView 重建）。这不是连接故障，上报会在 JS 侧弹出错误条并挤压 WebView
+    // 布局，表现为屏幕“跳一下”，所以直接忽略。
+    if nsError.domain == NSURLErrorDomain, nsError.code == NSURLErrorCancelled { return }
+    onLoadingError([
+      "code": nsError.code,
+      "description": nsError.localizedDescription,
       "url": url ?? ""
     ])
   }

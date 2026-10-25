@@ -67,25 +67,37 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '    width: 40px; height: 40px;',
       '  }',
       '  html.' + DRAWER_CLASS + ' .dsh-mobile-native-trigger { display: none !important; }',
-      // 原生 DSH 的侧栏 toggle 会和鲸鱼入口重叠；保留我们的鲸鱼入口，隐藏同槽位的其它按钮。
+      // 预留 header leading（左侧）槽位宽度：鲸鱼入口被 DSH 重渲染短暂移除时，
+      // 该列不会从 34px 塌陷到 0，标题行也就不会先左移、再被我们的补挂脚本推回来。
+      '  [data-slot="conversation.header.leading"] { min-width: 34px; min-height: 30px; box-sizing: border-box; }',
+      // DSH 0.2.1-rc.3 的 conversation.header.leading 槽位没有任何内置注册项（asar 全量扫描
+      // 只有 dsh-client-ui-conversation 引用），今天这条规则不会隐藏任何原生控件；
+      // 保留是为了兼容以后在左侧槽位加按钮的 DSH 版本（避免和鲸鱼入口重叠）。
       '  [data-slot="conversation.header.leading"] > :not(.dsh-mobile-native-trigger) { display: none !important; }',
       '}',
     ].join('\n');
     document.head.appendChild(style);
 
+    // 锁定的 viewport 内容。注意：iOS WebKit 在 <meta name=viewport> 的内容被重新
+    // 赋值时会重新计算 viewport（可能触发一次整页重排 / 滚动位置归位），所以这里
+    // *只在内容确实不同时才写*，避免“加载后再写 2 次”造成可见的跳动。
+    var VIEWPORT_CONTENT = 'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover';
+    var viewportMeta = null;
     function enforceViewport() {
-      var meta = document.querySelector('meta[name="viewport"]');
-      if (!meta) {
-        meta = document.createElement('meta');
-        meta.setAttribute('name', 'viewport');
-        document.head.appendChild(meta);
+      if (!document.head) return;
+      if (!viewportMeta || !viewportMeta.isConnected) {
+        viewportMeta = document.head.querySelector('meta[name="viewport"]');
+        if (!viewportMeta) {
+          viewportMeta = document.createElement('meta');
+          viewportMeta.setAttribute('name', 'viewport');
+          document.head.appendChild(viewportMeta);
+        }
       }
-      meta.setAttribute(
-        'content',
-        'width=device-width, initial-scale=1, maximum-scale=1, minimum-scale=1, user-scalable=no, viewport-fit=cover'
-      );
+      if (viewportMeta.getAttribute('content') === VIEWPORT_CONTENT) return; // 相同就不写
+      viewportMeta.setAttribute('content', VIEWPORT_CONTENT);
     }
     enforceViewport();
+    // DSH 可能在水合后重建 <meta>：保留两次延迟兜底检查（内容相同时是纯读取，无副作用）。
     setTimeout(enforceViewport, 500);
     setTimeout(enforceViewport, 1500);
 
@@ -99,8 +111,14 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     document.body.appendChild(fab);
 
     // 使用 DSH 自己的鲸鱼 logo 作为抽屉入口（不另造悬浮汉堡）。
+    // 只扫描一次；失败后按 1s 节流重试（之前每次 DOM 变更都会全量查 3 个选择器，
+    // token 流式渲染时这个开销会明显增加主线程压力，造成画面卡顿/“跳”）。
+    var markScannedAt = 0;
     function installNativeMark() {
       if (fab.dataset.nativeMark === '1') return;
+      var now = Date.now();
+      if (now - markScannedAt < 1000) return;
+      markScannedAt = now;
       var source = document.querySelector('[class*="_railMark"]')
         || document.querySelector('[class*="_brandMark"]')
         || document.querySelector('[class*="_logoRow"] svg');
@@ -114,25 +132,45 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       fab.dataset.nativeMark = '1';
     }
     installNativeMark();
-    setTimeout(installNativeMark, 300);
-    setTimeout(installNativeMark, 1200);
 
     // 把鲸鱼入口放进 DSH 原生 header leading 槽，跟随原生标题栏布局，避免悬浮/重叠。
+    // 槽位元素会被 DSH 在重渲染时替换，所以缓存引用 + isConnected 检查（O(1)），
+    // 只有真的被移除时才重新查询 / 补挂，避免每个 mutation 都全量 querySelector。
+    var leadingSlot = null;
+    var leadingMissingSince = 0;
+    var headerSlotSelector = '[data-slot="conversation.header.leading"]';
+
+    function resolveLeadingSlot() {
+      if (leadingSlot && leadingSlot.isConnected) return leadingSlot;
+      leadingSlot = document.querySelector(headerSlotSelector);
+      return leadingSlot;
+    }
+
     function placeTrigger() {
-      var leading = document.querySelector('[data-slot="conversation.header.leading"]');
-      if (!leading) {
+      var slot = resolveLeadingSlot();
+      if (!slot) {
+        // 槽位暂时不存在（首屏 / 路由切换 / DSH 正在重建 header）：先不要立刻把按钮
+        // 甩到 fixed 悬浮位置，否则槽位回来时按钮会在“头部内”和“左上角悬浮”之间来回跳。
+        if (!leadingMissingSince) leadingMissingSince = Date.now();
+        if (Date.now() - leadingMissingSince < 800) return;
         if (fab.parentElement !== document.body) document.body.appendChild(fab);
         fab.classList.add('dsh-mobile-native-trigger-fallback');
         return;
       }
-      fab.classList.remove('dsh-mobile-native-trigger-fallback');
-      if (fab.parentElement !== leading) leading.appendChild(fab);
+      leadingMissingSince = 0;
+      if (fab.classList.contains('dsh-mobile-native-trigger-fallback')) {
+        fab.classList.remove('dsh-mobile-native-trigger-fallback');
+      }
+      // parentElement 判断是 O(1)：按钮已经在槽位里就什么都不做（不搬动 DOM → 不触发重排）。
+      if (fab.parentElement !== slot) slot.appendChild(fab);
       installNativeMark();
     }
     placeTrigger();
     setTimeout(placeTrigger, 300);
     setTimeout(placeTrigger, 1200);
-    window.setInterval(placeTrigger, 1000);
+    // 低频兜底：MutationObserver 已经覆盖正常路径，这里 3s 一次只做 O(1) 检查，
+    // 防止极端情况（observer 被 body 替换打断 / 脚本异常）下按钮永久丢失。
+    window.setInterval(function () { installNativeMark(); placeTrigger(); }, 3000);
 
     function isMobile() { return window.innerWidth <= 760; }
     function sidebar() { return document.querySelector('[class*="_sidebarCol"]'); }
@@ -193,13 +231,26 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     }, { passive: true });
 
     window.addEventListener('resize', refresh);
+    // iOS 后台会暂停定时器；回到前台 / bfcache 恢复后补一次，避免按钮或状态“丢一次”。
+    window.addEventListener('pageshow', function () { installNativeMark(); placeTrigger(); refresh(); });
     refresh();
 
     // SPA 重渲染时保持注入节点存在。
+    // 高频路径（DSH 流式输出 token / 渲染会话历史时）走 O(1) 快路径：按钮仍在缓存的
+    // 槽位里就直接返回——不 querySelector、不写 DOM，避免每个 mutation 批次都触发重排。
+    // 只有在按钮/背景层真的被 DSH 移除后才补挂（同步执行，赶在下一帧绘制前修好）。
     var observer = new MutationObserver(function () {
-      if (!backdrop.isConnected) document.body.appendChild(backdrop);
+      if (
+        backdrop.isConnected
+        && fab.dataset.nativeMark === '1'
+        && leadingSlot
+        && leadingSlot.isConnected
+        && fab.parentElement === leadingSlot
+      ) {
+        return;
+      }
+      if (!backdrop.isConnected && document.body) document.body.appendChild(backdrop);
       placeTrigger();
-      refresh();
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
