@@ -42,13 +42,13 @@ import {
 } from '../lib/protocol';
 import {
   currentPairPlatform,
-  defaultDeviceName,
   pairDevice,
   PairingError,
   POC_PLACEHOLDER_CSR,
   toPairingError,
 } from '../lib/pairing';
-import { loadDeviceName, saveDeviceName, type StoredConnection } from '../lib/store';
+import { defaultDeviceName, isLegacyDefaultDeviceName } from '../lib/deviceName';
+import { loadDeviceName, saveDeviceName, clearDeviceName, type StoredConnection } from '../lib/store';
 import { isDshMtlsAvailable } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
@@ -133,12 +133,14 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
   const scanLockRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
 
-  // Restore the device name chosen during a previous pairing attempt.
+  // 恢复上一次用户自定义的设备名；旧版本写死的默认名不再沿用（改用系统设备名）。
   useEffect(() => {
     let cancelled = false;
     loadDeviceName()
       .then((saved) => {
-        if (!cancelled && saved) setDeviceName(saved);
+        if (cancelled || !saved) return;
+        if (isLegacyDefaultDeviceName(saved)) return;
+        setDeviceName(saved);
       })
       .catch(() => undefined);
     return () => {
@@ -216,7 +218,9 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
     setPhase('pairing');
     const controller = new AbortController();
     abortRef.current = controller;
-    await saveDeviceName(name).catch(() => undefined);
+    // 只持久化用户真正改过的名字：默认名每次配对都重新取系统设备名。
+    if (name === defaultDeviceName()) await clearDeviceName().catch(() => undefined);
+    else await saveDeviceName(name).catch(() => undefined);
     try {
       const result = await pairDevice({
         pairing,
@@ -343,7 +347,10 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           placeholder={defaultDeviceName()}
           placeholderTextColor={colors.textFaint}
         />
-        <Text style={styles.hint}>建议包含机型，方便日后在主机侧识别与撤销。</Text>
+        <Text style={styles.hint}>
+          默认使用系统本机设备名；可以改成更好识别的名字（建议包含机型）。若系统只返回通用名
+          （如 iPhone），App 会自动改用机型名。
+        </Text>
       </View>
 
       {__DEV__ ? (

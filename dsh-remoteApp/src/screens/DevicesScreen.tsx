@@ -22,6 +22,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   Platform,
   ScrollView,
   StyleSheet,
@@ -61,13 +62,13 @@ import {
 import {
   canManageRemoteDevices,
   fetchAudit,
-  fetchHostStatus,
   fetchRemoteDevices,
   revokeRemoteDevice,
   type AuditEntry,
   type HostStatus,
   type RemoteDevice,
 } from '../lib/devices';
+import { syncConnectionWithHost } from '../lib/hostSync';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
 interface DevicesScreenProps {
@@ -75,6 +76,8 @@ interface DevicesScreenProps {
   onClose: () => void;
   /** Clear local credentials and return to the pairing screen. */
   onRepair: () => Promise<void> | void;
+  /** 只删除本机配对记录与设备证书，不进入配对流程。 */
+  onDeleteLocal: () => Promise<void> | void;
   /** Called after the POC import updates `certRef` so the WebView picks it up. */
   onConnectionUpdated?: (connection: StoredConnection) => void;
 }
@@ -103,6 +106,7 @@ export function DevicesScreen({
   connection,
   onClose,
   onRepair,
+  onDeleteLocal,
   onConnectionUpdated,
 }: DevicesScreenProps) {
   const insets = useSafeAreaInsets();
@@ -126,17 +130,41 @@ export function DevicesScreen({
   useEffect(() => {
     if (!canManageRemoteDevices()) return undefined;
     let cancelled = false;
-    Promise.all([fetchRemoteDevices(connection), fetchHostStatus(connection), fetchAudit(connection, 10)])
-      .then(([devices, status, audit]) => {
+    void (async () => {
+      // 先从主机同步：主机名可能已在桌面侧改过；401/403 则说明本设备已被撤销。
+      const sync = await syncConnectionWithHost(connection);
+      if (cancelled) return;
+      if (sync.status) setHostStatus(sync.status);
+      if (sync.changed) onConnectionUpdated?.(sync.connection);
+      if (sync.revocation === 'revoked') {
+        setRemoteDevices(null);
+        setAuditEntries(null);
+        setRemoteDevicesError(
+          '主机拒绝了本机的设备证书：这台主机可能已在主机侧解除配对（设备已撤销或证书已过期）。',
+        );
+        return;
+      }
+      if (sync.error) {
+        setRemoteDevicesError(sync.error);
+        return;
+      }
+      try {
+        const [devices, audit] = await Promise.all([
+          fetchRemoteDevices(sync.connection),
+          fetchAudit(sync.connection, 10),
+        ]);
         if (cancelled) return;
         setRemoteDevices(devices);
-        setHostStatus(status);
         setAuditEntries(audit);
         setRemoteDevicesError(null);
-      })
-      .catch((error: unknown) => { if (!cancelled) setRemoteDevicesError(error instanceof Error ? error.message : String(error)); });
+      } catch (error) {
+        if (!cancelled) {
+          setRemoteDevicesError(error instanceof Error ? error.message : String(error));
+        }
+      }
+    })();
     return () => { cancelled = true; };
-  }, [connection]);
+  }, [connection, onConnectionUpdated]);
 
   useEffect(() => {
     let cancelled = false;
@@ -212,6 +240,24 @@ export function DevicesScreen({
     }
   }, [onRepair]);
 
+  const handleDeleteLocal = useCallback(() => {
+    Alert.alert(
+      '删除本机配对记录',
+      '将清除本机保存的这台主机的配对信息和设备证书，并回到主机列表。\n\n主机上的设备记录不会因此删除（如需彻底解除，请在主机「远程访问」里撤销该设备）。删除后需要重新扫码配对。',
+      [
+        { text: '取消', style: 'cancel' },
+        {
+          text: '删除',
+          style: 'destructive',
+          onPress: () => {
+            setBusy(true);
+            void Promise.resolve(onDeleteLocal()).catch(() => setBusy(false));
+          },
+        },
+      ],
+    );
+  }, [onDeleteLocal]);
+
   return (
     <View style={styles.screen}>
       <View style={[styles.topBar, { paddingTop: insets.top + spacing.sm }]}>
@@ -232,9 +278,19 @@ export function DevicesScreen({
           </View>
         ) : null}
 
+        {connection.revokedAt !== undefined ? (
+          <View style={[sharedStyles.card, styles.revokedCard]}>
+            <Text style={styles.revokedTitle}>主机侧已解除配对</Text>
+            <Text style={styles.bodyText}>
+              主机不再接受本机的设备证书（可能已在桌面端撤销该设备，或证书已过期）。
+              本机保存的记录不会自动删除，可以使用下面的「删除本机配对记录」清理，然后重新扫码配对。
+            </Text>
+          </View>
+        ) : null}
+
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>当前主机</Text>
-          <DetailRow label="主机" value={connection.hostName ?? connection.host} />
+          <DetailRow label="主机" value={connection.hostName || connection.host} />
           <DetailRow label="隧道地址" value={`https://${connection.host}/`} mono />
           <DetailRow label="中继域名" value={connection.relayDomain} mono />
           <DetailRow label="短指纹" value={shortFingerprint(connection.hostFingerprint)} mono />
@@ -244,6 +300,40 @@ export function DevicesScreen({
             mono
           />
           <DetailRow label="配对时间" value={formatTimestamp(connection.pairedAt)} />
+          {connection.revokedAt !== undefined ? (
+            <DetailRow label="检测到主机拒绝" value={formatTimestamp(connection.revokedAt)} />
+          ) : null}
+        </View>
+
+        <View style={sharedStyles.card}>
+          <Text style={styles.sectionTitle}>主机状态</Text>
+          {remoteDevicesError ? (
+            <Text style={styles.statusError}>{remoteDevicesError}</Text>
+          ) : hostStatus ? (
+            <>
+              <DetailRow label="主机名称（已同步）" value={hostStatus.hostName || '（未设置）'} />
+              <DetailRow
+                label="中继连接"
+                value={
+                  hostStatus.relayConnected === null
+                    ? '—'
+                    : hostStatus.relayConnected
+                      ? '已连接'
+                      : '未连接'
+                }
+              />
+              <DetailRow label="主机版本" value={hostStatus.version ?? '—'} mono />
+              <DetailRow
+                label="已配对设备"
+                value={`${hostStatus.devices?.active ?? 0} 台有效 / 共 ${hostStatus.devices?.total ?? 0} 台`}
+              />
+              <Text style={styles.hint}>
+                主机改名后，App 回到主机列表或重新进入本页时会通过 mTLS 自动同步。
+              </Text>
+            </>
+          ) : (
+            <Text style={styles.hint}>正在读取主机状态…</Text>
+          )}
         </View>
 
         <View style={sharedStyles.card}>
@@ -293,9 +383,9 @@ export function DevicesScreen({
         </View>
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>重新配对</Text>
+          <Text style={styles.sectionTitle}>重新配对 / 删除本机记录</Text>
           <Text style={styles.bodyText}>
-            重新配对会清除本机保存的主机信息与设备证书，并返回扫码页面。若设备已在主机侧被撤销，也必须重新配对。
+            重新配对会清除本机保存的主机信息与设备证书，并进入扫码页面。若设备已在主机侧被撤销，也需要重新扫码配对。
           </Text>
           <TouchableOpacity
             style={[styles.dangerButton, busy ? styles.disabledButton : null]}
@@ -307,6 +397,20 @@ export function DevicesScreen({
             ) : (
               <Text style={styles.dangerButtonText}>清除本地凭据并重新配对</Text>
             )}
+          </TouchableOpacity>
+
+          <View style={styles.divider} />
+
+          <Text style={styles.sectionSubtitle}>只删除本机记录</Text>
+          <Text style={styles.bodyText}>
+            只在手机上清除这台主机的配对记录与设备证书，不进入扫码流程。主机侧的设备记录需要在主机「远程访问」里单独撤销。
+          </Text>
+          <TouchableOpacity
+            style={[styles.secondaryDangerButton, busy ? styles.disabledButton : null]}
+            onPress={handleDeleteLocal}
+            disabled={busy}
+          >
+            <Text style={styles.secondaryDangerButtonText}>删除本机配对记录</Text>
           </TouchableOpacity>
         </View>
 
@@ -449,6 +553,34 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 15,
     fontWeight: '700',
+  },
+  secondaryDangerButton: {
+    marginTop: spacing.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.danger,
+    borderRadius: radii.md,
+    paddingVertical: spacing.md,
+    alignItems: 'center',
+  },
+  secondaryDangerButtonText: {
+    color: colors.danger,
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  revokedCard: {
+    borderColor: colors.danger,
+    backgroundColor: 'rgba(242, 99, 122, 0.08)',
+  },
+  revokedTitle: {
+    color: colors.danger,
+    fontSize: 16,
+    fontWeight: '700',
+    marginBottom: spacing.xs,
+  },
+  statusError: {
+    color: colors.warning,
+    fontSize: 13,
+    lineHeight: 19,
   },
   disabledButton: {
     opacity: 0.45,

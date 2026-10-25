@@ -29,10 +29,13 @@ import { SettingsScreen } from './src/screens/SettingsScreen';
 import { ExternalPageScreen } from './src/screens/ExternalPageScreen';
 import {
   clearCertificate,
+  isSameConnection,
   loadConnections,
   removeConnection,
   type StoredConnection,
 } from './src/lib/store';
+import { syncConnectionsWithHost } from './src/lib/hostSync';
+import { clearClientIdentity } from './modules/dsh-mtls/src';
 import {
   configureNotificationHandler,
   enablePushForConnection,
@@ -61,6 +64,7 @@ function notificationDataOf(data: unknown): { sessionId?: string; host?: string 
 export default function App() {
   const [route, setRoute] = useState<Route>('loading');
   const [connections, setConnections] = useState<StoredConnection[]>([]);
+  const [syncingHosts, setSyncingHosts] = useState(false);
   const [connection, setConnection] = useState<StoredConnection | null>(null);
   const [locked, setLocked] = useState(false);
   const lockEnabledRef = useRef(false);
@@ -88,6 +92,37 @@ export default function App() {
     const stored = await loadConnections();
     setConnections(stored);
     return stored;
+  }, []);
+
+  /**
+   * 回到主机列表 / 回到前台时，用 mTLS 向主机同步：
+   *   - 主机改名后更新本地 hostName；
+   *   - 主机侧已撤销本设备时给记录打 `revokedAt`（UI 提供删除入口）。
+   * 原生 mTLS 身份是全局的，同步会逐台串行切换，结束后恢复当前主机的身份。
+   */
+  const syncHostsFromHost = useCallback(async () => {
+    setSyncingHosts(true);
+    try {
+      const stored = await loadConnections();
+      if (stored.length === 0) {
+        setConnections([]);
+        return;
+      }
+      await syncConnectionsWithHost(stored, {
+        restoreIdentityLabel: connectionRef.current?.certRef ?? null,
+      });
+      // 以同步后的存储为准重新读一次：期间用户可能刚删除了某台主机。
+      const fresh = await loadConnections();
+      setConnections(fresh);
+      setConnection((current) => {
+        if (!current) return current;
+        return fresh.find((item) => isSameConnection(item, current)) ?? current;
+      });
+    } catch {
+      // 同步失败不改变本地记录：下次回列表 / 回前台会重试。
+    } finally {
+      setSyncingHosts(false);
+    }
   }, []);
 
   useEffect(() => {
@@ -129,6 +164,20 @@ export default function App() {
     currentSessionRef.current = null;
     setForegroundCurrentSession(null);
   }, [connection]);
+
+  // 进入主机列表时同步主机名 / 撤销状态（冷启动、返回列表、删除记录后都会触发）。
+  useEffect(() => {
+    if (route !== 'home') return;
+    void syncHostsFromHost();
+  }, [route, syncHostsFromHost]);
+
+  // 从后台回到前台：主机可能已改名或在桌面侧撤销了本设备，列表可见时再同步一次。
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state === 'active' && routeRef.current === 'home') void syncHostsFromHost();
+    });
+    return () => subscription.remove();
+  }, [syncHostsFromHost]);
 
   /**
    * 点击推送（系统横幅或应用内卡片）→ 切到对应已配对主机并打开对应会话。
@@ -369,10 +418,33 @@ export default function App() {
       await removeConnection(connection);
       await clearCertificate(connection.hostFingerprint);
     }
-    const remaining = await refreshConnections();
     setConnection(null);
-    setRoute(remaining.length > 0 ? 'home' : 'pairing');
+    await refreshConnections();
+    // 「重新配对」直接把用户带到扫码页；还有其它主机时可从配对页返回列表。
+    setRoute('pairing');
   }, [connection, refreshConnections]);
+
+  /**
+   * 删除一台主机的本机记录（不进入配对流程）：
+   * 清除 SecureStore 里的配对信息与设备证书。主机侧记录不会被远端删除，
+   * 需要在主机「远程访问」里单独撤销（主机已撤销时这里只是清理本地残留）。
+   */
+  const handleDeleteConnection = useCallback(async (target: StoredConnection) => {
+    await removeConnection(target);
+    await clearCertificate(target.hostFingerprint);
+    const wasCurrent = connectionRef.current !== null && isSameConnection(connectionRef.current, target);
+    if (wasCurrent && target.certRef) {
+      try {
+        await clearClientIdentity();
+      } catch {
+        // 未链接原生模块时忽略：设备私钥仍留在 Keychain/Keystore，但已无主机可用。
+      }
+    }
+    const remaining = await refreshConnections();
+    if (wasCurrent) setConnection(null);
+    if (remaining.length === 0) setRoute('pairing');
+    else if (wasCurrent || routeRef.current === 'devices') setRoute('home');
+  }, [refreshConnections]);
 
   const renderRoute = () => {
     switch (route) {
@@ -387,8 +459,11 @@ export default function App() {
         return (
           <HomeScreen
             connections={connections}
+            syncing={syncingHosts}
             onOpen={handleOpenConnection}
             onOpenDevices={handleOpenDevices}
+            onDelete={handleDeleteConnection}
+            onSync={() => void syncHostsFromHost()}
             onPairNew={() => setRoute('pairing')}
             onOpenSettings={handleOpenSettings}
           />
@@ -420,13 +495,17 @@ export default function App() {
             connection={connection}
             onClose={() => setRoute('home')}
             onRepair={handleRepair}
+            onDeleteLocal={() => handleDeleteConnection(connection)}
             onConnectionUpdated={setConnection}
           />
         ) : (
           <HomeScreen
             connections={connections}
+            syncing={syncingHosts}
             onOpen={handleOpenConnection}
             onOpenDevices={handleOpenDevices}
+            onDelete={handleDeleteConnection}
+            onSync={() => void syncHostsFromHost()}
             onPairNew={() => setRoute('pairing')}
             onOpenSettings={handleOpenSettings}
           />

@@ -103,6 +103,12 @@ export interface StoredConnection {
   hostName?: string;
   /** Epoch ms when pairing completed. */
   pairedAt: number;
+  /**
+   * Epoch ms when the host last rejected this device's certificate (HTTP 401/403),
+   * i.e. the device was revoked / the certificate expired on the host side.
+   * The record stays local until the user deletes it explicitly.
+   */
+  revokedAt?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -125,7 +131,23 @@ function connectionIdentity(connection: StoredConnection): string {
   return `${connection.host}|${connection.deviceId}`;
 }
 
-/** 读取所有已配对主机（兼容旧的单连接 v1 数据）。 */
+/** 稳定标识：同一 host + deviceId 视为同一条配对记录。 */
+export function connectionKey(connection: StoredConnection): string {
+  return connectionIdentity(connection);
+}
+
+/** 两条配对记录是否指向同一台主机上的同一设备。 */
+export function isSameConnection(a: StoredConnection, b: StoredConnection): boolean {
+  return connectionIdentity(a) === connectionIdentity(b);
+}
+
+/**
+ * 读取所有已配对主机（兼容旧的单连接 v1 数据）。
+ *
+ * v1（单个 `CONNECTION_STORAGE_KEY`）会在这里一次性迁移到 v2 列表并删除 v1：
+ * 否则删除掉最后一条 v2 记录后，`loadConnections` 会再次回退读到 v1，把早已
+ * 删除的旧主机「复活」出来（真机验收时实际踩到过）。
+ */
 export async function loadConnections(): Promise<StoredConnection[]> {
   const raw = await getItem(CONNECTIONS_STORAGE_KEY);
   if (raw) {
@@ -137,24 +159,70 @@ export async function loadConnections(): Promise<StoredConnection[]> {
     }
   }
   const legacy = await loadConnection();
-  return legacy ? [legacy] : [];
+  if (!legacy) return [];
+  try {
+    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify([legacy]));
+    await deleteItem(CONNECTION_STORAGE_KEY);
+  } catch {
+    // 迁移失败时仍返回内存中的记录，不阻塞配对页。
+  }
+  return [legacy];
+}
+
+/**
+ * 串行化「读-改-写」连接列表的操作。
+ *
+ * 后台的主机状态同步与用户删除/新增可能同时发生：没有锁时，两个操作各自
+ * 读到旧列表再写回，会把刚删除的记录重新写回去。锁只包住写操作，读仍是
+ * 无阻塞的（SecureStore 的单条写入是原子的）。
+ */
+let connectionWriteQueue: Promise<void> = Promise.resolve();
+
+function withConnectionWriteLock<T>(task: () => Promise<T>): Promise<T> {
+  const run = connectionWriteQueue.then(task, task);
+  connectionWriteQueue = run.then(() => undefined, () => undefined);
+  return run;
 }
 
 /** 新增/更新一台已配对主机（同一 host+deviceId 覆盖）。 */
 export async function saveConnection(connection: StoredConnection): Promise<void> {
-  const list = await loadConnections();
-  const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
-  if (index >= 0) list[index] = connection;
-  else list.push(connection);
-  await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
+  await withConnectionWriteLock(async () => {
+    const list = await loadConnections();
+    const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
+    if (index >= 0) list[index] = connection;
+    else list.push(connection);
+    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
+    // v2 已是权威数据：清掉旧 v1，避免删除最后一条记录后旧数据显示回来。
+    await deleteItem(CONNECTION_STORAGE_KEY);
+  });
+}
+
+/**
+ * 仅更新一条已存在的配对记录；记录已被删除时不重新插入。
+ * 后台同步用这个接口，避免与用户删除操作竞争把记录「复活」。
+ * @returns 记录是否仍存在并被更新。
+ */
+export async function updateConnection(connection: StoredConnection): Promise<boolean> {
+  return withConnectionWriteLock(async () => {
+    const list = await loadConnections();
+    const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
+    if (index < 0) return false;
+    list[index] = connection;
+    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
+    await deleteItem(CONNECTION_STORAGE_KEY);
+    return true;
+  });
 }
 
 /** 仅移除一台主机（保留其它已配对主机）。 */
 export async function removeConnection(connection: StoredConnection): Promise<void> {
-  const list = await loadConnections();
-  const next = list.filter((item) => connectionIdentity(item) !== connectionIdentity(connection));
-  if (next.length === 0) await deleteItem(CONNECTIONS_STORAGE_KEY);
-  else await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(next));
+  await withConnectionWriteLock(async () => {
+    const list = await loadConnections();
+    const next = list.filter((item) => connectionIdentity(item) !== connectionIdentity(connection));
+    if (next.length === 0) await deleteItem(CONNECTIONS_STORAGE_KEY);
+    else await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(next));
+    await deleteItem(CONNECTION_STORAGE_KEY);
+  });
 }
 
 /** 兼容旧 API：返回最近保存的一台主机。 */
@@ -292,6 +360,11 @@ export async function saveDeviceName(name: string): Promise<void> {
 
 export async function loadDeviceName(): Promise<string | null> {
   return getItem(DEVICE_NAME_STORAGE_KEY);
+}
+
+/** 忘记用户自定义的设备名（下次配对重新使用系统设备名）。 */
+export async function clearDeviceName(): Promise<void> {
+  await deleteItem(DEVICE_NAME_STORAGE_KEY);
 }
 
 // ---------------------------------------------------------------------------
