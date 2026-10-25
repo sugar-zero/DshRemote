@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-service",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "description": "DSH 远程访问主机插件：设备配对、mTLS 反向代理、自托管盲中继连接、账号行上方入口",
   "license": "AGPL-3.0-or-later",

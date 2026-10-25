@@ -12,7 +12,7 @@ import { RelayConnector } from './connector.js';
 import { createRemoteServer } from './server.js';
 import { createPushNotifier } from './push.js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
