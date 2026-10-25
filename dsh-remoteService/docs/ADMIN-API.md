@@ -124,6 +124,12 @@ Body（全部可选，只改传入字段）：
 ### GET `/devices`
 ### POST `/devices/:id/revoke`
 撤销设备（立即断链 + 拒绝续期）。
+
+### POST `/devices/:id/delete`
+删除一条**已撤销**设备记录（桌面设备列表清理；同时清理该设备的推送 token）。
+仍有效的设备必须先 `revoke` 再删除：对未撤销设备返回 409 `device-active`；未知设备 404
+`device-not-found`。成功返回 `{ ok:true, data:{ device: <被删除记录> } }`（审计
+`device-delete`）。
 ### GET `/audit?limit=100`
 最近审计条目：`{ ts, deviceId, action, resource, result, hash }`（无正文）。
 
@@ -190,6 +196,7 @@ Body：
 ### POST `/__dsh_remote/devices/:id/revoke`（要求 mTLS）
 撤销指定设备（立即断链、拒绝续期）。返回 `{ ok:true, data:{ device } }`；未知设备 404。
 > 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
+> 删除设备记录目前只在**本机管理 API**（`POST /api/remote-access/devices/:id/delete`）开放，远程隧道不提供。
 
 ### 其余路径
 全部反代到本机 DSH Web 服务（`http://127.0.0.1:<webServer.port>`），并：

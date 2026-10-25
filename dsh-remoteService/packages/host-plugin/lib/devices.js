@@ -62,6 +62,19 @@ export class DeviceStore {
     return { ...device };
   }
 
+  /**
+   * 删除一条设备记录（仅用于清理已撤销设备；调用方需先校验 revokedAt）。
+   * @param {string} id
+   * @returns {object | undefined} 被删除的记录
+   */
+  remove(id) {
+    const index = this.state.devices.findIndex((d) => d.id === id);
+    if (index < 0) return undefined;
+    const [removed] = this.state.devices.splice(index, 1);
+    this.save();
+    return removed ? { ...removed } : undefined;
+  }
+
   isActive(serial) {
     const device = this.findBySerial(serial);
     return Boolean(device) && !device.revokedAt && (device.notAfter === null || device.notAfter > Date.now());
