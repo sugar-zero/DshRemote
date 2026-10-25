@@ -14,7 +14,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, AppState, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, AppState, BackHandler, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
 import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -26,6 +26,7 @@ import { WebViewScreen } from './src/screens/WebViewScreen';
 import { DevicesScreen } from './src/screens/DevicesScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
 import { SettingsScreen } from './src/screens/SettingsScreen';
+import { ExternalPageScreen } from './src/screens/ExternalPageScreen';
 import {
   clearCertificate,
   loadConnections,
@@ -69,6 +70,8 @@ export default function App() {
   const [inAppMessage, setInAppMessage] = useState<InAppNotificationMessage | null>(null);
   const [settingsReturnRoute, setSettingsReturnRoute] = useState<Route>('home');
   const [webViewReloadToken, setWebViewReloadToken] = useState(0);
+  /** App 内嵌浏览器（DSH 页面里的外链，如平台查询用量/充值）；null = 未打开。 */
+  const [externalPage, setExternalPage] = useState<{ url: string } | null>(null);
   /** 点击推送后要打开的会话；由 WebViewScreen 在页面就绪后注入执行并回调清空。 */
   const [openSessionRequest, setOpenSessionRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
   /** 通知点击后是否已处理过（避免 listener 与冷启动 API 重复处理同一次点击）。 */
@@ -238,7 +241,10 @@ export default function App() {
     lockedRef.current = locked;
     // 锁屏时通知 handler 需要知道：LockScreen 在前台时按后台处理（允许系统通知）。
     setForegroundLocked(locked);
-    if (locked) setInAppMessage(null);
+    if (locked) {
+      setInAppMessage(null);
+      setExternalPage(null);
+    }
   }, [locked]);
 
   // App 锁：启动/回前台时按设置要求生物识别；WebView 常驻但被 LockScreen 覆盖。
@@ -269,6 +275,16 @@ export default function App() {
     });
     return () => subscription.remove();
   }, []);
+
+  // Android 返回键：内嵌外链页打开时先回 DSH（iOS 用内嵌页左上返回）。
+  useEffect(() => {
+    if (!externalPage) return undefined;
+    const subscription = BackHandler.addEventListener('hardwareBackPress', () => {
+      setExternalPage(null);
+      return true;
+    });
+    return () => subscription.remove();
+  }, [externalPage]);
 
   useEffect(() => {
     if (!connection) return undefined;
@@ -337,6 +353,15 @@ export default function App() {
   const handleCloseWebView = useCallback(() => {
     // 左上角返回 → 主机列表（支持多台已配对主机）。
     setRoute('home');
+  }, []);
+
+  /**
+   * DSH 页面里的外链：在 App 内嵌浏览器打开（对应桌面 DSH 内嵌平台页的体验）。
+   * WebViewScreen 已校验 http(s) 且排除隧道主机，这里再兜底一次协议。
+   */
+  const handleOpenExternal = useCallback((externalUrl: string) => {
+    if (!/^https?:\/\//i.test(externalUrl)) return;
+    setExternalPage({ url: externalUrl });
   }, []);
 
   const handleRepair = useCallback(async () => {
@@ -435,6 +460,7 @@ export default function App() {
               openSessionRequest={openSessionRequest}
               onOpenSessionHandled={handleOpenSessionHandled}
               onCurrentSession={handleCurrentSession}
+              onOpenExternal={handleOpenExternal}
             />
           </View>
         ) : null}
@@ -454,6 +480,16 @@ export default function App() {
           />
         ) : null}
         {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : route !== 'webview' ? renderRoute() : null}
+        {/* App 内嵌浏览器：盖在主机 WebView 之上；锁屏时不渲染（上面的 locked 分支优先）。 */}
+        {!locked && externalPage ? (
+          <View style={styles.externalPageLayer}>
+            <ExternalPageScreen
+              key={externalPage.url}
+              url={externalPage.url}
+              onClose={() => setExternalPage(null)}
+            />
+          </View>
+        ) : null}
       </View>
     </SafeAreaProvider>
   );
@@ -469,6 +505,14 @@ const styles = StyleSheet.create({
     right: 0,
     bottom: 0,
     left: 0,
+  },
+  externalPageLayer: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    left: 0,
+    zIndex: 1200,
   },
   loadingScreen: {
     flex: 1,

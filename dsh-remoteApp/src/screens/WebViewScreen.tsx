@@ -74,6 +74,11 @@ interface WebViewScreenProps {
   onOpenSessionHandled?: (nonce: number) => void;
   /** DSH 页面上报的当前会话（host + sessionId，用于前台通知的“当前会话抑制”）。 */
   onCurrentSession?: (info: { host: string; sessionId: string } | null) => void;
+  /**
+   * DSH 页面里的外链（target=_blank / window.open）：由 App 决定打开方式。
+   * 传入时用 App 内嵌浏览器打开；不传时退回系统浏览器（Linking.openURL）。
+   */
+  onOpenExternal?: (url: string) => void;
 }
 
 type ConnectionStatus = 'connecting' | 'online' | 'error';
@@ -116,6 +121,7 @@ export function WebViewScreen({
   openSessionRequest = null,
   onOpenSessionHandled,
   onCurrentSession,
+  onOpenExternal,
 }: WebViewScreenProps) {
   const insets = useSafeAreaInsets();
   const webViewRef = useRef<WebView | null>(null);
@@ -237,21 +243,30 @@ export function WebViewScreen({
     }
   }, []);
 
+  /** 外链统一入口：优先交给 App 内嵌浏览器；没有该 prop 时退回系统浏览器。 */
+  const openLink = useCallback((url: string) => {
+    if (onOpenExternal) {
+      onOpenExternal(url);
+      return;
+    }
+    void openExternal(url);
+  }, [onOpenExternal, openExternal]);
+
   const handleShouldStartLoad = useCallback(
     (request: { url: string }): boolean => {
       const { url } = request;
       if (url === 'about:blank' || url.startsWith('about:blank#')) return true;
       if (isTunnelUrl(url, connection.host)) return true;
-      // Everything outside the tunnel: open in the system browser (evaluation §4.7.2).
+      // Everything outside the tunnel: open in the App's embedded page (or system browser).
       if (url.startsWith('https://') || url.startsWith('http://')) {
-        void openExternal(url);
+        openLink(url);
         return false;
       }
       // Custom schemes (mailto:, tel:, dshremote:) also go to the OS.
       void openExternal(url);
       return false;
     },
-    [connection.host, openExternal],
+    [connection.host, openLink, openExternal],
   );
 
   // 设置页「清理缓存」后递增 reloadToken：重新加载当前页面（旧缓存已被原生清空）。
@@ -354,7 +369,9 @@ export function WebViewScreen({
   /**
    * 收到注入层 / host 插件的桥消息：
    *  - dsh-ws-open/close：WebSocket 状态，主机重启时触发自动 reload；
-   *  - dsh-remote/current-session：当前会话（host+sessionId），供 App 判断前台通知是否是当前会话。
+   *  - dsh-remote/current-session：当前会话（host+sessionId），供 App 判断前台通知是否是当前会话；
+   *  - dsh-remote/open-external：DSH 页面里的外链（target=_blank / window.open），
+   *    原生 WebView 打不开新窗口，交给系统浏览器。
    */
   const handleBridgeMessage = useCallback((raw: string) => {
     let payload: { type?: unknown; url?: unknown; host?: unknown; sessionId?: unknown } | null = null;
@@ -370,6 +387,22 @@ export function WebViewScreen({
       const info = sessionId ? { host, sessionId } : null;
       currentSessionRef.current = info;
       onCurrentSession?.(info);
+      return;
+    }
+    if (payload.type === 'dsh-remote/open-external') {
+      const externalUrl = typeof payload.url === 'string' ? payload.url : '';
+      // 只允许 http(s)；隧道主机要设备证书，不能交给系统浏览器（否则只会打不开）。
+      if (!/^https?:\/\//i.test(externalUrl)) return;
+      let externalHost = '';
+      let tunnelHost = '';
+      try {
+        externalHost = new URL(externalUrl).hostname.toLowerCase();
+        tunnelHost = new URL(`https://${connection.host}`).hostname.toLowerCase();
+      } catch {
+        return;
+      }
+      if (tunnelHost && externalHost === tunnelHost) return;
+      openLink(externalUrl);
       return;
     }
     const url = typeof payload.url === 'string' ? payload.url : '';
@@ -394,7 +427,7 @@ export function WebViewScreen({
       budget.count += 1;
       setWsRecoveryPending(true);
     }
-  }, [onCurrentSession]);
+  }, [connection.host, onCurrentSession, openLink]);
 
   const handleNativeMessage = useCallback((event: DshMtlsWebViewMessageEvent) => {
     handleBridgeMessage(event.nativeEvent.data);

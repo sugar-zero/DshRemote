@@ -11,6 +11,10 @@
  *  5. 设置弹窗（DSH settings-general 的居中 modal）在手机上改为全屏：分区菜单
  *     （左 nav）变成离屏抽屉，内容区顶部有手机专用栏（左上返回 = 关闭设置、右侧
  *     菜单 = 打开抽屉）；点抽屉项/点抽屉外/左滑可收起抽屉。
+ *  6. 外链（`<a target="_blank">` / `window.open` 的 http(s) 地址，如设置 → 账号与
+ *     余额的「查询用量 / 充值 / 更多账号信息」、账号菜单「意见反馈」）通过桥交给
+ *     App 打开（默认在 App 内嵌浏览器打开，等价桌面 DSH 的内嵌平台页；内嵌页里可
+ *     一键切系统浏览器）。原生 WebView 没有新窗口能力，不拦截的话点击无反应。
  *
  * 关键：脚本通过 WKUserScript `.atDocumentStart` 注入，执行时 document.body 还不存在，
  * 因此必须等 DOMContentLoaded / body 可用后再初始化（之前版本在这里静默失败）。
@@ -29,6 +33,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
   // page's /api/remote.mux WebSocket dies and the old page can stay black.
   // Report open/close to native so the shell can reload the page once.
   // No credentials or message contents are sent; only the socket URL/state.
+  // 同一桥也用于「外链交给系统浏览器打开」（dsh-remote/open-external）。
   function notifyMtlsBridge(payload) {
     try {
       var text = JSON.stringify(payload);
@@ -37,6 +42,10 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       } else if (window.webkit && window.webkit.messageHandlers
         && window.webkit.messageHandlers.dshMtlsBridge) {
         window.webkit.messageHandlers.dshMtlsBridge.postMessage(text);
+      } else if (window.ReactNativeWebView
+        && typeof window.ReactNativeWebView.postMessage === 'function') {
+        // react-native-webview 回退路径（非原生 mTLS View）也能收到桥消息。
+        window.ReactNativeWebView.postMessage(text);
       }
     } catch (error) {
       // Bridge is optional (plain WebView / Expo Go).
@@ -175,11 +184,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '    background: var(--dsw-alias-bg-layer-2, var(--dsw-alias-bg-base, #1b1c1e)) !important;',
       '    border-right: 1px solid var(--dsw-alias-border-l3, rgba(255, 255, 255, 0.08));',
       '    box-shadow: 12px 0 32px rgba(0, 0, 0, 0.38);',
-      '    transform: translateX(-103%); visibility: hidden;',
+      '    transform: translateX(-103%); visibility: hidden; pointer-events: none;',
       '    transition: transform 220ms ease, visibility 0s linear 220ms;',
       '  }',
       '  html.' + SETTINGS_MOBILE_CLASS + '.' + SETTINGS_NAV_CLASS + ' [data-shortcut-modal="settings"] > nav {',
-      '    transform: translateX(0); visibility: visible; transition: transform 220ms ease;',
+      '    transform: translateX(0); visibility: visible; pointer-events: auto; transition: transform 220ms ease;',
       '  }',
       // 抽屉遮罩：盖住内容区但保留抽屉可点；做成真实 DOM（伪元素会被 nav 的
       // transform 关进抽屉自己，铺不满视口），所以由注入脚本放进 panel。
@@ -347,13 +356,24 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     function isSettingsNavOpen() {
       return document.documentElement.classList.contains(SETTINGS_NAV_CLASS);
     }
+    // 抽屉收起时给 nav 加 inert：DSH useModalLayer 的焦点陷阱只过滤 [inert]/[hidden]，
+    // 不过滤 visibility:hidden；iPad 外接键盘 Tab 不应落进看不见的分区按钮。
+    // 旧 WebView 不支持 inert 时该属性被忽略，退回原行为。
+    function setSettingsNavInert(inert) {
+      if (!settingsNav || !settingsNav.isConnected) return;
+      if (inert) settingsNav.setAttribute('inert', '');
+      else settingsNav.removeAttribute('inert');
+    }
     function closeSettingsNav() {
       if (!isSettingsNavOpen()) return;
       document.documentElement.classList.remove(SETTINGS_NAV_CLASS);
+      setSettingsNavInert(true);
       if (settingsMenuButton) settingsMenuButton.setAttribute('aria-expanded', 'false');
     }
     function openSettingsNav() {
       if (!isMobile() || !settingsPanel || !settingsPanel.isConnected) return;
+      if (!settingsNav || !settingsNav.isConnected) settingsNav = directChild(settingsPanel, 'NAV');
+      setSettingsNavInert(false);
       document.documentElement.classList.add(SETTINGS_NAV_CLASS);
       if (settingsMenuButton) settingsMenuButton.setAttribute('aria-expanded', 'true');
     }
@@ -378,16 +398,32 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       }
       return null;
     }
+    // 只在安装/关闭这种低频路径用稳定类名后缀找按钮，取不到时退回「第一个 button」。
+    function childButtonWithClass(parent, suffix) {
+      if (!parent) return null;
+      for (var i = 0; i < parent.children.length; i += 1) {
+        var child = parent.children[i];
+        if (child.tagName !== 'BUTTON') continue;
+        if (typeof child.className === 'string' && child.className.indexOf(suffix) !== -1) return child;
+      }
+      return null;
+    }
+    // 设置面板的内容列（panel 直系 div._content）；不依赖「panel 第一个 div」的顺序。
+    function settingsContentOf(panel) {
+      return directChildWithClass(panel, '_content') || directChild(panel, 'DIV');
+    }
+    function settingsCloseButtonOf(panel) {
+      var content = settingsContentOf(panel);
+      var header = content ? directChildWithClass(content, '_header') : null;
+      return childButtonWithClass(header, '_close') || childButton(header);
+    }
 
     // 退出设置：优先点 DSH 原生 close（走它自己的 onClose/store），失败再点遮罩 /
     // 发 Escape（DSH 的 useModalLayer 监听 Escape）。注入失败的兜底路径也靠这些。
     function closeSettingsDialog() {
       // DSH 重渲染可能整个换掉 _header：缓存失效时按稳定类名后缀重新解析一次。
       if ((!settingsCloseButton || !settingsCloseButton.isConnected) && settingsPanel && settingsPanel.isConnected) {
-        var contentCol = directChild(settingsPanel, 'DIV');
-        settingsCloseButton = contentCol
-          ? childButton(directChildWithClass(contentCol, '_header'))
-          : null;
+        settingsCloseButton = settingsCloseButtonOf(settingsPanel);
       }
       if (settingsCloseButton && settingsCloseButton.isConnected) {
         try { settingsCloseButton.click(); return; } catch (error) { /* 继续兜底 */ }
@@ -403,6 +439,8 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
 
     function teardownSettingsShell() {
       closeSettingsNav();
+      // 恢复 DSH 原状（inert 是注入壳加的）。
+      if (settingsNav && settingsNav.isConnected) settingsNav.removeAttribute('inert');
       if (settingsBar && settingsBar.parentElement) settingsBar.parentElement.removeChild(settingsBar);
       if (settingsBackdrop && settingsBackdrop.parentElement) settingsBackdrop.parentElement.removeChild(settingsBackdrop);
       document.documentElement.classList.remove(SETTINGS_MOBILE_CLASS);
@@ -421,19 +459,20 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     function installSettingsShell(panel) {
       if (!isMobile() || !panel || !panel.isConnected) return;
       var nav = directChild(panel, 'NAV');
-      var content = directChild(panel, 'DIV');
+      var content = settingsContentOf(panel);
       if (!nav || !content) return;
       // 设置已经盖住整屏，会话侧栏抽屉不应再叠一层。
       closeDrawer();
       teardownSettingsShell();
       settingsPanel = panel;
       settingsNav = nav;
+      setSettingsNavInert(true);
 
       var navTitle = directChildWithClass(nav, '_navTitle');
       var titleText = navTitle && navTitle.textContent
         ? navTitle.textContent.replace(/\s+/g, ' ').trim()
         : '';
-      settingsCloseButton = childButton(directChildWithClass(content, '_header'));
+      settingsCloseButton = settingsCloseButtonOf(panel);
 
       var bar = document.createElement('div');
       bar.className = SETTINGS_BAR_CLASS;
@@ -487,6 +526,19 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     }
 
     /**
+     * 手机壳是否完整：mobile 状态类 + 手机栏 + 遮罩都在。
+     * DSH 重渲染理论上可能单独换掉其中某个节点；这里全是 O(1) 检查，
+     * 高频 mutation 路径上也能安全调用（不 querySelector）。
+     */
+    function settingsShellIntact() {
+      return Boolean(
+        settingsBar && settingsBar.isConnected
+        && settingsBackdrop && settingsBackdrop.isConnected
+        && document.documentElement.classList.contains(SETTINGS_MOBILE_CLASS)
+      );
+    }
+
+    /**
      * 设置弹窗的增删同步（MutationObserver 高频路径）。
      * - 已装（panel 已缓存）：只做 O(1) isConnected 检查，绝不 querySelector
      *   （token 流式渲染时每批 mutation 都会进来，必须保持零查询）；
@@ -498,7 +550,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
           // 同一个 mutation 批次里可能「旧 panel 移除 + 新 panel 加上」，清理后继续往下找。
           teardownSettingsShell();
         } else {
-          if (!settingsBar || !settingsBar.isConnected) installSettingsShell(settingsPanel);
+          if (!settingsShellIntact()) installSettingsShell(settingsPanel);
           return;
         }
       }
@@ -525,7 +577,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
         return;
       }
       if (settingsPanel && settingsPanel.isConnected) {
-        if (!settingsBar || !settingsBar.isConnected) installSettingsShell(settingsPanel);
+        if (!settingsShellIntact()) installSettingsShell(settingsPanel);
         return;
       }
       if (settingsPanel) teardownSettingsShell();
@@ -578,6 +630,54 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       if (target.closest('.dsh-mobile-native-trigger') || target.closest('.dsh-mobile-backdrop')) return;
       closeDrawer();
     }, true);
+
+    // ── 外链交给系统浏览器 ──────────────────────────────────────────────
+    // DSH 里不少入口是 <a target="_blank"> 或 window.open(...)（设置 → 账号与余额的
+    // 查询用量 / 充值 / 更多账号信息，账号菜单的意见反馈等）。原生 WKWebView/WebView
+    // 没有新窗口能力（iOS 没有 WKUIDelegate，Android setSupportMultipleWindows(false)），
+    // 点击会被 WebKit 直接丢弃，表现为「完全没反应」。这里把 http(s) 外链通过桥交给
+    // App，用系统浏览器打开；隧道主机自身的链接保持原样（外部浏览器没有设备证书）。
+    function externalHttpUrlOf(rawHref) {
+      if (typeof rawHref !== 'string' || rawHref === '') return '';
+      var url = null;
+      try { url = new URL(rawHref, window.location.href); } catch (error) { return ''; }
+      if (url.protocol !== 'https:' && url.protocol !== 'http:') return '';
+      // 同主机名（含不同端口）都算隧道内地址，不交给系统浏览器。
+      if (window.location.hostname && url.hostname === window.location.hostname) return '';
+      if (window.location.origin && window.location.origin !== 'null'
+        && url.origin === window.location.origin) return '';
+      return url.href;
+    }
+    function reportExternalUrl(url) {
+      notifyMtlsBridge({ type: 'dsh-remote/open-external', url: url });
+    }
+    document.addEventListener('click', function (event) {
+      var target = event.target;
+      if (!target || !target.closest) return;
+      var anchor = null;
+      try { anchor = target.closest('a[href]'); } catch (error) { anchor = null; }
+      if (!anchor || anchor.hasAttribute('download')) return;
+      var url = externalHttpUrlOf(anchor.getAttribute('href') || anchor.href || '');
+      if (!url) return;
+      event.preventDefault();
+      event.stopPropagation();
+      reportExternalUrl(url);
+    }, true);
+    // window.open 的外链（如账号菜单「意见反馈」）：原生 WebView 同样打不开新窗口。
+    var nativeWindowOpen = window.open;
+    window.open = function (url) {
+      var raw = typeof url === 'string' ? url : '';
+      var external = externalHttpUrlOf(raw);
+      if (external) {
+        reportExternalUrl(external);
+        return null;
+      }
+      try {
+        return nativeWindowOpen ? nativeWindowOpen.apply(window, arguments) : null;
+      } catch (error) {
+        return null;
+      }
+    };
 
     // 左边缘右滑打开 / 抽屉上左滑关闭（设置页的分区抽屉沿用同一手势）。
     var touchStartX = 0;

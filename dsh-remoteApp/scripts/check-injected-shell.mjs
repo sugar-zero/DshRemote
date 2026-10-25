@@ -17,6 +17,8 @@
  *   7. 窄屏下 DSH 设置弹窗（@deepseek-ai/dsh-client-ui-settings-general）的手机壳：
  *      弹窗铺满视口、左侧分区菜单变成抽屉（默认收起）、左上返回关闭设置、
  *      点抽屉外不误触内容、关闭后清理状态、宽屏恢复 DSH 原生布局。
+ *   8. 外链（target=_blank 锚点 / window.open）：注入壳拦截 http(s) 外链并上报
+ *      App（系统浏览器打开），同源锚点不受影响（原生 WebView 没有新窗口能力）。
  *
  * 用法：node scripts/check-injected-shell.mjs   （本机没有 Chrome 时自动跳过，退出码 0）
  * 开发对照：node scripts/check-injected-shell.mjs --shell-js /tmp/old-mobileWebShell.ts
@@ -208,7 +210,12 @@ const RIGHTBAR_FIXTURE_HTML = `<!doctype html>
  *  - 设置分区内容用占位卡片/按钮代替真实 React 表单；
  *  - 打开/关闭用 window.__openSettings() / 关闭按钮里 remove() 模拟 React 的
  *    portal 挂载/卸载（DOM 结构与 CSS 规则和真实 DSH 一致）；
- *  - 分区切换只改 data-section/标题，真实 DSH 由 slots 渲染对应 section。
+ *  - 分区切换只改 data-section/标题，真实 DSH 由 slots 渲染对应 section；
+ *  - 背景保留一条带 conversation.header.leading 槽位的会话 header：真实 App 里它也
+ *    在（鲸鱼入口挂在这里），让注入壳的 O(1) 快路径处于正常稳态；
+ *  - 内容区放一个外链（target=_blank）、一个同源锚点、一个 window.open 按钮，用来
+ *    验证「外链交给 App（系统浏览器）」的注入逻辑（桥用 stub 记录消息）。
+ * CSS 规则是 DSH 客户端样式的只读摘录，仅用于本地回归 fixture（与右栏 fixture 同一做法）。
  */
 const SETTINGS_FIXTURE_HTML = `<!doctype html>
 <html><head><meta charset="utf-8">
@@ -256,9 +263,23 @@ const SETTINGS_FIXTURE_HTML = `<!doctype html>
   #settings-section { display: flex; flex-direction: column; gap: 12px; padding-top: 12px; }
   .fixture-row { height: 56px; border-radius: 8px; background: #26282c; }
   #options-button { align-self: flex-end; height: 40px; padding: 0 16px; color: #fff; background: #3a63b8; border: 0; border-radius: 8px; }
+  /* 背景会话 header：给注入壳的鲸鱼入口一个 leading 槽位（真实 App 里也存在），
+     这样 token 流式渲染的 O(1) 快路径处于正常稳态。 */
+  .fixture-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 16px; border-bottom: 1px solid #26282c; }
+  .fixture-header-leading { display: flex; align-items: center; min-width: 40px; min-height: 30px; }
+  .fixture-header-mark { display: flex; align-items: center; justify-content: center; width: 28px; height: 28px; }
+  .fixture-header-mark svg { width: 22px; height: 22px; }
+  .fixture-header-title { color: #9aa0a6; }
 </style></head>
 <body>
-<div id="app-shell" style="padding: 24px; color: #777;">会话内容（设置弹窗打开时被遮住）</div>
+<div id="app-shell">
+  <header class="fixture-header">
+    <div class="fixture-header-mark ab_railMark"><svg viewBox="0 0 24 24" width="24" height="24"><path d="M2 12h20v8H2z"/></svg></div>
+    <div class="fixture-header-leading"><div data-slot="conversation.header.leading"></div></div>
+    <div class="fixture-header-title">会话标题</div>
+  </header>
+  <div style="padding: 24px; color: #777;">会话内容（设置弹窗打开时被遮住）</div>
+</div>
 <!-- 设置弹窗：真实 DSH 由 React portal 到 document.body，初始不挂载 -->
 <div id="settings-overlay" class="_77Pn0W_overlay" role="presentation">
   <div class="_77Pn0W_mask" aria-hidden="true"></div>
@@ -296,6 +317,9 @@ const SETTINGS_FIXTURE_HTML = `<!doctype html>
         <div id="settings-section" data-section="0">
           <h2 id="settings-section-title" style="margin: 0; font-size: 16px;">通用设置</h2>
           <p style="margin: 0; color: #9aa0a6; font-size: 13px; line-height: 20px;">占位说明：真机上这里是设置表单，窄屏时应当占满内容区宽度。</p>
+          <a id="external-link" href="https://platform.example.com/usage" target="_blank" rel="noreferrer" style="color: #8ab4ff;">查询用量</a>
+          <a id="internal-link" href="#settings-internal" target="_blank" style="color: #8ab4ff;">内部锚点</a>
+          <button type="button" id="open-window-button" style="align-self: flex-start; height: 36px;">意见反馈</button>
           <div class="fixture-row"></div>
           <button type="button" id="options-button">内容区按钮</button>
           <div class="fixture-row"></div>
@@ -313,6 +337,15 @@ const SETTINGS_FIXTURE_HTML = `<!doctype html>
     var section = document.getElementById('settings-section');
     var sectionTitle = document.getElementById('settings-section-title');
     var optionsButton = document.getElementById('options-button');
+    // 注入壳的桥（真实 App 里由原生 WebView 注入）：记录外链消息供断言。
+    var bridgeMessages = [];
+    window.__bridgeMessages = bridgeMessages;
+    window.dshMtlsBridge = {
+      postMessage: function (text) { bridgeMessages.push(text); }
+    };
+    document.getElementById('open-window-button').addEventListener('click', function () {
+      window.open('https://platform.example.com/feedback', '_blank');
+    });
     window.__settingsOverlay = overlay;
     window.__openSettings = function () {
       if (!overlay.isConnected) document.body.appendChild(overlay);
@@ -752,6 +785,8 @@ async function runChecks(chromePath, shellJs) {
           panelBorderRadius: styleOf(panel) ? styleOf(panel).borderRadius : null,
           navPosition: styleOf(nav) ? styleOf(nav).position : null,
           navVisibility: styleOf(nav) ? styleOf(nav).visibility : null,
+          navInert: nav ? nav.hasAttribute('inert') : null,
+          navPointerEvents: styleOf(nav) ? styleOf(nav).pointerEvents : null,
           navRect: rectOf(nav),
           headerDisplay: styleOf(header) ? styleOf(header).display : null,
           optionsRect: rectOf(options),
@@ -774,6 +809,58 @@ async function runChecks(chromePath, shellJs) {
 
       const initial = snapshot();
       const navHitClosed = hitInside(document.querySelector('[data-shortcut-modal="settings"] nav'), 80, 300);
+
+      // 外链：target=_blank 锚点 / window.open 都应上报给 App（系统浏览器），页面不导航；
+      // 同源 / 非 http(s) 锚点不拦截。
+      const pageHrefBefore = window.location.href;
+      const messagesBefore = window.__bridgeMessages.length;
+      const externalLinkTap = tap(document.getElementById('external-link'));
+      await sleep(80);
+      const externalOpenMessage = (() => {
+        const texts = window.__bridgeMessages.slice(messagesBefore);
+        for (const text of texts) {
+          try {
+            const message = JSON.parse(text);
+            if (message.type === 'dsh-remote/open-external') return message;
+          } catch { /* 非 JSON 消息忽略 */ }
+        }
+        return null;
+      })();
+      const pageHrefAfterExternal = window.location.href;
+      const internalBefore = window.__bridgeMessages.length;
+      const internalLinkTap = tap(document.getElementById('internal-link'));
+      await sleep(80);
+      const internalOpenedExternal = window.__bridgeMessages.slice(internalBefore).some((text) => {
+        try { return JSON.parse(text).type === 'dsh-remote/open-external'; } catch { return false; }
+      });
+      const windowOpenBefore = window.__bridgeMessages.length;
+      const windowOpenTap = tap(document.getElementById('open-window-button'));
+      await sleep(80);
+      const windowOpenMessage = (() => {
+        const texts = window.__bridgeMessages.slice(windowOpenBefore);
+        for (const text of texts) {
+          try {
+            const message = JSON.parse(text);
+            if (message.type === 'dsh-remote/open-external') return message;
+          } catch { /* 非 JSON 消息忽略 */ }
+        }
+        return null;
+      })();
+      const externalLinks = {
+        external: {
+          tapped: externalLinkTap.fired,
+          url: externalOpenMessage ? externalOpenMessage.url : null,
+          navigated: pageHrefAfterExternal !== pageHrefBefore,
+        },
+        internal: {
+          tapped: internalLinkTap.fired,
+          openedExternal: internalOpenedExternal,
+        },
+        windowOpen: {
+          tapped: windowOpenTap.fired,
+          url: windowOpenMessage ? windowOpenMessage.url : null,
+        },
+      };
 
       // 菜单 → 分区抽屉打开
       const menuTap = tap(document.querySelector('.dsh-mobile-settings-menu'));
@@ -815,6 +902,10 @@ async function runChecks(chromePath, shellJs) {
         barFound: Boolean(document.querySelector('.dsh-mobile-settings-bar')),
         mobileClass: document.documentElement.classList.contains('dsh-settings-mobile'),
         navOpenClass: document.documentElement.classList.contains('dsh-settings-nav-open'),
+        fabDisplay: (() => {
+          const fab = document.querySelector('.dsh-mobile-native-trigger');
+          return fab ? getComputedStyle(fab).display : null;
+        })(),
       };
 
       // 再次打开：手机壳应能重新装上（panel 是新的 DOM/再次挂载）
@@ -826,31 +917,92 @@ async function runChecks(chromePath, shellJs) {
         panelRect: rectOf(document.querySelector('[data-shortcut-modal="settings"]')),
       };
 
-      // 模拟 DSH 重渲染换掉整个 nav 节点：缓存的 nav 失效，点分区仍应收起抽屉
-      // （注入脚本在点击时按直系子节点重新解析 nav）。
-      const navNode = document.querySelector('[data-shortcut-modal="settings"] nav');
-      const navClone = navNode.cloneNode(true);
-      navNode.parentNode.replaceChild(navClone, navNode);
+      // 模拟 DSH 重渲染换掉整个 nav 节点。关键：抽屉先打开、再换节点（openSettingsNav
+      // 因此不会替缓存补解析），cloneNode 也不会复制 click listener，这里手动给新 nav
+      // 的分区按钮补一个（等价 React 重新挂载后的 handler）——用来验证注入壳在点击时
+      // 按直系子节点重新解析 nav，而不是把点击当「抽屉外」吞掉。
       tap(document.querySelector('.dsh-mobile-settings-menu'));
       await sleep(320);
       const navOpenAfterReplace = document.documentElement.classList.contains('dsh-settings-nav-open');
-      tap(navClone.querySelectorAll('button')[2]);
+      const navNode = document.querySelector('[data-shortcut-modal="settings"] nav');
+      const navClone = navNode.cloneNode(true);
+      const cloneCells = Array.prototype.slice.call(navClone.querySelectorAll('[class*="_navCell"]'));
+      cloneCells.forEach(function (cell, index) {
+        cell.addEventListener('click', function () {
+          document.getElementById('settings-section').setAttribute('data-section', String(index));
+          document.getElementById('settings-section-title').textContent = cell.textContent.trim();
+        });
+      });
+      navNode.parentNode.replaceChild(navClone, navNode);
+      tap(cloneCells[2]);
       await sleep(150);
       const navReplaced = {
         opened: navOpenAfterReplace,
         closed: !document.documentElement.classList.contains('dsh-settings-nav-open'),
         navWidth: rectOf(navClone) ? rectOf(navClone).width : null,
+        sectionAfterReplace: document.getElementById('settings-section').getAttribute('data-section'),
       };
 
-      // 模拟 DSH 重渲染把手机栏从 content 移除：注入脚本应按 isConnected 补装。
+      // 模拟 DSH 重渲染把手机栏 / 抽屉遮罩移除：注入脚本应按 isConnected 自愈补装。
       const barEl = document.querySelector('.dsh-mobile-settings-bar');
+      const backdropEl = document.querySelector('.dsh-mobile-settings-backdrop');
       if (barEl) barEl.remove();
+      if (backdropEl) backdropEl.remove();
       await sleep(350);
       const barReinjected = {
         barInjected: Boolean(document.querySelector('.dsh-mobile-settings-bar')),
+        backdropInjected: Boolean(document.querySelector('.dsh-mobile-settings-backdrop')),
         mobileClass: document.documentElement.classList.contains('dsh-settings-mobile'),
         backPresent: Boolean(document.querySelector('.dsh-mobile-settings-back')),
       };
+
+      // 设置打开期间的流式 DOM 变更：注入壳稳态不应触发 Document.querySelector
+      // （只允许 O(1) 的 isConnected / classList 检查）。
+      const queryBefore = window.__shellStats ? window.__shellStats.querySelector : 0;
+      await new Promise((resolve) => {
+        let batch = 0;
+        const stream = document.getElementById('settings-section');
+        const tick = () => {
+          for (let i = 0; i < 5; i += 1) {
+            const span = document.createElement('span');
+            span.textContent = 'settings row ' + batch + '-' + i;
+            stream.appendChild(span);
+          }
+          batch += 1;
+          if (batch >= 20) return resolve();
+          setTimeout(tick, 16);
+        };
+        tick();
+      });
+      const settingsChurnQueryDelta = (window.__shellStats ? window.__shellStats.querySelector : 0) - queryBefore;
+
+      // 模拟 DSH 重渲染整体换掉 _header：缓存的原生 close 节点失效，
+      // 左上返回应按稳定类名后缀重新解析 close，否则只能靠注入失败的兜底路径。
+      const oldHeader = document.querySelector('[data-shortcut-modal="settings"] [class*="_header"]');
+      const newHeader = document.createElement('div');
+      newHeader.className = '_77Pn0W_header';
+      const newActions = document.createElement('div');
+      newActions.className = '_77Pn0W_actions';
+      const newClose = document.createElement('button');
+      newClose.type = 'button';
+      newClose.className = '_77Pn0W_close';
+      newClose.innerHTML = '<span class="_77Pn0W_hiddenLabel">关闭</span>';
+      newClose.addEventListener('click', function () { window.__settingsOverlay.remove(); });
+      newHeader.appendChild(newActions);
+      newHeader.appendChild(newClose);
+      oldHeader.parentNode.replaceChild(newHeader, oldHeader);
+      await sleep(100);
+      const headerCloseTap = tap(document.querySelector('.dsh-mobile-settings-back'));
+      await sleep(320);
+      const headerReplaced = {
+        clicked: headerCloseTap.fired,
+        overlayConnected: window.__settingsOverlay.isConnected,
+        barFound: Boolean(document.querySelector('.dsh-mobile-settings-bar')),
+      };
+
+      // 后面的宽屏 / 转回窄屏断言需要设置仍处于打开状态
+      window.__openSettings();
+      await sleep(320);
 
       return {
         viewport: { width: window.innerWidth, height: window.innerHeight, dpr: window.devicePixelRatio },
@@ -870,6 +1022,9 @@ async function runChecks(chromePath, shellJs) {
         reopened,
         navReplaced,
         barReinjected,
+        settingsChurnQueryDelta,
+        headerReplaced,
+        externalLinks,
       };
     })()`);
 
@@ -1112,6 +1267,23 @@ check(
   `mobileClass=${settings.initial.mobileClass}, bar=${settings.initial.barFound}`,
 );
 check(
+  '外链锚点（target=_blank）被拦截并上报给 App（页面不导航，点击被壳吞掉）',
+  settings.externalLinks.external.url === 'https://platform.example.com/usage'
+    && !settings.externalLinks.external.navigated,
+  `url=${settings.externalLinks.external.url}, navigated=${settings.externalLinks.external.navigated}`,
+);
+check(
+  '同源/非 http(s) 锚点不被当成外链拦截',
+  settings.externalLinks.internal.tapped && !settings.externalLinks.internal.openedExternal,
+  `tapped=${settings.externalLinks.internal.tapped}, openedExternal=${settings.externalLinks.internal.openedExternal}`,
+);
+check(
+  'window.open 外链（意见反馈）被拦截并上报给 App',
+  settings.externalLinks.windowOpen.tapped
+    && settings.externalLinks.windowOpen.url === 'https://platform.example.com/feedback',
+  `tapped=${settings.externalLinks.windowOpen.tapped}, url=${settings.externalLinks.windowOpen.url}`,
+);
+check(
   '窄屏设置全屏覆盖视口（rect 0,0,390,844，误差 ≤1px）',
   rectCoversViewport(settings.initial.panelRect, 390, 844),
   `rect=${formatRect(settings.initial.panelRect)}`,
@@ -1137,11 +1309,13 @@ check(
   `back=${formatRect(settings.initial.backRect)}`,
 );
 check(
-  '分区菜单默认收起（抽屉移出左边界 + visibility hidden）',
+  '分区菜单默认收起（抽屉移出左边界 + visibility hidden + inert + 不接手势）',
   settings.initial.navVisibility === 'hidden'
+    && settings.initial.navInert === true
+    && settings.initial.navPointerEvents === 'none'
     && (!settings.initial.navRect || settings.initial.navRect.right <= 1)
     && !settings.navHitClosed,
-  `visibility=${settings.initial.navVisibility}, rect=${formatRect(settings.initial.navRect)}`,
+  `visibility=${settings.initial.navVisibility}, inert=${settings.initial.navInert}, pointer-events=${settings.initial.navPointerEvents}, rect=${formatRect(settings.initial.navRect)}`,
 );
 check(
   '设置内容占满全宽、从手机栏下方开始',
@@ -1156,15 +1330,17 @@ check(
   `display=${settings.initial.fabDisplay}`,
 );
 check(
-  '点菜单打开分区抽屉（左侧 320px 抽屉 + 遮罩）',
+  '点菜单打开分区抽屉（左侧 320px 抽屉 + 遮罩 + inert 解除）',
   settings.menuTap.fired
     && settings.opened.navOpenClass
     && settings.opened.navVisibility === 'visible'
+    && settings.opened.navInert === false
+    && settings.opened.navPointerEvents === 'auto'
     && Boolean(settings.opened.navRect)
     && Math.abs(settings.opened.navRect.left) <= 1
     && Math.abs(settings.opened.navRect.width - 320) <= 1
     && settings.opened.backdropDisplay === 'block',
-  `clicked=${settings.menuTap.fired}, open=${settings.opened.navOpenClass}, nav=${formatRect(settings.opened.navRect)}, backdrop=${settings.opened.backdropDisplay}`,
+  `clicked=${settings.menuTap.fired}, open=${settings.opened.navOpenClass}, inert=${settings.opened.navInert}, nav=${formatRect(settings.opened.navRect)}, backdrop=${settings.opened.backdropDisplay}`,
 );
 check(
   '抽屉打开后左侧分区可命中',
@@ -1207,18 +1383,37 @@ check(
   `bar=${settings.reopened.barInjected}, mobileClass=${settings.reopened.mobileClass}, rect=${formatRect(settings.reopened.panelRect)}`,
 );
 check(
-  'DSH 重渲染换掉 nav 后抽屉仍可开、点分区仍能收起（缓存失效重解析）',
+  'DSH 重渲染换掉 nav 后：抽屉可开、点分区被放行并切到对应分区（缓存失效重解析）',
   settings.navReplaced.opened
     && settings.navReplaced.closed
+    && settings.navReplaced.sectionAfterReplace === '2'
     && Math.abs(settings.navReplaced.navWidth - 320) <= 1,
-  `opened=${settings.navReplaced.opened}, closed=${settings.navReplaced.closed}, navWidth=${settings.navReplaced.navWidth}`,
+  `opened=${settings.navReplaced.opened}, closed=${settings.navReplaced.closed}, section=${settings.navReplaced.sectionAfterReplace}, navWidth=${settings.navReplaced.navWidth}`,
 );
 check(
-  '手机栏被 DSH 重渲染移除后自动补装',
+  '手机栏/遮罩被 DSH 重渲染移除后自动补装',
   settings.barReinjected.barInjected
+    && settings.barReinjected.backdropInjected
     && settings.barReinjected.mobileClass
     && settings.barReinjected.backPresent,
-  `bar=${settings.barReinjected.barInjected}, mobileClass=${settings.barReinjected.mobileClass}, back=${settings.barReinjected.backPresent}`,
+  `bar=${settings.barReinjected.barInjected}, backdrop=${settings.barReinjected.backdropInjected}, mobileClass=${settings.barReinjected.mobileClass}, back=${settings.barReinjected.backPresent}`,
+);
+check(
+  '设置关闭后鲸鱼入口恢复显示',
+  settings.closed.fabDisplay !== 'none' && settings.closed.fabDisplay !== null,
+  `fab display=${settings.closed.fabDisplay}`,
+);
+check(
+  '设置打开期间流式 DOM 变更不触发全量 Document.querySelector（稳态零查询）',
+  settings.settingsChurnQueryDelta === 0,
+  `querySelector×${settings.settingsChurnQueryDelta} / 20 batches`,
+);
+check(
+  'DSH 重渲染换掉 _header 后，左上返回仍能退出设置（close 缓存失效重解析）',
+  settings.headerReplaced.clicked
+    && !settings.headerReplaced.overlayConnected
+    && !settings.headerReplaced.barFound,
+  `clicked=${settings.headerReplaced.clicked}, overlay=${settings.headerReplaced.overlayConnected}, bar=${settings.headerReplaced.barFound}`,
 );
 check(
   '宽屏（1000×800）恢复 DSH 原生设置布局（无手机栏/抽屉）',
