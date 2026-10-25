@@ -22,7 +22,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 
 ---
 
-## 当前状态（2026-10-24）
+## 当前状态（2026-10-25）
 
 | 项 | 状态 |
 |---|---|
@@ -30,8 +30,10 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | iOS 原生 mTLS WebView（Secure Enclave 设备证书） | ✅ 真机通过 |
 | 配对 / 设备证书 / 撤销 / 审计 / App 锁 | ✅ 已实现 |
 | Android 源码（mTLS WebView / CSR / Keystore） | ✅ 源码完成；⏳ 未在有 Android SDK 的环境编译 |
-| iOS/Android 推送 | ✅ JS 接入；⏳ 生产 APNs/EAS 凭据待配置 |
-| 手机侧栏抽屉（`?dsh_mobile=1`） | ✅ 已实现；会话点击保持 DSH 原生行为（不自动补点击） |
+| iOS 推送 | ✅ 自托管 APNs 直连（APNs device token + aps-environment；通知取会话标题+助手回复摘要；点击通知跳对应会话，2026-10-25 真机验证；App 锁屏时按系统通知显示）；Android FCM 未接入 |
+| 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，5s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
+| 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
+| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层（`src/lib/mobileWebShell.ts`；`npm run check:shell` 无头 Chrome 回归） |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
 
 > 原生构建需要 macOS + Xcode；本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
@@ -350,7 +352,7 @@ $ node <protocol.ts 编译后的 Node 自测>
 - [ ] iOS 设备控制台（Xcode → Window → Devices and Simulators → Open Console，或 Xcode 调试日志）能看到客户端证书挑战；主机侧 audit 记录本次访问。
 - [ ] 页面内普通外链在系统浏览器打开；刷新按钮/下拉刷新可用；返回键行为正常。
 - [ ] 重新配对：清除本地凭据 → 回到扫码页；旧证书在主机侧可撤销（桌面 UI）。
-- [ ] （下一里程碑）推送 token 经 mTLS 注册到 `POST /__dsh_remote/push-token`。
+- [ ] 推送 token（`provider=apns` + `environment`）经 mTLS 注册到 `POST /__dsh_remote/push-token`（需主机先配置 APNs 私钥）。
 
 ---
 
@@ -360,11 +362,11 @@ $ node <protocol.ts 编译后的 Node 自测>
 - 原生 CSR 与 Secure Enclave / AndroidKeyStore 密钥生成（`generateCsr` 目前抛未实现异常）。
 - 证书自动续期（默认 30 天，可配 7–90 天）与到期提醒。
 - 可选：pin TLS 叶证书 SPKI（注意 `hostfp` 是**主机身份公钥**指纹，不是 TLS 证书指纹，二者不能混用）。
-- App 锁（`expo-local-authentication` 已安装，未接 UI）。
+- App 锁：已接入生物识别（`expo-local-authentication`），交互/超时行为待真机验收。
 - POC 的 `importP12` 是调试入口，不属于正式身份体系。
 
 **功能**
-- 推送设置与 token 注册（依赖原生 mTLS 传输；`registerPushToken` 目前明确抛 `unsupported`）。
+- 推送：iOS 自托管 APNs 已接入（APNs device token + environment，经原生 mTLS 注册；前台应用内通知；通知点击跳会话已 2026-10-25 真机验证，其余验收项见 `docs/ACCEPTANCE.md`）；Android FCM 未接入。
 - 设备列表/撤销：管理 API 只对本机浏览器开放且远程代理 deny，POC 在桌面端操作；后续可加 mTLS 隧道接口或深链。
 - 多主机切换（一期单主机）；会话列表/审批等原生页面（App 审核 4.2 的长期对策）。
 - iOS 下拉刷新：`react-native-webview` 无 iOS 下拉刷新，当前用顶部刷新按钮；原生 WebView 落地时可补。

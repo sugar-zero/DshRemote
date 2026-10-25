@@ -4,7 +4,10 @@
  * 目标（用户反馈）：
  *  1. 桌面侧栏在手机上变成「负一屏」抽屉：默认隐藏，左侧悬浮按钮/边缘滑动打开；
  *  2. 点击会话、功能、设置等任意侧栏项后自动收起抽屉，避免"点两次"；
- *  3. 抽屉以覆盖层出现，不挤压内容区宽度。
+ *  3. 抽屉以覆盖层出现，不挤压内容区宽度；
+ *  4. 右侧栏（DSH sidebar-right 插件）在窄屏下由 DSH 自动以全屏呈现：打开时覆盖
+ *     整个 WebView 视口，收起时不可见且不拦截聊天手势（之前整列 display:none，
+ *     header 角落的展开按钮点了没反应）。
  *
  * 关键：脚本通过 WKUserScript `.atDocumentStart` 注入，执行时 document.body 还不存在，
  * 因此必须等 DOMContentLoaded / body 可用后再初始化（之前版本在这里静默失败）。
@@ -17,6 +20,59 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
 (function () {
   if (window.__dshMobileShellInstalled) return;
   window.__dshMobileShellInstalled = true;
+
+  // --- DSH WebSocket liveness bridge -----------------------------------
+  // The WebView is kept mounted for speed. When the host restarts, the DSH
+  // page's /api/remote.mux WebSocket dies and the old page can stay black.
+  // Report open/close to native so the shell can reload the page once.
+  // No credentials or message contents are sent; only the socket URL/state.
+  function notifyMtlsBridge(payload) {
+    try {
+      var text = JSON.stringify(payload);
+      if (window.dshMtlsBridge && typeof window.dshMtlsBridge.postMessage === 'function') {
+        window.dshMtlsBridge.postMessage(text);
+      } else if (window.webkit && window.webkit.messageHandlers
+        && window.webkit.messageHandlers.dshMtlsBridge) {
+        window.webkit.messageHandlers.dshMtlsBridge.postMessage(text);
+      }
+    } catch (error) {
+      // Bridge is optional (plain WebView / Expo Go).
+    }
+  }
+  (function installWebSocketMonitor() {
+    if (window.__dshWsMonitorInstalled) return;
+    window.__dshWsMonitorInstalled = true;
+    var NativeWebSocket = window.WebSocket;
+    if (!NativeWebSocket) return;
+
+    function WrappedWebSocket(url, protocols) {
+      var socket = protocols === undefined
+        ? new NativeWebSocket(url)
+        : new NativeWebSocket(url, protocols);
+      try {
+        socket.addEventListener('open', function () {
+          notifyMtlsBridge({ type: 'dsh-ws-open', url: String(url) });
+        });
+        socket.addEventListener('close', function (event) {
+          notifyMtlsBridge({
+            type: 'dsh-ws-close',
+            url: String(url),
+            code: event && event.code,
+            reason: (event && event.reason) || ''
+          });
+        });
+      } catch (error) {
+        // Older WebViews may not support addEventListener on WebSocket.
+      }
+      return socket;
+    }
+    WrappedWebSocket.prototype = NativeWebSocket.prototype;
+    WrappedWebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+    WrappedWebSocket.OPEN = NativeWebSocket.OPEN;
+    WrappedWebSocket.CLOSING = NativeWebSocket.CLOSING;
+    WrappedWebSocket.CLOSED = NativeWebSocket.CLOSED;
+    window.WebSocket = WrappedWebSocket;
+  })();
 
   var DRAWER_CLASS = 'dsh-mobile-drawer-open';
   var STYLE_ID = 'dsh-mobile-shell-style';
@@ -49,7 +105,18 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       // 导致 center 落到 56px 的第一列（内容被挤成竖排）。手机端直接改成单列布局。
       '  [class*="_frame"] { display: block !important; }',
       '  [class*="_centerCol"] { width: 100% !important; height: 100% !important; }',
-      '  [class*="_rightbarCol"] { display: none !important; }',
+      // 右栏（@deepseek-ai/dsh-client-ui-sidebar-right）。frame 宽度 < 768px 时 DSH 让右栏
+      // 自动全屏：面板本身是 position:absolute; top:0; bottom:0; right:0 + inline width:100vw，
+      // 挂在 _rightbarCol 里。原来这里整列 display:none，于是会话 header 角落的「展开右栏」
+      // 按钮点击后只会让按钮自己消失（expanded 后 ExpandButton 返回 null），全屏面板却被藏住
+      // ——用户看到的就是“点了没反应/像开到了右边看不见”。
+      // 窄屏下让列不生成盒子（display:contents）：面板的包含块上移到 _frame
+      // （position:relative; height:100%），DSH 原生 fullscreen 几何（absolute + 100vw）
+      // 正好铺满 WebView；收起态由 DSH 自己把内容 translateX(100vw) + visibility:hidden，
+      // 面板自身 pointer-events:none，不拦截聊天手势。
+      // 不要在这里加 z-index / transform / filter：会盖住 DSH 弹窗（body portal），或把
+      // dockkit 的 position:fixed 浮动窗困在面板里。
+      '  [class*="_rightbarCol"] { display: contents !important; }',
       '  .dsh-mobile-backdrop {',
       '    position: fixed; inset: 0; z-index: 8999; background: transparent;',
       '    opacity: 0; pointer-events: none; transition: opacity 200ms ease;',

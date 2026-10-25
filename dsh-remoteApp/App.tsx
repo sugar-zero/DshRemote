@@ -25,16 +25,37 @@ import { isAppLockEnabled } from './src/lib/appLock';
 import { WebViewScreen } from './src/screens/WebViewScreen';
 import { DevicesScreen } from './src/screens/DevicesScreen';
 import { HomeScreen } from './src/screens/HomeScreen';
+import { SettingsScreen } from './src/screens/SettingsScreen';
 import {
   clearCertificate,
   loadConnections,
   removeConnection,
   type StoredConnection,
 } from './src/lib/store';
-import { configureNotificationHandler, enablePushForConnection } from './src/lib/notifications';
+import {
+  configureNotificationHandler,
+  enablePushForConnection,
+  setForegroundCurrentSession,
+  setForegroundInAppEnabled,
+  setForegroundLocked,
+} from './src/lib/notifications';
+import { isInAppNotificationsEnabled, setInAppNotificationsEnabled } from './src/lib/settings';
+import { InAppNotificationBanner, type InAppNotificationMessage } from './src/components/InAppNotificationBanner';
 import { colors, spacing, typography } from './src/theme';
 
-type Route = 'loading' | 'home' | 'pairing' | 'webview' | 'devices';
+type Route = 'loading' | 'home' | 'pairing' | 'webview' | 'devices' | 'settings';
+
+/** APNs payload 的 body 字典（host/sessionId 由 host 插件附带，用于点通知跳会话）。 */
+function notificationDataOf(data: unknown): { sessionId?: string; host?: string } {
+  if (!data || typeof data !== 'object') return {};
+  const record = data as Record<string, unknown>;
+  return {
+    ...(typeof record.sessionId === 'string' && record.sessionId !== ''
+      ? { sessionId: record.sessionId }
+      : {}),
+    ...(typeof record.host === 'string' && record.host !== '' ? { host: record.host } : {}),
+  };
+}
 
 export default function App() {
   const [route, setRoute] = useState<Route>('loading');
@@ -42,6 +63,23 @@ export default function App() {
   const [connection, setConnection] = useState<StoredConnection | null>(null);
   const [locked, setLocked] = useState(false);
   const lockEnabledRef = useRef(false);
+  const lockedRef = useRef(false);
+  const [inAppEnabled, setInAppEnabled] = useState(true);
+  const inAppEnabledRef = useRef(true);
+  const [inAppMessage, setInAppMessage] = useState<InAppNotificationMessage | null>(null);
+  const [settingsReturnRoute, setSettingsReturnRoute] = useState<Route>('home');
+  const [webViewReloadToken, setWebViewReloadToken] = useState(0);
+  /** 点击推送后要打开的会话；由 WebViewScreen 在页面就绪后注入执行并回调清空。 */
+  const [openSessionRequest, setOpenSessionRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
+  /** 通知点击后是否已处理过（避免 listener 与冷启动 API 重复处理同一次点击）。 */
+  const lastHandledNotificationIdRef = useRef<string | null>(null);
+  const coldStartHandledRef = useRef(false);
+  /** 供异步通知回调读取的最新导航/连接状态。 */
+  const routeRef = useRef<Route>('loading');
+  const connectionsRef = useRef<StoredConnection[]>([]);
+  const connectionRef = useRef<StoredConnection | null>(null);
+  /** host 插件上报的当前会话（用于前台通知的“当前会话不弹卡片”判断）。 */
+  const currentSessionRef = useRef<{ host: string; sessionId: string } | null>(null);
 
   const refreshConnections = useCallback(async () => {
     const stored = await loadConnections();
@@ -67,6 +105,66 @@ export default function App() {
     };
   }, []);
 
+  useEffect(() => {
+    routeRef.current = route;
+    // 离开 WebView（Home/设置/设备页）后不再把旧会话当成「当前正在查看」：
+    // 否则前台推送会被通知 handler 误判为当前会话而抑制掉系统横幅。
+    // 重新进入主机时由 WebViewScreen 把缓存的当前会话补报回来。
+    if (route !== 'webview') {
+      currentSessionRef.current = null;
+      setForegroundCurrentSession(null);
+    }
+  }, [route]);
+
+  useEffect(() => {
+    connectionsRef.current = connections;
+  }, [connections]);
+
+  useEffect(() => {
+    connectionRef.current = connection;
+    // 切换主机后缓存的当前会话不再属于这个连接。
+    currentSessionRef.current = null;
+    setForegroundCurrentSession(null);
+  }, [connection]);
+
+  /**
+   * 点击推送（系统横幅或应用内卡片）→ 切到对应已配对主机并打开对应会话。
+   * `host` 与 App 的 connection.host 同格式；找不到目标主机时保持当前主机。
+   */
+  const openNotificationSession = useCallback((data: { sessionId?: string; host?: string }): boolean => {
+    const sessionId = typeof data.sessionId === 'string' ? data.sessionId : '';
+    if (!sessionId) return false;
+    const list = connectionsRef.current;
+    const host = typeof data.host === 'string' ? data.host : '';
+    let target: StoredConnection | null = null;
+    if (host) {
+      target = list.find((item) => item.host === host) ?? null;
+      if (!target && connectionRef.current?.host === host) target = connectionRef.current ?? null;
+      // 单主机时允许 host 文本格式差异（例如端口展示方式不同）兜底。
+      if (!target && list.length === 1) target = list[0] ?? null;
+    } else {
+      target = connectionRef.current ?? (list.length === 1 ? list[0] ?? null : null);
+    }
+    if (!target) return false;
+    setConnection(target);
+    setRoute('webview');
+    setOpenSessionRequest({ sessionId, nonce: Date.now() });
+    return true;
+  }, []);
+
+  const handleNotificationResponse = useCallback((response: Notifications.NotificationResponse) => {
+    const notificationId = response.notification.request.identifier;
+    if (notificationId && lastHandledNotificationIdRef.current === notificationId) return;
+    const opened = openNotificationSession(notificationDataOf(response.notification.request.content.data));
+    // 连接列表可能还没加载（冷启动时监听会先触发）：先不标记，交给
+    // getLastNotificationResponseAsync 在加载完成后补处理。
+    if (opened) {
+      if (notificationId) lastHandledNotificationIdRef.current = notificationId;
+      // 清掉原生记录的“最后一次点击”，避免下次正常冷启动时重复跳转。
+      void Notifications.clearLastNotificationResponseAsync().catch(() => {});
+    }
+  }, [openNotificationSession]);
+
   const handlePaired = useCallback((paired: StoredConnection) => {
     setConnection(paired);
     void refreshConnections();
@@ -87,6 +185,61 @@ export default function App() {
   useEffect(() => {
     configureNotificationHandler();
   }, []);
+
+  // 应用内通知开关（前台推送的展示方式）；默认开启。
+  useEffect(() => {
+    let cancelled = false;
+    isInAppNotificationsEnabled()
+      .then((enabled) => {
+        if (cancelled) return;
+        setInAppEnabled(enabled);
+        inAppEnabledRef.current = enabled;
+        setForegroundInAppEnabled(enabled);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  // 前台推送：系统横幅已被 handler 抑制，这里转成 App 内卡片。
+  // 如果推送属于当前正在查看的会话，则完全不再提示（DSH 页面本身会更新）。
+  useEffect(() => {
+    const subscription = Notifications.addNotificationReceivedListener((notification) => {
+      if (!inAppEnabledRef.current) return;
+      if (AppState.currentState !== 'active') return;
+      if (lockedRef.current) return;
+      const content = notification.request.content;
+      const data = notificationDataOf(content.data);
+      const current = currentSessionRef.current;
+      if (data.sessionId && current && current.sessionId === data.sessionId
+        && (!data.host || !current.host || data.host === current.host)
+        && routeRef.current === 'webview') {
+        return;
+      }
+      setInAppMessage({
+        id: notification.request.identifier,
+        title: content.title ?? 'DSH Remote',
+        body: content.body ?? '',
+        ...data,
+      });
+    });
+    return () => subscription.remove();
+  }, []);
+
+  // 应用内通知卡片 5 秒自动消失；锁屏时立即清除，避免内容泄露。
+  useEffect(() => {
+    if (!inAppMessage) return undefined;
+    const timer = setTimeout(() => setInAppMessage(null), 5000);
+    return () => clearTimeout(timer);
+  }, [inAppMessage]);
+
+  useEffect(() => {
+    lockedRef.current = locked;
+    // 锁屏时通知 handler 需要知道：LockScreen 在前台时按后台处理（允许系统通知）。
+    setForegroundLocked(locked);
+    if (locked) setInAppMessage(null);
+  }, [locked]);
 
   // App 锁：启动/回前台时按设置要求生物识别；WebView 常驻但被 LockScreen 覆盖。
   useEffect(() => {
@@ -123,18 +276,63 @@ export default function App() {
     enablePushForConnection(connection)
       .then((result) => {
         if (cancelled) return;
-        console.log(`[dsh-remote] push ${result.ok ? 'registered' : `unavailable: ${result.reason ?? 'unknown'}`}`);
+        const environment = result.environment ? ` (apns/${result.environment})` : ' (apns)';
+        console.log(`[dsh-remote] push ${result.ok ? `registered${environment}` : `unavailable: ${result.reason ?? 'unknown'}`}`);
       })
       .catch((error: unknown) => {
         if (!cancelled) console.log(`[dsh-remote] push setup failed: ${String(error)}`);
       });
-    // 点击通知时当前设计保持 WebView 常驻；后续可在此聚焦并刷新。
-    const subscription = Notifications.addNotificationResponseReceivedListener(() => {});
     return () => {
       cancelled = true;
-      subscription.remove();
     };
   }, [connection]);
+
+  // 系统通知点击：从 payload 的 body 字典取出 host/sessionId，切主机并打开对应会话。
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+    return () => subscription.remove();
+  }, [handleNotificationResponse]);
+
+  // 冷启动：App 被通知拉起时，等连接列表加载完再处理“最后一次通知点击”。
+  useEffect(() => {
+    if (route === 'loading' || coldStartHandledRef.current) return;
+    coldStartHandledRef.current = true;
+    void (async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (!response) return;
+        await Notifications.clearLastNotificationResponseAsync();
+        handleNotificationResponse(response);
+      } catch {
+        // 冷启动跳转失败不应影响正常进入 App。
+      }
+    })();
+  }, [route, handleNotificationResponse]);
+
+  const handleOpenSettings = useCallback(() => {
+    setSettingsReturnRoute(route === 'webview' ? 'webview' : 'home');
+    setRoute('settings');
+  }, [route]);
+
+  const handleToggleInAppNotifications = useCallback((enabled: boolean) => {
+    setInAppEnabled(enabled);
+    inAppEnabledRef.current = enabled;
+    setForegroundInAppEnabled(enabled);
+    void setInAppNotificationsEnabled(enabled);
+  }, []);
+
+  const handleCacheCleared = useCallback(() => {
+    setWebViewReloadToken((token) => token + 1);
+  }, []);
+
+  const handleOpenSessionHandled = useCallback((nonce: number) => {
+    setOpenSessionRequest((current) => (current && current.nonce === nonce ? null : current));
+  }, []);
+
+  const handleCurrentSession = useCallback((info: { host: string; sessionId: string } | null) => {
+    currentSessionRef.current = info;
+    setForegroundCurrentSession(info);
+  }, []);
 
   const handleCloseWebView = useCallback(() => {
     // 左上角返回 → 主机列表（支持多台已配对主机）。
@@ -167,6 +365,7 @@ export default function App() {
             onOpen={handleOpenConnection}
             onOpenDevices={handleOpenDevices}
             onPairNew={() => setRoute('pairing')}
+            onOpenSettings={handleOpenSettings}
           />
         );
       case 'pairing':
@@ -179,6 +378,17 @@ export default function App() {
       case 'webview':
         // WebView is rendered as a persistent layer below; nothing to overlay.
         return null;
+      case 'settings':
+        return (
+          <SettingsScreen
+            connection={connection}
+            inAppNotificationsEnabled={inAppEnabled}
+            onToggleInAppNotifications={handleToggleInAppNotifications}
+            onCacheCleared={handleCacheCleared}
+            onOpenDevices={() => setRoute('devices')}
+            onClose={() => setRoute(settingsReturnRoute)}
+          />
+        );
       case 'devices':
         return connection ? (
           <DevicesScreen
@@ -193,6 +403,7 @@ export default function App() {
             onOpen={handleOpenConnection}
             onOpenDevices={handleOpenDevices}
             onPairNew={() => setRoute('pairing')}
+            onOpenSettings={handleOpenSettings}
           />
         );
     }
@@ -218,9 +429,29 @@ export default function App() {
               key={connection.host}
               connection={connection}
               onClose={handleCloseWebView}
-              onOpenDevices={() => setRoute('devices')}
+              onOpenSettings={handleOpenSettings}
+              reloadToken={webViewReloadToken}
+              isVisible={route === 'webview' && !locked}
+              openSessionRequest={openSessionRequest}
+              onOpenSessionHandled={handleOpenSessionHandled}
+              onCurrentSession={handleCurrentSession}
             />
           </View>
+        ) : null}
+        {!locked ? (
+          <InAppNotificationBanner
+            notification={inAppMessage}
+            onDismiss={() => setInAppMessage(null)}
+            onPress={inAppMessage ? () => {
+              const message = inAppMessage;
+              setInAppMessage(null);
+              if (message.sessionId) {
+                openNotificationSession({ sessionId: message.sessionId, host: message.host });
+              } else if (connection) {
+                setRoute('webview');
+              }
+            } : undefined}
+          />
         ) : null}
         {locked ? <LockScreen onUnlocked={() => setLocked(false)} /> : route !== 'webview' ? renderRoute() : null}
       </View>

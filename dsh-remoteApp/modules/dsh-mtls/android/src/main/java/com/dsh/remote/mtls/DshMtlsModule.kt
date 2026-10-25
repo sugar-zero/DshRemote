@@ -22,6 +22,10 @@
 package com.dsh.remote.mtls
 
 import android.content.Intent
+import android.webkit.CookieManager
+import android.webkit.WebStorage
+import android.webkit.WebView
+import android.webkit.WebViewDatabase
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
@@ -107,6 +111,52 @@ class DshMtlsModule : Module() {
 
     AsyncFunction("getDiagnostics") {
       DshMtlsIdentityStore.diagnostics(appContext.reactContext)
+    }
+
+    // MARK: - WebView bridge / cache
+
+    /// 在 UI 线程执行一段 JS（App 点击推送后用它打开对应会话）。
+    AsyncFunction("evaluateJavaScript") { script: String ->
+      val view = DshMtlsWebView.activeView?.get()
+      if (view == null) {
+        false
+      } else {
+        view.evaluateJavaScript(script)
+        true
+      }
+    }
+
+    /// 清理 WebView 的 Cookie / 本地存储 / 表单数据 / HTTP 认证缓存，并清空 HTTP 缓存
+    /// （磁盘 + 内存）。`WebView.clearCache(true)` 是 app 级 API（清除所有 WebView 实例的缓存），
+    /// 但必须在 UI 线程调用，所以这里 post 到活跃 WebView 的主线程队列。
+    /// 没有活跃 WebView 时也能清理 Cookie/存储（返回 true）。
+    AsyncFunction("clearWebCache") {
+      CookieManager.getInstance().removeAllCookies(null)
+      CookieManager.getInstance().flush()
+      WebStorage.getInstance().deleteAllData()
+      appContext.reactContext?.let { context ->
+        WebViewDatabase.getInstance(context).clearHttpAuthUsernamePassword()
+      }
+      // DshMtlsWebView（ExpoView）内部持有唯一的 android.webkit.WebView 子 View；
+      // 拿到它只为在 UI 线程调用 app 级的 clearCache/clearFormData（两者都作用于全部 WebView）。
+      // 包一层 try/catch：渲染进程已回收/WebView 不可用时不要把异常抛到 UI 线程。
+      DshMtlsWebView.activeView?.get()?.let { hostView ->
+        hostView.post {
+          for (index in 0 until hostView.childCount) {
+            val child = hostView.getChildAt(index)
+            if (child is WebView) {
+              try {
+                child.clearCache(true)
+                child.clearFormData()
+              } catch (_: Exception) {
+                /* WebView 已不可用：Cookie/存储已清理，HTTP 缓存下次重建即可 */
+              }
+              break
+            }
+          }
+        }
+      }
+      true
     }
 
     // MARK: - Custom mTLS-aware WebView

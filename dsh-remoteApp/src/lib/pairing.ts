@@ -702,23 +702,30 @@ export async function persistPairedDevice(params: {
 }
 
 /**
- * Register the Expo push token with the host (`POST /__dsh_remote/push-token`).
- * Requires mTLS, therefore requires the native transport (next milestone).
+ * Register a device push token with the host (`POST /__dsh_remote/push-token`).
+ *
+ * 自托管 APNs（默认）：provider='apns' + 原始 APNs device token + aps-environment；
+ * 主机插件用 APNs Auth Key 直接发送，不经过 relay / Expo。
+ * 旧版 Expo 通道仍保留（provider='expo'）。
+ * Requires mTLS, therefore requires the native transport.
  */
 export async function registerPushToken(options: {
   host: string;
   token: string;
   provider?: PushTokenRequestBody['provider'];
+  environment?: PushTokenRequestBody['environment'];
   /** 注入原生 mTLS 传输的测试替身；缺省走 dsh-mtls 原生模块。 */
   requestWithCert?: typeof requestWithClientCert;
   signal?: AbortSignal;
 }): Promise<void> {
   const request = options.requestWithCert ?? requestWithClientCert;
+  const body: PushTokenRequestBody = { provider: options.provider ?? 'expo', token: options.token };
+  if (options.environment) body.environment = options.environment;
   const response = await request({
     url: pushTokenUrl(options.host),
     method: 'POST',
     headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ provider: options.provider ?? 'expo', token: options.token }),
+    body: JSON.stringify(body),
   });
   if (response.status !== 200) {
     throw new PairingError('http', `推送 token 注册失败：HTTP ${response.status}`, { status: response.status });

@@ -15,6 +15,7 @@
 //   requestWithClientCert(options)       — 用设备身份发 HTTPS 请求（push token / pair status）
 //   getDiagnostics()                    — label / presence / subject / expiry
 
+import Dispatch
 import ExpoModulesCore
 import WebKit
 
@@ -74,6 +75,43 @@ public final class DSHMTLSModule: Module {
 
     AsyncFunction("getDiagnostics") { () -> [String: Any?] in
       DSHMTLSIdentityStore.shared.diagnostics(label: nil)
+    }
+
+    // MARK: - WebView bridge / cache
+
+    /// 把一段 JS 注入当前 mTLS WebView（App 点击推送后用它打开对应会话）。
+    AsyncFunction("evaluateJavaScript") { (script: String) -> Bool in
+      guard let view = DshMtlsWebView.activeView else { return false }
+      view.evaluateJavaScript(script)
+      return true
+    }
+
+    /// 清理 WKWebView 的持久化缓存 / Cookie / DOM 存储，并清空 URLCache。
+    /// 设置页“清理缓存”调用；完成后由 JS 侧重载 WebView。
+    /// 用 Promise 在 removeData 完成回调后 resolve(true)，不再阻塞 expo-modules-core 的
+    /// 全局 AsyncFunction 队列；10s 兜底 resolve(false)，避免设置页一直停在 busy 状态。
+    AsyncFunction("clearWebCache") { (promise: Promise) in
+      // removeData 的完成回调与超时兜底都回到 main queue；settled 只在 main queue 读写。
+      DispatchQueue.main.async {
+        var settled = false
+        let finish: (Bool) -> Void = { result in
+          guard !settled else { return }
+          settled = true
+          promise.resolve(result)
+        }
+        WKWebsiteDataStore.default().removeData(
+          ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+          modifiedSince: .distantPast
+        ) {
+          DispatchQueue.main.async {
+            URLCache.shared.removeAllCachedResponses()
+            finish(true)
+          }
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10) {
+          finish(false)
+        }
+      }
     }
 
     // MARK: - Custom mTLS-aware WebView
