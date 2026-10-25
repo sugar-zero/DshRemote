@@ -8,6 +8,10 @@ import {
   encodeFrame,
 } from 'dsh-remote-protocol';
 
+/** 主机→relay 方向 WS 发送队列水位：超过就暂停本地 socket 读取，防止无限堆积。 */
+const SEND_HIGH_WATER_BYTES = 2 * 1024 * 1024;
+const SEND_LOW_WATER_BYTES = 512 * 1024;
+
 /**
  * 主机 → relay 主动外联连接器（无入站端口）。
  * - JSON text frame 走控制面（hello/heartbeat/host.open/host.opened/host.close）
@@ -34,6 +38,13 @@ export class RelayConnector {
     this.retryMs = 1000;
     this.heartbeatTimer = undefined;
     this.retryTimer = undefined;
+    /** @type {Array<{ frame: Buffer, socket: import('node:net').Socket | undefined }>} 有序待发队列 */
+    this.sendQueue = [];
+    this.sendQueueBytes = 0;
+    this.flushScheduled = false;
+    this.flushTimer = undefined;
+    /** @type {Set<import('node:net').Socket>} 因发送队列过高而被暂停的本地 socket */
+    this.pausedSockets = new Set();
   }
 
   controlUrl() {
@@ -54,6 +65,7 @@ export class RelayConnector {
     this.closed = true;
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.retryTimer);
+    this.#resetSendQueue();
     this.#closeAllStreams('connector-stopped');
     try { this.ws?.close(); } catch { /* ignore */ }
     this.ws = undefined;
@@ -132,6 +144,7 @@ export class RelayConnector {
       this.ws = undefined;
       this.connected = false;
       clearInterval(this.heartbeatTimer);
+      this.#resetSendQueue();
       this.#closeAllStreams('relay-disconnected');
       if (!this.closed) this.#scheduleReconnect();
     });
@@ -191,7 +204,7 @@ export class RelayConnector {
       this.#send({ t: RELAY_MSG.HOST_OPENED, streamId });
     });
     socket.on('data', (chunk) => {
-      this.#sendBinary(encodeFrame(FRAME_TYPE.DATA, streamId, chunk));
+      this.#sendBinary(encodeFrame(FRAME_TYPE.DATA, streamId, chunk), socket);
     });
     socket.on('error', () => {
       this.#sendBinary(encodeFrame(FRAME_TYPE.CLOSE, streamId));
@@ -235,12 +248,94 @@ export class RelayConnector {
     }
   }
 
-  #sendBinary(buffer) {
+  /**
+   * 发送一条二进制帧（数据/CLOSE），**严格保序**。
+   *
+   * 旧实现遇到 `bufferedAmount > 2MiB` 时会把当前帧 setTimeout 延后重发，
+   * 而更晚到达的帧可能先发出去 —— 帧顺序被打乱 = TLS 密文字节乱序，
+   * 慢速链路上大 payload（会话历史快照）会因此把整条隧道搞坏。
+   * 现在统一走有序队列：只按 FIFO 出队；队列积压时暂停对应本地 socket，
+   * 水位回落后再恢复，既保序也不会无限占内存。
+   *
+   * @param {Buffer} buffer 已编码的流帧
+   * @param {import('node:net').Socket} [sourceSocket] 该帧来源的本地 socket（可选，用于背压）
+   */
+  #sendBinary(buffer, sourceSocket) {
     if (this.ws?.readyState !== 1) return;
-    if (this.ws.bufferedAmount > 2 * 1024 * 1024) {
-      setTimeout(() => this.#sendBinary(buffer), 50);
-      return;
+    this.sendQueue.push({ frame: buffer, socket: sourceSocket });
+    this.sendQueueBytes += buffer.length;
+    if (sourceSocket !== undefined && this.sendQueueBytes > SEND_HIGH_WATER_BYTES) {
+      this.#pauseSource(sourceSocket);
     }
-    this.ws.send(new Uint8Array(buffer));
+    this.#flushSendQueue();
+  }
+
+  /** 队列积压时暂停本地 socket 读取（避免内存无限增长）。 */
+  #pauseSource(socket) {
+    if (!socket || socket.destroyed || socket.isPaused()) return;
+    try {
+      socket.pause();
+      this.pausedSockets.add(socket);
+    } catch { /* ignore */ }
+  }
+
+  /** 水位回落后恢复被暂停的本地 socket。 */
+  #resumePausedSockets() {
+    if (this.pausedSockets.size === 0) return;
+    for (const socket of this.pausedSockets) {
+      if (!socket.destroyed) {
+        try { socket.resume(); } catch { /* ignore */ }
+      }
+    }
+    this.pausedSockets.clear();
+  }
+
+  /** 连接断开/停止时清空发送队列与定时器（本地 socket 由 #closeAllStreams 处理）。 */
+  #resetSendQueue() {
+    this.sendQueue = [];
+    this.sendQueueBytes = 0;
+    clearTimeout(this.flushTimer);
+    this.flushTimer = undefined;
+    this.flushScheduled = false;
+    this.#resumePausedSockets();
+  }
+
+  /** 按 FIFO 发送队列头部帧，受 WS 缓冲水位与回调驱动；绝不乱序、绝不丢帧。 */
+  #flushSendQueue() {
+    if (this.flushScheduled) return;
+    this.flushScheduled = true;
+    setImmediate(() => {
+      this.flushScheduled = false;
+      const ws = this.ws;
+      if (!ws || ws.readyState !== 1) return;
+      while (this.sendQueue.length > 0 && ws.bufferedAmount < SEND_HIGH_WATER_BYTES) {
+        const entry = this.sendQueue.shift();
+        if (entry === undefined) break;
+        this.sendQueueBytes -= entry.frame.length;
+        try {
+          ws.send(new Uint8Array(entry.frame), { binary: true }, (error) => {
+            if (error) this.log(`relay binary send failed: ${error.message}`);
+            if (this.sendQueue.length > 0) this.#flushSendQueue();
+          });
+        } catch (error) {
+          this.log(`relay binary send threw: ${error?.message ?? error}`);
+          this.sendQueue.length = 0;
+          this.sendQueueBytes = 0;
+          break;
+        }
+        if (ws.bufferedAmount >= SEND_HIGH_WATER_BYTES) break;
+      }
+      if (this.sendQueue.length > 0) {
+        if (this.flushTimer === undefined) {
+          this.flushTimer = setTimeout(() => {
+            this.flushTimer = undefined;
+            this.#flushSendQueue();
+          }, 10);
+          this.flushTimer.unref?.();
+        }
+        return;
+      }
+      if (this.sendQueueBytes <= SEND_LOW_WATER_BYTES) this.#resumePausedSockets();
+    });
   }
 }
