@@ -14,7 +14,7 @@ version = '0.1.6'
 android {
   namespace 'com.dsh.remote.mtls'
   defaultConfig {
-    versionCode 7
-    versionName '0.1.6'
+    versionCode 9
+    versionName '0.1.7'
   }
 }
