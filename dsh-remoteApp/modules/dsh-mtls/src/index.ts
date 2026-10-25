@@ -106,6 +106,10 @@ interface NativeDshMtlsModule {
     headers?: Record<string, string>;
     body?: string;
   }): Promise<{ status: number; headers?: Record<string, string>; body: string }>;
+  /** 清理 WebView 持久化缓存 / Cookie / DOM 存储（设置页“清理缓存”）。 */
+  clearWebCache(): Promise<boolean>;
+  /** 在当前 mTLS WebView 里执行一段 JS（点推送后打开对应会话）。 */
+  evaluateJavaScript(script: string): Promise<boolean>;
 }
 
 const nativeModule = requireOptionalNativeModule<NativeDshMtlsModule>(DSH_MTLS_MODULE_NAME);
@@ -193,6 +197,22 @@ export async function requestWithClientCert(options: {
     headers: options.headers,
     body: options.body,
   });
+}
+
+/** 清理 WebView 缓存/Cookie/本地存储；用于设置页“清理缓存”（清理后调用方应重载 WebView）。 */
+export async function clearWebCache(): Promise<boolean> {
+  const module = requireModule();
+  if (typeof module.clearWebCache !== 'function') {
+    throw new DshMtlsUnavailableError('当前构建不支持 clearWebCache（需要重新构建 App）。');
+  }
+  return module.clearWebCache();
+}
+
+/** 在当前 mTLS WebView 里执行一段 JS；原生视图不在时返回 false。 */
+export async function evaluateJavaScript(script: string): Promise<boolean> {
+  const module = requireModule();
+  if (typeof module.evaluateJavaScript !== 'function') return false;
+  return module.evaluateJavaScript(script);
 }
 
 export interface DshMtlsWebViewMessageEvent {

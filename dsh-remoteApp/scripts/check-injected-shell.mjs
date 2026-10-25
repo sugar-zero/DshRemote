@@ -10,9 +10,15 @@
  *   3. DSH 重渲染把槽位节点换掉时，鲸鱼入口会在同一帧内补挂回去，且标题不横移
  *      （槽位预留了 min-width，列宽不会塌陷）；
  *   4. token 流式渲染的高频 DOM 变更不会触发全量 querySelector（O(1) 快路径）；
- *   5. 抽屉能开、能关；全程没有 JS 异常。
+ *   5. 抽屉能开、能关；全程没有 JS 异常；
+ *   6. 窄屏（390×844）下 DSH 右侧栏（@deepseek-ai/dsh-client-ui-sidebar-right）的全屏面板：
+ *      收起时不拦截聊天手势、打开时覆盖整个 WebView 视口且可交互、再次收起后恢复穿透
+ *      （之前注入脚本把整列 `_rightbarCol` display:none，面板永远不可见）。
  *
  * 用法：node scripts/check-injected-shell.mjs   （本机没有 Chrome 时自动跳过，退出码 0）
+ * 开发对照：node scripts/check-injected-shell.mjs --shell-js /tmp/old-mobileWebShell.ts
+ *   —— 把注入脚本换成另一份文件（例如 `git show HEAD:...` 的旧版本），用来证明用例能抓住回归。
+ *   默认（CI / 日常自检）永远从 src/lib/mobileWebShell.ts 现取，不需要也不应该带这个参数。
  *
  * ⚠️ 这不是真机验证的替代品：只覆盖注入脚本的 DOM/布局行为，不覆盖 WKWebView 的
  * 进程回收恢复、iOS viewport 语义等原生行为（见 docs/diagnostics/03-app-webview.md）。
@@ -63,6 +69,129 @@ const FIXTURE_HTML = `<!doctype html>
 </div>
 </body></html>`;
 
+/**
+ * 第二份 fixture：按 DSH 0.2.1-rc.3 的真实 DOM/CSS 复刻「会话 + 右侧栏全屏面板」。
+ *
+ * 规则来源（只读提取，未复制大段真实代码）：AppFrame.module.css（_frame/_centerCol/
+ * _rightbarCol）、SidebarRight.module.css（_session/_panel/panelBody 与 data-sidebar-right-open
+ * 的 transform/visibility 规则）、index-BNyAYEM7.css（dockkit 的 _tabCell/_tabHost/_paneBody 等）。
+ * 类名保留真实哈希后缀，因为注入脚本用 `[class*="_rightbarCol"]` 这类稳定后缀选择器。
+ *
+ * 与真实 DSH 的已知偏差（只为让断言可重复，不改变被验证的行为）：
+ *  - 只保留复现右栏开合所需的最小 CSS，省略主题变量/字体/滚动条等外观规则；
+ *  - 会话正文、右栏内容、dockkit 的 tab strip 都是占位节点，不含真实 React 组件树；
+ *  - panel 初始为「收起态」；打开态由测试直接补 data-sidebar-right-open 属性模拟 DSH
+ *    （真实 DSH 由 React 状态切换该属性，CSS 规则完全一致）；
+ *  - panel 的 inline width:100vw / --dsh-sidebar-width:100vw 与 DSH autoFullscreen
+ *    （viewportWidth < 768）时一致。
+ */
+const RIGHTBAR_FIXTURE_HTML = `<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh right sidebar fixture</title>
+<style>
+  :root {
+    --dsw-alias-bg-base: #ffffff;
+    --dsw-alias-border-l3: #e3e3e3;
+    --dsw-alias-border-l4: #ececec;
+    --dsw-specific-sidebar-fill: #f5f5f5;
+    --ds-transition-duration-slow: 200ms;
+    --ds-ease-in-out: cubic-bezier(.4, 0, .2, 1);
+  }
+  html, body, #root { height: 100%; margin: 0; }
+  /* fixture 内部禁止页面级滚动，避免滚动条让“覆盖整个视口”的 rect 断言不稳定 */
+  body { overflow: hidden; }
+  /* ===== AppFrame.module.css（DSH 0.2.1-rc.3） ===== */
+  .PIRFFq_frame { background: var(--dsw-alias-bg-base); grid-template-rows: minmax(0, 1fr) auto; height: 100%; display: grid; position: relative; overflow: hidden; }
+  .PIRFFq_sidebarCol { background: var(--dsw-specific-sidebar-fill); border-right: .5px solid var(--dsw-alias-border-l3); min-width: 0; overflow: hidden; }
+  .PIRFFq_centerCol { flex-direction: column; min-width: 0; display: flex; overflow: hidden; }
+  .PIRFFq_rightbarCol { min-width: 0; position: relative; overflow: visible; }
+  /* ===== 会话 header（保留 conversation.header.leading 槽位结构） ===== */
+  .kiGsTW_header { display: grid; grid-template-columns: auto minmax(0, 1fr); min-height: 76px; padding: 10px 28px 0 20px; border-bottom: .5px solid #ccc; box-sizing: border-box; flex: none; }
+  .kiGsTW_headerLeading { display: flex; align-items: center; gap: 8px; grid-area: 1/1; flex: none; }
+  .kiGsTW_titleRow { display: flex; align-items: center; grid-column: 2; min-height: 30px; }
+  .railMarkBox { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; }
+  .railMarkBox svg { width: 24px; height: 24px; }
+  #chat-log { flex: 1 1 auto; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; padding: 12px; background: #fafafa; }
+  #chat-log .filler { flex: 1 1 auto; }
+  #chat-send { flex: none; height: 40px; }
+  /* ===== SidebarRight.module.css（DSH 0.2.1-rc.3，关键规则逐字保留） ===== */
+  .Dv5QdW_session { display: contents; }
+  .Dv5QdW_session[hidden] { display: none; }
+  .Dv5QdW_panel { --dsh-dockkit-dock-layer: 10; --dsh-dockkit-float-layer: 60; pointer-events: none; flex-direction: column; min-width: 0; display: flex; position: absolute; top: 0; bottom: 0; right: 0; overflow: clip; }
+  .Dv5QdW_panel [data-dockkit-host=dock], .Dv5QdW_panel [data-dockkit-empty], .Dv5QdW_panel [data-dockkit-divider] { transform: translateX(var(--dsh-sidebar-width)); visibility: hidden; transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out), visibility 0s linear var(--ds-transition-duration-slow); }
+  .Dv5QdW_panel[data-sidebar-right-open] [data-dockkit-host=dock], .Dv5QdW_panel[data-sidebar-right-open] [data-dockkit-empty], .Dv5QdW_panel[data-sidebar-right-open] [data-dockkit-divider] { visibility: visible; transition: transform var(--ds-transition-duration-slow) var(--ds-ease-in-out); transform: none; }
+  .Dv5QdW_panel[data-sidebar-right-panel=fullscreen] { --dsh-dockkit-dock-layer: 40; }
+  .Dv5QdW_iconButton { width: 28px; height: 28px; color: #61666b; border-radius: 6px; cursor: pointer; background: 0 0; border: none; flex: none; justify-content: center; align-items: center; padding: 6px; line-height: 1; display: inline-flex; }
+  .Dv5QdW_panelBody { flex: auto; min-height: 0; display: flex; }
+  /* ===== dockkit（index-BNyAYEM7.css，关键规则逐字保留） ===== */
+  ._surface_6nhg2_125 { display: flex; flex: 1 1 auto; min-width: 0; min-height: 0; }
+  ._tabLayout_6nhg2_134 { display: grid; flex: 1 1 auto; grid-template-rows: minmax(0, 1fr); min-width: 0; min-height: 0; }
+  ._tabCell_6nhg2_142 { display: flex; min-width: 0; min-height: 0; z-index: var(--dsh-dockkit-dock-layer, 10); }
+  ._tabCell_6nhg2_142[hidden] { display: none; }
+  ._tabHost_6nhg2_162 { min-width: 0; min-height: 0; pointer-events: auto; }
+  ._tabHost_6nhg2_162:not(._float_6nhg2_156) { background: var(--dsw-alias-bg-base); }
+  ._tabHostHeader_6nhg2_177 { flex: none; }
+  ._tabHostBody_6nhg2_181 { position: relative; min-width: 0; }
+  ._pane_6nhg2_209 { display: flex; flex: 1 1 auto; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+  ._tabStrip_6nhg2_237 { display: flex; flex: none; gap: 4px; align-items: center; height: 28px; padding: 10px 6px 0 var(--dsh-dockkit-strip-inline-start, 10px); touch-action: none; }
+  ._stripTabs_6nhg2_257 { display: flex; flex: 0 1 auto; align-items: center; min-width: 0; overflow-x: auto; overflow-y: hidden; }
+  ._stripFill_6nhg2_288 { flex: 1 1 0; min-width: 0; }
+  ._stripChrome_6nhg2_296 { display: flex; flex: none; gap: 8px; align-items: center; height: 28px; margin-left: 4px; }
+  ._paneBody_6nhg2_318 { position: relative; flex: 1 1 auto; min-width: 0; min-height: 0; overflow: auto; }
+  ._tab_6nhg2_134 { position: relative; display: flex; flex: 0 1 auto; align-items: center; min-width: 80px; max-width: 170px; height: 28px; padding: 0 10px; font-size: 13px; line-height: 1; white-space: nowrap; border-radius: 6px; user-select: none; }
+</style></head>
+<body>
+<div id="root">
+  <div class="PIRFFq_frame" style="grid-template-columns: 56px minmax(0px, 1fr) minmax(0px, 0px);">
+    <div class="PIRFFq_sidebarCol">
+      <div class="railMarkBox ab_railMark"><svg viewBox="0 0 24 24"><path d="M2 12h20v8H2z"/></svg></div>
+    </div>
+    <div class="PIRFFq_centerCol">
+      <header class="kiGsTW_header">
+        <div class="kiGsTW_headerLeading" data-conversation-header-leading>
+          <div data-slot="conversation.header.leading"></div>
+        </div>
+        <div class="kiGsTW_titleRow"><span>会话标题</span></div>
+      </header>
+      <div id="chat-log">
+        <p>用户：这是会话内容，右栏收起时这里应该能正常接收手势。</p>
+        <div class="filler"></div>
+        <button id="chat-send" type="button">发送</button>
+      </div>
+    </div>
+    <div class="PIRFFq_rightbarCol" data-rightbar-col>
+      <div class="Dv5QdW_session" data-sidebar-right-session="session-fixture">
+        <div class="Dv5QdW_panel" data-sidebar-right-session="session-fixture" data-sidebar-right-panel="fullscreen" aria-hidden="true" style="width: 100vw; --dsh-sidebar-width: 100vw;">
+          <div class="Dv5QdW_panelBody">
+            <div class="_surface_6nhg2_125" data-dockkit-surface>
+              <div class="_tabLayout_6nhg2_134" style="grid-template-columns: minmax(0, 1fr);">
+                <div class="_tabCell_6nhg2_142" data-dockkit-host="dock" data-dockkit-column="0" style="grid-column: 1; grid-row: 1;">
+                  <section class="_tabHost_6nhg2_162 _pane_6nhg2_209" tabindex="-1" data-dockkit-pane="pane-fixture" data-dockkit-pane-active="true">
+                    <div class="_tabHostHeader_6nhg2_177">
+                      <div class="_tabStrip_6nhg2_237">
+                        <div class="_stripTabs_6nhg2_257"><span class="_tab_6nhg2_134" data-sidebar-right-tab="tab-fixture">右栏面板</span></div>
+                        <div class="_stripFill_6nhg2_288"></div>
+                        <div class="_stripChrome_6nhg2_296" data-dockkit-strip-chrome>
+                          <button type="button" class="Dv5QdW_iconButton" data-sidebar-right-toggle aria-label="收起右侧栏"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h16v16H4z"/></svg></button>
+                        </div>
+                      </div>
+                    </div>
+                    <div class="_tabHostBody_6nhg2_181 _paneBody_6nhg2_318">
+                      <div id="rightbar-content" style="padding: 12px;">右侧栏内容（打开后覆盖会话区）</div>
+                    </div>
+                  </section>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body></html>`;
+
 /** Counts querySelector calls so the churn assertion has something to measure. */
 const INSTRUMENT_JS = `(() => {
   window.__shellStats = { querySelector: 0, viewportWrites: 0 };
@@ -83,12 +212,26 @@ const INSTRUMENT_JS = `(() => {
 
 const shellPath = fileURLToPath(new URL('../src/lib/mobileWebShell.ts', import.meta.url));
 
-function extractShellJs() {
-  const source = readFileSync(shellPath, 'utf8');
+/**
+ * 注入脚本来源：默认永远是仓库当前的 src/lib/mobileWebShell.ts（CI/日常自检的路径）。
+ * `--shell-js <path>` 只给本地对照用（例如 `git show HEAD:...` 的旧版本），
+ * 用来证明新增断言能抓住回归；不要在 CI 里传。
+ */
+function resolveShellFile(argv) {
+  const flag = '--shell-js';
+  const index = argv.indexOf(flag);
+  if (index === -1) return shellPath;
+  const override = argv[index + 1];
+  if (!override) throw new Error(`${flag} 需要一个文件路径参数`);
+  return override;
+}
+
+function extractShellJs(file = shellPath) {
+  const source = readFileSync(file, 'utf8');
   const marker = 'String.raw`';
   const start = source.indexOf(marker) + marker.length;
   const end = source.lastIndexOf('`');
-  if (start < marker.length || end <= start) throw new Error(`无法从 ${shellPath} 提取注入脚本`);
+  if (start < marker.length || end <= start) throw new Error(`无法从 ${file} 提取注入脚本`);
   return source.slice(start, end);
 }
 
@@ -136,10 +279,12 @@ function openCdp(wsUrl) {
   return { ready, send, events, close: () => ws.close() };
 }
 
-async function runChecks(chromePath) {
+async function runChecks(chromePath, shellJs) {
   const fixtureDir = mkdtempSync(join(tmpdir(), 'dsh-shell-check-'));
   const fixtureFile = join(fixtureDir, 'fixture.html');
+  const rightbarFixtureFile = join(fixtureDir, 'rightbar-fixture.html');
   writeFileSync(fixtureFile, FIXTURE_HTML, 'utf8');
+  writeFileSync(rightbarFixtureFile, RIGHTBAR_FIXTURE_HTML, 'utf8');
   const port = 9450 + Math.floor(Math.random() * 300);
   const child = spawn(chromePath, [
     '--headless=new',
@@ -161,7 +306,7 @@ async function runChecks(chromePath) {
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
     await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: INSTRUMENT_JS });
-    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: extractShellJs() });
+    await cdp.send('Page.addScriptToEvaluateOnNewDocument', { source: shellJs });
     await cdp.send('Page.navigate', { url: `file://${fixtureFile}` });
     await new Promise((resolve) => setTimeout(resolve, 1600));
 
@@ -237,12 +382,164 @@ async function runChecks(chromePath) {
       return { opened, closed: !document.documentElement.classList.contains('dsh-mobile-drawer-open') };
     })()`);
 
+    // ===== 第二阶段：窄屏（390×844）下的 DSH 右侧栏全屏面板 =====
+    // 必须用真实移动视口，否则 @media (max-width: 760px) 不生效；DSH 在 viewportWidth < 768
+    // 时把 sidebar-right 面板自动切成 fullscreen（inline width:100vw + data-sidebar-right-panel）。
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 390,
+      height: 844,
+      screenWidth: 390,
+      screenHeight: 844,
+      deviceScaleFactor: 3,
+      mobile: true,
+    });
+    await cdp.send('Page.navigate', { url: `file://${rightbarFixtureFile}` });
+    // 新 document 会重新执行 addScriptToEvaluateOnNewDocument 注入，等壳初始化完成再测。
+    const waitForPage = async (expression, timeoutMs = 8000) => {
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        try {
+          if (await evaluate(expression)) return true;
+        } catch { /* 导航/执行上下文切换过程中会短暂失败，重试 */ }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      return false;
+    };
+    const rightbarReady = await waitForPage(`Boolean(
+      window.__dshMobileShellInstalled
+      && document.getElementById('dsh-mobile-shell-style')
+      && document.querySelector('.dsh-mobile-native-trigger')
+      && document.querySelector('[data-sidebar-right-panel]')
+      && document.querySelector('[data-dockkit-host="dock"]')
+    )`);
+
+    const rightbar = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const panel = document.querySelector('[data-sidebar-right-panel]');
+      const dockHost = document.querySelector('[data-dockkit-host="dock"]');
+      const chatLog = document.getElementById('chat-log');
+      const chatButton = document.getElementById('chat-send');
+      const toggleButton = panel ? panel.querySelector('[data-sidebar-right-toggle]') : null;
+
+      const centerOf = (element) => {
+        if (!element) return null;
+        const rect = element.getBoundingClientRect();
+        return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+      };
+      const hitInfo = (element) => {
+        const point = centerOf(element);
+        if (!point) return null;
+        const hit = document.elementFromPoint(point.x, point.y);
+        return {
+          tag: hit ? hit.tagName.toLowerCase() : null,
+          id: hit && hit.id ? hit.id : '',
+          insideElement: Boolean(element && hit && (hit === element || element.contains(hit))),
+          insidePanel: Boolean(panel && hit && (hit === panel || panel.contains(hit))),
+        };
+      };
+      const snapshot = () => {
+        const rect = panel ? panel.getBoundingClientRect() : null;
+        const dockStyle = dockHost ? getComputedStyle(dockHost) : null;
+        const hit = document.elementFromPoint(195, 400);
+        return {
+          panelFound: Boolean(panel),
+          panelOpen: Boolean(panel && panel.hasAttribute('data-sidebar-right-open')),
+          panelPosition: panel ? getComputedStyle(panel).position : null,
+          panelRect: rect ? {
+            left: Math.round(rect.left * 10) / 10,
+            top: Math.round(rect.top * 10) / 10,
+            right: Math.round(rect.right * 10) / 10,
+            bottom: Math.round(rect.bottom * 10) / 10,
+            width: Math.round(rect.width * 10) / 10,
+            height: Math.round(rect.height * 10) / 10,
+          } : null,
+          dockVisibility: dockStyle ? dockStyle.visibility : null,
+          hitTag: hit ? hit.tagName.toLowerCase() : null,
+          hitId: hit && hit.id ? hit.id : '',
+          hitInPanel: Boolean(panel && hit && (hit === panel || panel.contains(hit))),
+          hitInChat: Boolean(chatLog && hit && (chatLog === hit || chatLog.contains(hit))),
+          hitPointerEvents: hit ? getComputedStyle(hit).pointerEvents : null,
+        };
+      };
+      // elementFromPoint 找到真实命中节点后派发一次冒泡 click（等于一次真实 tap：
+      // 先经过命中测试；命中的可能是 svg/path 等子节点，click 会冒泡到按钮）。
+      const tapAt = (element) => {
+        if (!element) return false;
+        const point = centerOf(element);
+        if (!point) return false;
+        const hit = document.elementFromPoint(point.x, point.y);
+        if (!hit) return false;
+        let fired = false;
+        element.addEventListener('click', () => { fired = true; }, { once: true });
+        hit.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window }));
+        return fired;
+      };
+
+      // 收起态：DSH 默认隐藏（dock host translateX(100vw)+visibility:hidden），面板自身
+      // pointer-events:none，所以聊天区必须能被命中、能收到点击。
+      await sleep(300);
+      const collapsed = snapshot();
+      const chatHitCollapsed = hitInfo(chatButton);
+      const chatClickableCollapsed = tapAt(chatButton);
+
+      // 模拟 DSH 展开：React 给面板加 data-sidebar-right-open，CSS 随之把 dock host
+      // 切成 transform:none + visibility:visible（面板从此覆盖整个视口）。
+      panel.setAttribute('data-sidebar-right-open', 'true');
+      await sleep(400);
+      const opened = snapshot();
+      const toggleHit = hitInfo(toggleButton);
+      const toggleClickable = tapAt(toggleButton);
+      const chatHitOpened = hitInfo(chatButton);
+      const chatClickableOpened = tapAt(chatButton);
+
+      // 模拟收起：移除属性后 dock host 又移出视口，聊天手势恢复。
+      panel.removeAttribute('data-sidebar-right-open');
+      await sleep(400);
+      const recollapsed = snapshot();
+
+      return {
+        installed: Boolean(window.__dshMobileShellInstalled),
+        viewport: {
+          width: window.innerWidth,
+          height: window.innerHeight,
+          dpr: window.devicePixelRatio,
+          mobileMedia: window.matchMedia('(max-width: 760px)').matches,
+        },
+        collapsed,
+        chatHitCollapsed,
+        chatClickableCollapsed,
+        opened,
+        toggleHit,
+        toggleClickable,
+        chatHitOpened,
+        chatClickableOpened,
+        recollapsed,
+      };
+    })()`);
+
+    // 窄屏下抽屉（左侧鲸鱼入口）仍应可用，不能被右栏覆盖层破坏。
+    const mobileDrawer = await evaluate(`(async () => {
+      const fab = document.querySelector('.dsh-mobile-native-trigger');
+      if (!fab) return { hasFab: false, opened: false, closed: false };
+      fab.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      const opened = document.documentElement.classList.contains('dsh-mobile-drawer-open');
+      const backdrop = document.querySelector('.dsh-mobile-backdrop');
+      if (backdrop) backdrop.click();
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      return {
+        hasFab: true,
+        opened,
+        closed: !document.documentElement.classList.contains('dsh-mobile-drawer-open'),
+      };
+    })()`);
+
     const exceptions = cdp.events
       .filter((event) => event.method === 'Runtime.exceptionThrown')
       .map((event) => event.params?.exceptionDetails?.text ?? 'unknown exception');
     cdp.close();
     await fetch(`http://127.0.0.1:${port}/json/close/${target.id}`);
-    return { initial, reRender, churn, drawer, exceptions };
+    return { initial, reRender, churn, drawer, rightbarReady, rightbar, mobileDrawer, exceptions };
   } finally {
     child.kill('SIGTERM');
     // Chrome 退出时 profile 目录可能还在写；清理失败不应影响检查结果。
@@ -257,6 +554,25 @@ function check(label, condition, detail) {
   checks.push({ label, ok: Boolean(condition), detail });
 }
 
+/** 面板 rect 是否覆盖整个 390×844 视口（±1px，容忍亚像素/DPR 取整）。 */
+function rectCoversViewport(rect, width, height) {
+  return Boolean(
+    rect
+    && Math.abs(rect.left) <= 1
+    && Math.abs(rect.top) <= 1
+    && Math.abs(rect.right - width) <= 1
+    && Math.abs(rect.bottom - height) <= 1,
+  );
+}
+function formatRect(rect) {
+  return rect ? `${rect.left},${rect.top},${rect.right},${rect.bottom}（${rect.width}×${rect.height}）` : 'none';
+}
+function formatHit(snapshot) {
+  if (!snapshot) return 'none';
+  const where = snapshot.hitInPanel ? '面板内' : (snapshot.hitInChat ? '会话内容' : '其他');
+  return `hit=${snapshot.hitTag}${snapshot.hitId ? `#${snapshot.hitId}` : ''}（${where}）`;
+}
+
 const chromePath = findChrome();
 if (!chromePath) {
   console.log('⚠️  未找到 Chrome/Chromium，跳过注入脚本行为检查（不算失败）。');
@@ -267,16 +583,27 @@ if (typeof WebSocket === 'undefined' || typeof fetch === 'undefined') {
   process.exit(0);
 }
 
+let shellFile;
+try {
+  // 默认永远是 src/lib/mobileWebShell.ts；--shell-js 仅供本地对照旧版本。
+  shellFile = resolveShellFile(process.argv.slice(2));
+} catch (error) {
+  console.error(`❌ ${error instanceof Error ? error.message : String(error)}`);
+  process.exit(1);
+}
+if (shellFile !== shellPath) {
+  console.log(`⚠️  外部注入脚本对照模式：${shellFile}（正常自检应为 src/lib/mobileWebShell.ts）`);
+}
 console.log(`== 注入手机壳行为检查（fixture: 无头 Chrome） ==`);
 let result;
 try {
-  result = await runChecks(chromePath);
+  result = await runChecks(chromePath, extractShellJs(shellFile));
 } catch (error) {
   console.error(`❌ 无法运行检查：${error instanceof Error ? error.message : String(error)}`);
   process.exit(1);
 }
 
-const { initial, reRender, churn, drawer, exceptions } = result;
+const { initial, reRender, churn, drawer, rightbarReady, rightbar, mobileDrawer, exceptions } = result;
 check('注入脚本已初始化', initial.installed);
 check('鲸鱼入口在 conversation.header.leading 槽位内', initial.fabInSlot);
 check('鲸鱼入口使用 DSH 原生 logo', initial.fabHasWhaleSvg);
@@ -288,6 +615,67 @@ check('流式 DOM 变更不触发全量 querySelector（O(1) 快路径）', chur
 check('流式渲染后不再改写 viewport', churn.viewportWritesAfterLoad === 1, `writes=${churn.viewportWritesAfterLoad}`);
 check('抽屉可打开', drawer.opened);
 check('抽屉可关闭', drawer.closed);
+
+// ---- 第二阶段：窄屏（390×844）右侧栏全屏覆盖层 ----
+check(
+  '窄屏右栏 fixture 已加载（注入脚本在新文档重新执行）',
+  rightbarReady && rightbar.installed && rightbar.collapsed.panelFound,
+  `ready=${rightbarReady}, installed=${rightbar.installed}, panel=${rightbar.collapsed.panelFound}`,
+);
+check(
+  '窄屏视口生效（390×844, mobile, DPR=3, media query 命中）',
+  rightbar.viewport.width === 390
+    && rightbar.viewport.height === 844
+    && rightbar.viewport.dpr === 3
+    && rightbar.viewport.mobileMedia,
+  `${rightbar.viewport.width}×${rightbar.viewport.height} @${rightbar.viewport.dpr}x, media=${rightbar.viewport.mobileMedia}`,
+);
+check(
+  '右栏收起时不拦截聊天：elementFromPoint(195,400) 命中会话内容',
+  rightbar.collapsed.hitInChat && !rightbar.collapsed.hitInPanel,
+  formatHit(rightbar.collapsed),
+);
+check(
+  '右栏收起时聊天按钮可命中并可点击',
+  Boolean(rightbar.chatHitCollapsed && rightbar.chatHitCollapsed.insideElement) && rightbar.chatClickableCollapsed,
+  `hit=${rightbar.chatHitCollapsed ? `${rightbar.chatHitCollapsed.tag}${rightbar.chatHitCollapsed.id ? `#${rightbar.chatHitCollapsed.id}` : ''}` : 'none'}, clicked=${rightbar.chatClickableCollapsed}`,
+);
+check(
+  '右栏收起时 dock host 不可见（visibility hidden）',
+  rightbar.collapsed.dockVisibility === 'hidden',
+  `visibility=${rightbar.collapsed.dockVisibility}, position=${rightbar.collapsed.panelPosition}`,
+);
+check(
+  '右栏展开后全屏覆盖视口（rect 0,0,390,844，误差 ≤1px）',
+  rectCoversViewport(rightbar.opened.panelRect, 390, 844),
+  `rect=${formatRect(rightbar.opened.panelRect)}`,
+);
+check(
+  '右栏展开后 elementFromPoint(195,400) 命中面板内部（可交互、在聊天层之上）',
+  rightbar.opened.hitInPanel && rightbar.opened.hitPointerEvents !== 'none',
+  `${formatHit(rightbar.opened)}, pointer-events=${rightbar.opened.hitPointerEvents}`,
+);
+check(
+  '右栏展开后面板内按钮 data-sidebar-right-toggle 可命中并可点击',
+  Boolean(rightbar.toggleHit && rightbar.toggleHit.insideElement) && rightbar.toggleClickable,
+  `hit=${rightbar.toggleHit ? `${rightbar.toggleHit.tag}${rightbar.toggleHit.id ? `#${rightbar.toggleHit.id}` : ''}` : 'none'}, clicked=${rightbar.toggleClickable}`,
+);
+check(
+  '右栏展开后会话层被面板覆盖（聊天按钮不再可点）',
+  Boolean(rightbar.chatHitOpened && rightbar.chatHitOpened.insidePanel) && !rightbar.chatClickableOpened,
+  `hit=${rightbar.chatHitOpened ? `${rightbar.chatHitOpened.tag}${rightbar.chatHitOpened.id ? `#${rightbar.chatHitOpened.id}` : ''}` : 'none'}, clicked=${rightbar.chatClickableOpened}`,
+);
+check(
+  '右栏再次收起后恢复点击穿透',
+  rightbar.recollapsed.hitInChat && !rightbar.recollapsed.hitInPanel && rightbar.recollapsed.dockVisibility === 'hidden',
+  formatHit(rightbar.recollapsed),
+);
+check(
+  '窄屏下抽屉仍可打开（鲸鱼入口）',
+  mobileDrawer.hasFab && mobileDrawer.opened && mobileDrawer.closed,
+  `fab=${mobileDrawer.hasFab}, opened=${mobileDrawer.opened}, closed=${mobileDrawer.closed}`,
+);
+
 check('页面无未捕获 JS 异常', exceptions.length === 0, exceptions.join('; '));
 
 for (const item of checks) {

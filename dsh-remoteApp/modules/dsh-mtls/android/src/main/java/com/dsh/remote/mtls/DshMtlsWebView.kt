@@ -24,6 +24,7 @@ import android.webkit.WebView
 import expo.modules.kotlin.AppContext
 import expo.modules.kotlin.viewevent.EventDispatcher
 import expo.modules.kotlin.views.ExpoView
+import java.lang.ref.WeakReference
 
 class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(context, appContext) {
 
@@ -86,6 +87,7 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
   private val webView: WebView = WebView(context)
 
   init {
+    activeView = WeakReference(this)
     webView.layoutParams = LayoutParams(LayoutParams.MATCH_PARENT, LayoutParams.MATCH_PARENT)
     addView(webView)
 
@@ -124,7 +126,17 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
     injectedJavaScript = script
   }
 
+  /** 在 UI 线程执行一段 JS（App 点击推送后用它打开对应会话）。 */
+  fun evaluateJavaScript(script: String) {
+    webView.post {
+      if (!renderProcessGone) {
+        try { webView.evaluateJavascript(script, null) } catch (_: Exception) { /* WebView 已不可用 */ }
+      }
+    }
+  }
+
   override fun onDetachedFromWindow() {
+    if (activeView?.get() === this) activeView = null
     // 渲染进程已死亡的 WebView 必须显式 destroy，否则其渲染进程资源会长期泄漏。
     if (renderProcessGone) {
       try { webView.destroy() } catch (_: Exception) { /* 已销毁 */ }
@@ -142,5 +154,9 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
 
   companion object {
     private const val BRIDGE_NAME = "dshMtlsBridge"
+
+    /** 当前活跃的 WebView（同一时刻只应有一个）；供推送跳转注入脚本使用。 */
+    @Volatile
+    var activeView: WeakReference<DshMtlsWebView>? = null
   }
 }

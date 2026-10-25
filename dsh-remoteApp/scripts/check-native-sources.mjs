@@ -89,6 +89,10 @@ const apiChecks = [
   ['Android 证书安装', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsIdentityStore.kt', 'setKeyEntry'],
   ['Android WebView 客户端证书', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsWebViewClient.kt', 'onReceivedClientCertRequest'],
   ['Android HttpsURLConnection mTLS', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsNetwork.kt', 'X509ExtendedKeyManager'],
+  ['iOS WebView 缓存清理', 'modules/dsh-mtls/ios/DSHMTLSModule.swift', 'WKWebsiteDataStore.allWebsiteDataTypes()'],
+  ['Android WebView Cookie/存储清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'WebStorage'],
+  ['Android WebView HTTP 缓存清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'clearCache(true)'],
+  ['Android WebView 表单数据清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'clearFormData()'],
 ];
 for (const [label, file, needle] of apiChecks) {
   if (read(file).includes(needle)) ok(label);

@@ -39,6 +39,9 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
 
   private static let bridgeName = "dshMtlsBridge"
 
+  /// 当前活跃的 WebView（同一时刻只应有一个）；供 JS 桥/推送跳转注入脚本使用。
+  static weak var activeView: DshMtlsWebView?
+
   private let webView: WKWebView
   private var loadedUrlString: String?
   private var userScript: WKUserScript?
@@ -69,6 +72,7 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
     self.webView = WKWebView(frame: .zero, configuration: configuration)
 
     super.init(appContext: appContext)
+    Self.activeView = self
 
     contentController.add(self, name: Self.bridgeName)
     #if DEBUG
@@ -107,11 +111,23 @@ public final class DshMtlsWebView: ExpoView, WKNavigationDelegate, WKScriptMessa
   }
 
   deinit {
+    if Self.activeView === self {
+      Self.activeView = nil
+    }
     if let observer = foregroundObserver {
       NotificationCenter.default.removeObserver(observer)
     }
     webView.configuration.userContentController.removeScriptMessageHandler(forName: Self.bridgeName)
     webView.navigationDelegate = nil
+  }
+
+  // MARK: - JS injection / push navigation
+
+  /// 在 main 队列执行一段 JS；调用方（App）不需要等待返回值。
+  func evaluateJavaScript(_ script: String) {
+    DispatchQueue.main.async { [weak self] in
+      self?.webView.evaluateJavaScript(script, completionHandler: nil)
+    }
   }
 
   // MARK: - Props

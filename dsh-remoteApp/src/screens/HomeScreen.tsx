@@ -17,6 +17,7 @@ interface HomeScreenProps {
   onOpen: (connection: StoredConnection) => void;
   onOpenDevices: (connection: StoredConnection) => void;
   onPairNew: () => void;
+  onOpenSettings: () => void;
 }
 
 function formatPairedAt(epochMs: number): string {
@@ -27,7 +28,7 @@ function formatPairedAt(epochMs: number): string {
   }
 }
 
-export function HomeScreen({ connections, onOpen, onOpenDevices, onPairNew }: HomeScreenProps) {
+export function HomeScreen({ connections, onOpen, onOpenDevices, onPairNew, onOpenSettings }: HomeScreenProps) {
   const insets = useSafeAreaInsets();
   return (
     <View style={styles.screen}>
@@ -37,7 +38,17 @@ export function HomeScreen({ connections, onOpen, onOpenDevices, onPairNew }: Ho
           { paddingTop: insets.top + spacing.lg, paddingBottom: insets.bottom + spacing.xl },
         ]}
       >
-        <Text style={styles.title}>DSH Remote</Text>
+        <View style={styles.titleRow}>
+          <Text style={styles.title}>DSH Remote</Text>
+          <TouchableOpacity
+            style={styles.settingsButton}
+            onPress={onOpenSettings}
+            accessibilityRole="button"
+            accessibilityLabel="设置"
+          >
+            <Text style={styles.settingsGlyph}>⚙︎</Text>
+          </TouchableOpacity>
+        </View>
         <Text style={styles.subtitle}>已配对的主机（{connections.length}）</Text>
 
         {connections.length === 0 ? (
@@ -97,7 +108,19 @@ export function HomeScreen({ connections, onOpen, onOpenDevices, onPairNew }: Ho
 const styles = StyleSheet.create({
   screen: { flex: 1, backgroundColor: colors.background },
   content: { paddingHorizontal: spacing.lg, gap: spacing.md },
+  titleRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   title: { ...typography.title },
+  settingsButton: {
+    width: 44,
+    height: 44,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: colors.surface,
+    borderRadius: radii.md,
+    borderWidth: StyleSheet.hairlineWidth,
+    borderColor: colors.border,
+  },
+  settingsGlyph: { color: colors.textMuted, fontSize: 22 },
   subtitle: { ...typography.subtitle, marginBottom: spacing.sm },
   card: {
     flexDirection: 'row',

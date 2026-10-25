@@ -455,9 +455,13 @@ export interface PairStatusData {
   message?: string;
 }
 
+export type PushTokenEnvironment = 'development' | 'production';
+
 export interface PushTokenRequestBody {
   provider: 'expo' | 'apns' | 'fcm';
   token: string;
+  /** APNs 环境：开发签名包为 development（sandbox），发布签名包为 production。 */
+  environment?: PushTokenEnvironment;
 }
 
 /** Admin API device record (ADMIN-API.md §1 `GET /status` / `GET /devices`). */
