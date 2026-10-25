@@ -30,3 +30,6 @@ server/.env
 *.crt
 *.p12
 *.pfx
+
+# 本地代理约束文件（个人环境约定，不入库）
+AGENTS.md
