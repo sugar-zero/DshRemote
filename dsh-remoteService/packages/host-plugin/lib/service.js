@@ -1,7 +1,7 @@
 import { readFileSync, watchFile, unwatchFile } from 'node:fs';
 import { hostname } from 'node:os';
 import { X509Certificate } from 'node:crypto';
-import { hostAddress, hostFqdn, loadConfig, saveConfig, validateConfig } from './config.js';
+import { hostAddress, hostFqdn, loadConfig, pushProviderOf, saveConfig, validateConfig, validatePushConfig } from './config.js';
 import { ensureDir, paths, readJson, writeJson } from './paths.js';
 import { loadOrCreateDeviceCa, loadOrCreateDevServerCert, loadOrCreateHostIdentity } from './identity.js';
 import { DeviceStore } from './devices.js';
@@ -11,13 +11,19 @@ import { DshProxy } from './proxy.js';
 import { RelayConnector } from './connector.js';
 import { createRemoteServer } from './server.js';
 import { createPushNotifier } from './push.js';
+import { createApnsClient } from './apns.js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.1.5';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
-  constructor(ctx) {
+  /**
+   * @param {object} ctx DSH 插件上下文
+   * @param {{createApnsClient?: typeof createApnsClient}} [options] 测试注入用
+   */
+  constructor(ctx, options = {}) {
     this.ctx = ctx;
+    this.createApnsClient = typeof options.createApnsClient === 'function' ? options.createApnsClient : createApnsClient;
     this.lastError = null;
     this.log = (message) => {
       try { console.log(`[dsh-remote] ${message}`); } catch { /* ignore */ }
@@ -26,11 +32,17 @@ export class RemoteService {
     this.pushNotifier = createPushNotifier({
       getConfig: () => this.config ?? {},
       getConnector: () => this.connector,
+      getApnsClient: () => this.apnsClient,
+      getPushTokens: () => [...this.pushTokens.values()],
+      onPushTokensInvalid: (entries) => this.#prunePushTokens(entries),
       audit: { append: (entry) => this.audit?.append(entry) },
       log: this.log,
     });
     if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
-      ctx.effect(() => ctx.on('session/event', (session, event) => this.pushNotifier.onSessionEvent(session, event)), 'dsh-remote-service: push triggers');
+      ctx.effect(() => ctx.on('session/event', (session, event) => {
+        Promise.resolve(this.pushNotifier.onSessionEvent(session, event))
+          .catch((error) => this.log(`push trigger failed: ${error?.message ?? error}`));
+      }), 'dsh-remote-service: push triggers');
       ctx.effect(() => ctx.on('session/disposed', (session) => this.pushNotifier.reset(session?.id)), 'dsh-remote-service: push reset');
     }
     this.ready = this.#init().catch((error) => {
@@ -49,11 +61,13 @@ export class RemoteService {
     const storedPush = readJson(paths.pushTokens(), { version: 1, tokens: [] });
     for (const entry of Array.isArray(storedPush.tokens) ? storedPush.tokens : []) {
       if (entry?.deviceId && entry?.token) {
-        this.pushTokens.set(String(entry.deviceId), {
+        const record = {
           deviceId: String(entry.deviceId),
           provider: String(entry.provider ?? 'expo'),
           token: String(entry.token),
-        });
+        };
+        if (entry.environment === 'development' || entry.environment === 'production') record.environment = entry.environment;
+        this.pushTokens.set(record.deviceId, record);
       }
     }
     this.pairing = new PairingManager({
@@ -92,6 +106,7 @@ export class RemoteService {
   async #apply() {
     await this.#stopRuntime();
     const config = this.config;
+    this.#applyPush(config);
     if (!config.enabled) return;
     const errors = validateConfig(config);
     if (errors.length > 0) {
@@ -170,7 +185,11 @@ export class RemoteService {
       log: this.log,
     });
     this.connector.start();
-    for (const entry of this.pushTokens.values()) this.connector.registerPushToken(entry);
+    for (const entry of this.pushTokens.values()) {
+      if (entry.provider === 'expo') {
+        this.connector.registerPushToken({ deviceId: entry.deviceId, provider: entry.provider, token: entry.token });
+      }
+    }
     this.lastError = tlsError;
     this.log(`remote server on 127.0.0.1:${this.listenPort}${dev ? ' (dev self-signed TLS)' : ''}`);
     this.#watchCertFiles(config);
@@ -235,19 +254,80 @@ export class RemoteService {
     }
   }
 
+  /** 推送配置变化后重建 APNs 发送器（私钥只在构造时读取一次）。 */
+  #applyPush(config) {
+    this.apnsClient = undefined;
+    if (pushProviderOf(config) !== 'apns') return;
+    try {
+      this.apnsClient = this.createApnsClient({
+        keyFile: config.apnsKeyFile,
+        keyId: config.apnsKeyId,
+        teamId: config.apnsTeamId,
+        topic: config.apnsTopic,
+        environment: config.apnsEnvironment,
+      });
+      if (this.apnsClient?.error) this.log(`APNs 推送未就绪：${this.apnsClient.error}`);
+    } catch (error) {
+      this.log(`APNs 推送初始化失败：${error?.message ?? error}`);
+      this.apnsClient = undefined;
+    }
+  }
+
+  /**
+   * 保存设备推送 token。
+   * 每个设备只保留最新一条（切换通道时不会残留旧 provider 的 token）；
+   * APNs token 只留在本机；expo token 兼容旧版才转给 relay。
+   * @param {{deviceId: string, provider?: string, token: string, environment?: string}} entry
+   */
   #savePushToken(entry) {
-    this.pushTokens.set(String(entry.deviceId), {
-      deviceId: String(entry.deviceId),
+    const deviceId = String(entry.deviceId);
+    /** @type {{deviceId: string, provider: string, token: string, environment?: string, updatedAt: number}} */
+    const record = {
+      deviceId,
       provider: String(entry.provider ?? 'expo'),
       token: String(entry.token),
-    });
-    this.connector?.registerPushToken(entry);
-    const file = paths.pushTokens();
-    const stored = readJson(file, { version: 1, tokens: [] });
-    const tokens = Array.isArray(stored.tokens) ? stored.tokens : [];
-    const next = tokens.filter((t) => !(t.deviceId === entry.deviceId && t.provider === entry.provider));
-    next.push({ ...entry, updatedAt: Date.now() });
-    writeJson(file, { version: 1, tokens: next.slice(-100) });
+      updatedAt: Date.now(),
+    };
+    if (entry.environment === 'development' || entry.environment === 'production') record.environment = entry.environment;
+    this.pushTokens.set(deviceId, record);
+    if (record.provider === 'expo') {
+      this.connector?.registerPushToken({ deviceId: record.deviceId, provider: record.provider, token: record.token });
+    }
+    this.#persistPushTokens();
+  }
+
+  /** 落盘 push-tokens.json（0600，最多保留 100 条）。 */
+  #persistPushTokens() {
+    writeJson(paths.pushTokens(), { version: 1, tokens: [...this.pushTokens.values()].slice(-100) });
+  }
+
+  /**
+   * APNs 返回 410 / Unregistered 时清理失效 token，避免持续发送。
+   *
+   * 入参是**实际发送失败的那个 token**（`{deviceId, token}`）。只有当前存储的 token
+   * 与失败 token 完全一致时才删除：发送在途期间设备可能已重新注册/轮换 token，
+   * 此时删掉会把新 token 误清（旧 token 的 410 与新 token 无关）。
+   *
+   * @param {Array<{deviceId?: string, token?: string}>} entries
+   * @returns {number} 清理条数
+   */
+  #prunePushTokens(entries) {
+    let removed = 0;
+    for (const entry of Array.isArray(entries) ? entries : []) {
+      const deviceId = String(entry?.deviceId ?? '');
+      const token = typeof entry?.token === 'string' ? entry.token : '';
+      if (deviceId === '' || token === '') continue;
+      const current = this.pushTokens.get(deviceId);
+      if (!current || current.token !== token) continue;
+      this.pushTokens.delete(deviceId);
+      removed += 1;
+      this.audit?.append({ deviceId, action: 'push-token-pruned', result: 'ok' });
+    }
+    if (removed > 0) {
+      this.#persistPushTokens();
+      this.log(`push: 已清理 ${removed} 个失效设备 token`);
+    }
+    return removed;
   }
 
   /** 返回当前状态（管理 API）。 */
@@ -280,6 +360,16 @@ export class RemoteService {
       pairing: this.pairing?.publicSession() ?? { active: false },
       devices: this.devices?.list() ?? [],
       listenPort: this.listenPort || null,
+      push: {
+        provider: pushProviderOf(config),
+        enabled: config.pushEnabled !== false,
+        configured: pushProviderOf(config) === 'apns'
+          ? Boolean(this.apnsClient?.isConfigured?.())
+          : Boolean(this.connector?.isConnected?.()),
+        tokens: this.pushTokens.size,
+        error: this.apnsClient?.error ?? null,
+        warnings: validatePushConfig(config),
+      },
       // 管理 UI 需要读取的配置子集（密钥类字段只回布尔，不回明文）
       config: {
         enabled: Boolean(config.enabled),
@@ -291,6 +381,12 @@ export class RemoteService {
         requireApproval: Boolean(config.requireApproval),
         pushEnabled: config.pushEnabled !== false,
         pushCooldownSeconds: Number(config.pushCooldownSeconds ?? 30),
+        pushProvider: pushProviderOf(config),
+        apnsKeyFile: config.apnsKeyFile ?? '',
+        apnsKeyId: config.apnsKeyId ?? '',
+        apnsTeamId: config.apnsTeamId ?? '',
+        apnsTopic: config.apnsTopic ?? '',
+        apnsEnvironment: config.apnsEnvironment ?? 'auto',
         maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         relayTlsInsecure: Boolean(config.relayTlsInsecure),
         listenPort: config.listenPort ?? 0,

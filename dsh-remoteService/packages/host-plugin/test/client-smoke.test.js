@@ -223,8 +223,19 @@ function loadBundle(options = {}) {
     querySelector() {
       return null;
     },
-    addEventListener() {},
-    removeEventListener() {},
+    listeners: new Map(),
+    addEventListener(type, listener) {
+      if (!this.listeners.has(type)) this.listeners.set(type, []);
+      this.listeners.get(type).push(listener);
+    },
+    removeEventListener(type, listener) {
+      const entries = this.listeners.get(type);
+      if (!entries) return;
+      this.listeners.set(type, entries.filter((entry) => entry !== listener));
+    },
+    dispatch(type) {
+      for (const listener of [...(this.listeners.get(type) || [])]) listener({ type });
+    },
     visibilityState: 'visible',
   };
 
@@ -245,11 +256,12 @@ function loadBundle(options = {}) {
     clearTimeout: timers.clearTimeout,
     setInterval: timers.setInterval,
     clearInterval: timers.clearInterval,
+    ...options.globals,
   };
   vm.runInNewContext(CLIENT_SOURCE, sandbox, { filename: CLIENT_PATH });
 
   assert.ok(captured, 'client.js 必须通过 window.__ModuleLoader__.load 注册工厂');
-  return { captured, fetchCalls, appendedStyles, timers };
+  return { captured, fetchCalls, appendedStyles, timers, sandbox, documentStub };
 }
 
 /* ────────────────────────── fake ctx / slots / locale ────────────────────────── */
@@ -290,6 +302,7 @@ function createFakeCtx(options = {}) {
     injectedServices.push([...dependencies]);
     const scope = Object.create(ctx);
     if (options.sessions !== undefined) scope.sessions = options.sessions;
+    if (options.uiWorkspace !== undefined) scope.uiWorkspace = options.uiWorkspace;
     return callback(scope);
   };
 
@@ -753,16 +766,119 @@ test('会话热缓存：retain 同步发布 retention 时不会重入递归（�
 
 test('会话热缓存只在远程 WebView（?dsh_mobile=1）安装，桌面本机不启用', () => {
   const fake = createFakeSessions(['s1']);
+  const uiWorkspace = {
+    openSession: () => {},
+    selection: { getSnapshot: () => ({ sessionId: 's_mobile' }), subscribe: () => () => {} },
+  };
 
   const mobileBundle = loadBundle({ location: { search: '?dsh_mobile=1' } });
   const mobileModule = mobileBundle.captured.factory(() => createFakeReact());
-  const mobileCtx = createFakeCtx({ sessions: fake.sessions });
+  const mobileCtx = createFakeCtx({ sessions: fake.sessions, uiWorkspace });
   mobileModule.apply(mobileCtx.ctx);
-  assert.deepEqual(mobileCtx.injectedServices, [['sessions', 'connection']], '远程 WebView 应注入 sessions/connection 服务');
+  assert.deepEqual(mobileCtx.injectedServices, [['sessions', 'connection'], ['uiWorkspace']], '远程 WebView 应注入 sessions/connection 与会话桥 uiWorkspace 服务');
+  assert.equal(typeof mobileBundle.sandbox.__DSH_REMOTE_OPEN_SESSION__, 'function', '手机 WebView 暴露打开会话入口');
+  assert.equal(mobileBundle.sandbox.__DSH_REMOTE_CURRENT_SESSION__?.sessionId, 's_mobile', '手机 WebView 上报当前会话');
 
   const localBundle = loadBundle();
   const localModule = localBundle.captured.factory(() => createFakeReact());
-  const localCtx = createFakeCtx({ sessions: fake.sessions });
+  const localCtx = createFakeCtx({ sessions: fake.sessions, uiWorkspace });
   localModule.apply(localCtx.ctx);
   assert.deepEqual(localCtx.injectedServices, [], '桌面本机不启用会话热缓存');
+  assert.equal(localBundle.sandbox.__DSH_REMOTE_OPEN_SESSION__, undefined, '桌面本机不暴露会话桥');
+  assert.equal(localBundle.sandbox.__DSH_REMOTE_CURRENT_SESSION__, undefined, '桌面本机不上报当前会话');
+});
+
+test('手机 WebView 后台恢复：隐藏超过阈值后让 DSH 连接重建（刷新会话状态）', () => {
+  const bundle = loadBundle();
+  const clientModule = bundle.captured.factory(() => createFakeReact());
+  const reconnects = [];
+  let dispose = null;
+  const makeScope = () => ({
+    connection: { reconnect: () => reconnects.push(Date.now()) },
+    effect: (callback, label) => {
+      assert.equal(typeof label, 'string');
+      dispose = callback();
+      return dispose;
+    },
+  });
+
+  // 阈值 0：隐藏后再可见 → 重连一次
+  bundle.sandbox.__DSH_REMOTE_RESUME_RECONNECT_MS__ = 0;
+  clientModule.__test.installResumeReconnect(makeScope());
+  bundle.documentStub.visibilityState = 'visible';
+  bundle.documentStub.dispatch('visibilitychange'); // 无隐藏记录
+  assert.equal(reconnects.length, 0);
+  bundle.documentStub.visibilityState = 'hidden';
+  bundle.documentStub.dispatch('visibilitychange');
+  bundle.documentStub.visibilityState = 'visible';
+  bundle.documentStub.dispatch('visibilitychange');
+  assert.equal(reconnects.length, 1);
+
+  // 卸载旧监听；改成 10s 阈值：短暂隐藏不触发
+  if (typeof dispose === 'function') dispose();
+  bundle.sandbox.__DSH_REMOTE_RESUME_RECONNECT_MS__ = 10_000;
+  clientModule.__test.installResumeReconnect(makeScope());
+  bundle.documentStub.visibilityState = 'hidden';
+  bundle.documentStub.dispatch('visibilitychange');
+  bundle.documentStub.visibilityState = 'visible';
+  bundle.documentStub.dispatch('visibilitychange');
+  assert.equal(reconnects.length, 1);
+
+  // 没有 connection 服务时静默跳过
+  clientModule.__test.installResumeReconnect({ effect: () => {} });
+});
+
+test('手机 WebView 会话桥：上报当前会话 / 清空会话 + 打开会话 + 消费 pending', () => {
+  const bundle = loadBundle();
+  const clientModule = bundle.captured.factory(() => createFakeReact());
+  const opened = [];
+  const messages = [];
+  let selectionListener = null;
+  let currentSessionId = 's_current';
+  const uiWorkspace = {
+    openSession: (sessionId) => { opened.push(sessionId); },
+    selection: {
+      getSnapshot: () => (currentSessionId === '' ? {} : { sessionId: currentSessionId }),
+      subscribe: (listener) => { selectionListener = listener; return () => {}; },
+    },
+  };
+  const makeInject = () => ({
+    inject: (dependencies, callback) => {
+      assert.deepEqual([...dependencies], ['uiWorkspace']);
+      return callback({ uiWorkspace, effect: (fn) => fn() });
+    },
+  });
+
+  bundle.sandbox.dshMtlsBridge = { postMessage: (text) => messages.push(JSON.parse(text)) };
+  clientModule.__test.installSessionBridge(makeInject());
+  assert.equal(typeof bundle.sandbox.__DSH_REMOTE_OPEN_SESSION__, 'function');
+  const current = bundle.sandbox.__DSH_REMOTE_CURRENT_SESSION__;
+  assert.equal(current.host, '');
+  assert.equal(current.sessionId, 's_current');
+  assert.deepEqual(messages[0], { type: 'dsh-remote/current-session', host: '', sessionId: 's_current' });
+
+  // 点击通知后 App 调用的打开入口
+  bundle.sandbox.__DSH_REMOTE_OPEN_SESSION__('s_target');
+  assert.deepEqual(opened, ['s_target']);
+
+  // 插件加载前注入的 pending 请求在安装时消费
+  bundle.sandbox.__DSH_REMOTE_OPEN_SESSION_PENDING__ = 's_pending';
+  clientModule.__test.installSessionBridge(makeInject());
+  assert.ok(opened.includes('s_pending'));
+
+  // selection 变化 → 再次上报
+  currentSessionId = 's_next';
+  selectionListener?.();
+  assert.deepEqual(messages.at(-1), { type: 'dsh-remote/current-session', host: '', sessionId: 's_next' });
+
+  // selection 被清空（离开/归档当前会话）→ 必须上报空 sessionId，让 App 清掉过期的“当前会话”
+  currentSessionId = '';
+  selectionListener?.();
+  assert.deepEqual(messages.at(-1), { type: 'dsh-remote/current-session', host: '', sessionId: '' }, '清空 selection 也要上报');
+  assert.equal(bundle.sandbox.__DSH_REMOTE_CURRENT_SESSION__.sessionId, '', '全局当前会话同步清空');
+
+  // 没有 openSession 的兼容环境静默跳过
+  clientModule.__test.installSessionBridge({
+    inject: (dependencies, callback) => callback({ uiWorkspace: { selection: uiWorkspace.selection }, effect: (fn) => fn() }),
+  });
 });
