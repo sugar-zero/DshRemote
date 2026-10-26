@@ -88,6 +88,26 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   「只拉中间那段」需要 DSH/Host 的随机窗口支持（T1.1/上游范围，本次未做）。
 - **相关**：[`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md) §4.1
 
+## 2026-10-27 更新：远程重启主机真机可用（host-plugin 0.1.14）+ App 两处隐藏经用户确认
+
+- **远程重启**：0.1.10 → 0.1.14 连续四轮真机问题全部修复——① 只杀 host 子进程触发崩溃弹窗 +
+  双实例（0.1.11）；② 桌面端识别依赖了实际不存在的 `DSH_DESKTOP_NODE_EXECUTABLE`（0.1.12）；
+  ③ 整组 `SIGTERM` 让 Electron 先杀 renderer、弹「应用无法启动或已意外停止」（0.1.13）；
+  ④ 硬杀残留的 Electron 单实例锁让新实例 ~80ms 内自杀（0.1.14，现象「关掉但没拉起」）。
+  0.1.14 在拉起前清理属主已死的 `SingletonLock/Cookie/Socket`，`open -n` 后用 `ps` 校验、
+  失败则直接执行 `.app` 内可执行文件兜底，全程写 `~/.dsh/remote-access/host-restart.log`。
+  用户 2026-10-27 实测确认：点 ⏻ 后 DSH 窗口关闭、无弹窗、自动拉起、App 自动恢复。
+- **App 隐藏**：左侧抽屉「工作区」`＋` 添加工作区按钮隐藏已由用户确认（App 0.1.12 build 14 起，
+  iPad 宽度同样隐藏）；open-in-app「打开 / 显示文件位置」控件用户反馈在 App 上不可见
+  （原本也未注意该控件）。`check:shell` 59/59 覆盖窄屏/宽屏隐藏与同 slot 按钮保留。
+- **验证**：host `npm test` **159/159**、`validate:artifacts` 通过（含并行会话已提交的推送改动）；
+  本机用临时 HOME + 自建 dummy 进程组验证杀进程组 / 拉起校验 / 直接执行兜底 / 陈旧锁清理，
+  全程不触碰真实 DSH；App `tsc --noEmit`、`check:native`、`check:shell` 均通过。
+- **版本 / 生效**：host-plugin **0.1.14**（含 `ask_user_question` 推送）；App 工作区版本
+  **0.1.13 build 15**（含本轮隐藏修复，由并行会话推进版本）。host 半需重启 DSH 后生效。
+- 根因与逐轮排查记录见 [`docs/diagnostics/10-mobile-host-actions.md`](docs/diagnostics/10-mobile-host-actions.md)
+  §2；逐轮细节整理见并行会话的 `docs/diagnostics/11-host-restart-relaunch.md`（尚未提交）。
+
 ## 2026-10-26 新增：手机端会话历史分片拉取（host-plugin 0.1.8，todo T1）
 
 - **目标**：手机 App（远程 WebView，`?dsh_mobile=1`）打开会话时只拉最近一小段历史，
