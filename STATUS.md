@@ -87,6 +87,26 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   「只拉中间那段」需要 DSH/Host 的随机窗口支持（T1.1/上游范围，本次未做）。
 - **相关**：[`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md) §4.1
 
+## 2026-10-27 更新：「重启主机」改为可关闭组件（host-plugin 0.1.16 / App 0.1.14 build 16，默认关闭）
+
+- **需求**：把「远程重启主机 DSH」从默认内置改为**可关闭的组件**，由用户自行决定是否启用；关闭后
+  App 顶栏 ⏻ 不再显示，重启接口也不能被启动/调用。
+- **实现**：
+  - Host：新增管理配置 `restartHostEnabled`（**默认 `false`**）；「设置 → 远程访问 → 组件」新增开关
+    「允许手机重启主机 DSH」；关闭时 `POST /__dsh_remote/restart` 一律 501 `host-restart-disabled`
+    （不调度 helper、不杀进程，审计 `failed/hash=disabled`），服务层与路由层双重拦截；
+  - 设备 `GET /__dsh_remote/status` 新增 `data.restart.enabled`，App 据此决定是否渲染 ⏻；
+  - App：进入主机 / 回到前台 / **点 ↻ 刷新 / 页面加载完成 / WebSocket 重连**时都会重新读取组件状态，
+    按钮实时出现/消失（无需退出主机）；探活失败时保持上一次已知状态，避免误显示；旧版 Host
+    无该字段时按启用兼容，关闭状态直接调用接口仍会看到可读的 501 提示；App 版本 0.1.14
+    （build 16 → 17，同一任务内递增构建号）。
+- **验证（已由用户实测确认）**：host `npm test` **163/163**（新增组件关闭 501 + 不调度 + 审计、
+  设备 /status 两态、service 层关闭拒绝、设置页开关默认关闭 + 保存提交 `restartHostEnabled`；
+  原有 159 项全过）、`validate:artifacts` 通过；App `tsc`/`check:native`/`check:shell` 通过；
+  iOS Release 0.1.14 build 16/17 构建并安装真机；用户实测：默认关闭无 ⏻ → 开启后 App 内
+  刷新/重连即出现 ⏻ 且可正常重启 → 关闭后刷新即消失。默认关闭意味着升级后需在 DSH 本机
+  设置里主动开启；远程手机无法访问该设置页（管理 API 仅限本机，安全边界不变）。
+
 ## 2026-10-27 更新：远程重启主机真机可用（host-plugin 0.1.15）+ App 两处隐藏经用户确认
 
 - **远程重启**：0.1.10 → 0.1.14 连续四轮真机问题全部修复（最终合并发布为 0.1.15）——① 只杀 host 子进程触发崩溃弹窗 +
