@@ -37,7 +37,8 @@ window.__ModuleLoader__.load({
      * 覆盖方式（调试用，改完刷新页面即可）：
      *   globalThis.__DSH_REMOTE_MOBILE_HISTORY__ = {
      *     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },    // 首屏/重连
-     *     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },   // 向上翻历史/跳转
+     *     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },   // 向上翻历史（「加载更早」）
+     *     jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },  // 右侧 turn rail 跳转回填
      *     enabled: false,                                            // 关掉分片，恢复 DSH 默认窗口
      *   };
      * 省略字段 = 用默认值；非法值忽略；`minMessages` 自动收敛到 ≤ `maxMessages`。
@@ -45,8 +46,16 @@ window.__ModuleLoader__.load({
     const MOBILE_HISTORY_DEFAULTS = Object.freeze({
       open: Object.freeze({ maxMessages: 6, minMessages: 3, minTurns: 1 }),
       page: Object.freeze({ maxMessages: 10, minMessages: 5, minTurns: 1 }),
+      // 跳转是「连续回填」：总字节不变，页越大轮次越少、单帧越大。30 条 ≈ 1.8–2.4MB 上限。
+      jump: Object.freeze({ maxMessages: 30, minMessages: 15, minTurns: 2 }),
     });
-    /** globalThis 覆盖键：{ open?, page?, enabled? }。 */
+    /**
+     * 识别「跳转请求」（右侧 turn rail 点未加载的 turn → `Session.loadThrough`）：
+     * DSH 的 `JUMP_PAGE_OPTIONS` 把 `turnWindow.minMessages` 提到 200（普通翻页是 50），
+     * 这里用 100 做分界。识别不出来时退化为普通翻页窗口（仍能跳，只是轮次多些）。
+     */
+    const MOBILE_HISTORY_JUMP_MIN_MESSAGES = 100;
+    /** globalThis 覆盖键：{ open?, page?, jump?, enabled? }。 */
     const MOBILE_HISTORY_OVERRIDE_KEY = '__DSH_REMOTE_MOBILE_HISTORY__';
     /** 诊断用：安装成功后把生效窗口挂到这里（globalThis.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__）。 */
     const MOBILE_HISTORY_ACTIVE_KEY = '__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__';
@@ -2106,7 +2115,7 @@ window.__ModuleLoader__.load({
         window.minTurns = Math.max(1, window.minTurns);
         return window;
       };
-      return { open: pick('open'), page: pick('page') };
+      return { open: pick('open'), page: pick('page'), jump: pick('jump') };
     }
 
     /**
@@ -2134,6 +2143,19 @@ window.__ModuleLoader__.load({
         };
       }
       return next;
+    }
+
+    /**
+     * 是否是一次 turn 跳转请求（`Session.loadThrough` 用的 `JUMP_PAGE_OPTIONS`）。
+     *
+     * @param {*} request `session/page` 请求对象。
+     * @returns {boolean} true = 用 `jump` 窗口，false = 用普通翻页窗口。
+     */
+    function isMobileHistoryJumpRequest(request) {
+      const minMessages = request && typeof request === 'object' && request.turnWindow && typeof request.turnWindow === 'object'
+        ? request.turnWindow.minMessages
+        : undefined;
+      return Number.isSafeInteger(minMessages) && minMessages >= MOBILE_HISTORY_JUMP_MIN_MESSAGES;
     }
 
     /** 诊断日志（仅 `globalThis.__DSH_REMOTE_MOBILE_HISTORY_STATS__ === true` 时记录，最多 100 条）。 */
@@ -2200,13 +2222,15 @@ window.__ModuleLoader__.load({
       const current = {
         open: { ...windows.open },
         page: { ...windows.page },
+        // 显式传入 windows 的调用方（测试/未来复用）可以不带 jump：退化为普通翻页窗口。
+        jump: { ...(windows.jump || windows.page) },
       };
       const original = { repairRequest: proto.repairRequest, readPage: proto.readPage };
       let publishedActive = null;
       const publishActive = () => {
         try {
           if (typeof globalThis !== 'object' || globalThis === null) return;
-          publishedActive = { open: { ...current.open }, page: { ...current.page } };
+          publishedActive = { open: { ...current.open }, page: { ...current.page }, jump: { ...current.jump } };
           globalThis[MOBILE_HISTORY_ACTIVE_KEY] = publishedActive;
         } catch { /* ignore */ }
       };
@@ -2218,10 +2242,11 @@ window.__ModuleLoader__.load({
       }
 
       function patchedReadPage(request, throughSeq, signal) {
-        const window = current.page;
+        const jump = isMobileHistoryJumpRequest(request);
+        const window = jump ? current.jump : current.page;
         const next = applyMobileHistoryWindow(request, window);
         recordMobileHistoryStat({
-          kind: 'page',
+          kind: jump ? 'jump' : 'page',
           window: { ...window },
           beforeSeq: typeof next?.beforeSeq === 'number' ? next.beforeSeq : undefined,
         });
@@ -2248,6 +2273,7 @@ window.__ModuleLoader__.load({
           if (!next || typeof next !== 'object') return;
           current.open = { ...next.open };
           current.page = { ...next.page };
+          if (next.jump && typeof next.jump === 'object') current.jump = { ...next.jump };
           publishActive();
         },
         dispose() {
@@ -2449,7 +2475,9 @@ window.__ModuleLoader__.load({
         installMobileHistoryWindow,
         resolveMobileHistoryWindows,
         applyMobileHistoryWindow,
+        isMobileHistoryJumpRequest,
         MOBILE_HISTORY_DEFAULTS,
+        MOBILE_HISTORY_JUMP_MIN_MESSAGES,
         DEFAULT_SESSION_CACHE_SIZE,
       },
       apply(ctx) {
