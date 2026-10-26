@@ -116,6 +116,22 @@ v1 单连接记录，把早已删除的旧主机「复活」。现 v1 读取时�
 
 **生效**：App 需重新构建原生包（新增 `expo-device`）；主机侧无需改动。
 
+## 2026-10-26 修复：点「展开其余 N 个会话」会把左侧抽屉收起
+
+- **现象**：手机 App 左侧抽屉里点「展开其余 N 个会话」（或「收起」）时，抽屉被一起收掉，
+  看不到展开结果。
+- **根因**：注入手机壳（`mobileWebShell.ts`）的侧栏点击处理只对工作区行
+  （`data-row-key^="workspace:"`）保持抽屉打开，其它侧栏内点击一律 `closeDrawer()`；
+  而这个控件是 DSH `dsh-client-ui-workspace` 的溢出按钮
+  `<button data-row-key="overflow:<workspaceId>">`，只是展开/收起侧栏内容，不是导航。
+- **修复**：保持打开的判定加上 `[data-row-key^="overflow:"]`；会话行仍点击即收起抽屉
+  并进入会话。
+- **验证**：`check:shell` fixture 增加工作区行/会话行/overflow 按钮三类真实行，新增
+  3 项断言，**52/52** 通过；用修复前注入壳跑同一套 **1/52 失败**（正好命中该回归）；
+  `tsc`、`check:native`、服务端 124 测试、`validate:artifacts` 通过。
+- **生效/版本**：纯 JS 注入壳；App **0.1.10 (build 12)** 已构建安装真机验证
+  （ACCEPTANCE 第 25 项 ✅）。
+
 ## 2026-10-25 调整：主界面顶栏只显示主机 ID；Release 去掉底部连接信息条
 
 - **顶栏**：标题仍显示主机名；副标题由「已连接 · <hostId>.<relayDomain>[:port]」改为
