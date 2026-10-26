@@ -32,8 +32,7 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   内仍推送、子代理/关闭推送跳过）；`validate:artifacts` 通过。**真机问答推送待验收**
   （需重启 DSH 加载 Host 半）。
 - **生效**：host-plugin 重启 DSH 后生效；App 无需重新安装（通知跳转沿用现有 0.1.5+ 逻辑）。
-- **版本**：工作区已有其它会话的 host-plugin `0.1.14` 未提交改动，本次未再 bump 版本号，
-  合并时建议统一递增（如 0.1.15）。
+- **合并发布**：本推送功能与其它会话的重启修复已合并发布为 host-plugin **0.1.15**。
 
 ## 2026-10-26 新增：App 隐藏「在主机本机打开」入口 + 远程「重启主机 DSH」（App 0.1.11 build 13 / host-plugin 0.1.10）
 
@@ -88,9 +87,9 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   「只拉中间那段」需要 DSH/Host 的随机窗口支持（T1.1/上游范围，本次未做）。
 - **相关**：[`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md) §4.1
 
-## 2026-10-27 更新：远程重启主机真机可用（host-plugin 0.1.14）+ App 两处隐藏经用户确认
+## 2026-10-27 更新：远程重启主机真机可用（host-plugin 0.1.15）+ App 两处隐藏经用户确认
 
-- **远程重启**：0.1.10 → 0.1.14 连续四轮真机问题全部修复——① 只杀 host 子进程触发崩溃弹窗 +
+- **远程重启**：0.1.10 → 0.1.14 连续四轮真机问题全部修复（最终合并发布为 0.1.15）——① 只杀 host 子进程触发崩溃弹窗 +
   双实例（0.1.11）；② 桌面端识别依赖了实际不存在的 `DSH_DESKTOP_NODE_EXECUTABLE`（0.1.12）；
   ③ 整组 `SIGTERM` 让 Electron 先杀 renderer、弹「应用无法启动或已意外停止」（0.1.13）；
   ④ 硬杀残留的 Electron 单实例锁让新实例 ~80ms 内自杀（0.1.14，现象「关掉但没拉起」）。
@@ -103,7 +102,7 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
 - **验证**：host `npm test` **159/159**、`validate:artifacts` 通过（含并行会话已提交的推送改动）；
   本机用临时 HOME + 自建 dummy 进程组验证杀进程组 / 拉起校验 / 直接执行兜底 / 陈旧锁清理，
   全程不触碰真实 DSH；App `tsc --noEmit`、`check:native`、`check:shell` 均通过。
-- **版本 / 生效**：host-plugin **0.1.14**（含 `ask_user_question` 推送）；App 工作区版本
+- **版本 / 生效**：host-plugin **0.1.15**（= 0.1.14 重启修复 + `ask_user_question` 推送的合并版本）；App 工作区版本
   **0.1.13 build 15**（含本轮隐藏修复，由并行会话推进版本）。host 半需重启 DSH 后生效。
 - 根因与逐轮排查记录见 [`docs/diagnostics/10-mobile-host-actions.md`](docs/diagnostics/10-mobile-host-actions.md)
   §2；逐轮细节整理见并行会话的 `docs/diagnostics/11-host-restart-relaunch.md`（尚未提交）。

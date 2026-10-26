@@ -198,7 +198,7 @@ Body：
 > 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
 > 删除设备记录目前只在**本机管理 API**（`POST /api/remote-access/devices/:id/delete`）开放，远程隧道不提供。
 
-### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.14+）
+### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.15+）
 远程触发**主机 DSH 客户端**重启（App「重启主机」入口，用于更新 Host/Client 半后不必回电脑
 手动重启）。请求无 body；主机先回 202，再在约 1s 后结束当前 DSH 进程并重新拉起：
 ```json
