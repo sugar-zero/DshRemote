@@ -15,9 +15,9 @@
  *     余额的「查询用量 / 充值 / 更多账号信息」、账号菜单「意见反馈」）通过桥交给
  *     App 打开（默认在 App 内嵌浏览器打开，等价桌面 DSH 的内嵌平台页；内嵌页里可
  *     一键切系统浏览器）。原生 WebView 没有新窗口能力，不拦截的话点击无反应。
- *  7. 隐藏「在主机本机打开」控件（`@deepseek-ai/dsh-client-ui-open-in-app`）：它让主机
- *     的 Finder / 默认应用打开路径，手机上点击没有意义；只按稳定 data-* 属性隐藏控件
- *     本身，不隐藏整个插槽（同槽位还有其它插件按钮）。
+ *  7. 隐藏「在主机本机打开」类入口：DSH `open-in-app` 的打开工作区/显示文件位置控件
+ *     （按稳定 data-* 属性），以及工作区分区的「添加工作区」＋按钮（原生目录选择会在
+ *     主机上弹文件夹对话框）。都只隐藏控件本身，不隐藏容器/插槽。
  *
  * 关键：脚本通过 WKUserScript `.atDocumentStart` 注入，执行时 document.body 还不存在，
  * 因此必须等 DOMContentLoaded / body 可用后再初始化（之前版本在这里静默失败）。
@@ -253,6 +253,13 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '[data-open-path-more],',
       '[data-open-path-unpreviewable],',
       '[data-open-target-skeleton] { display: none !important; }',
+      // ── 隐藏「添加工作区」（@deepseek-ai/dsh-client-ui-workspace 的 workspace.add） ──
+      // 这个 ＋ 按钮走「原生目录选择」流程（dsh-client-ui-directory-picker-native），
+      // 点下去是在**主机**弹 Finder/文件夹对话框、由主机端选目录；手机上看不到也选不了，
+      // 属于「在主机本机打开」同类的无效入口，隐藏。按钮本身没有 data-*，用它的
+      // aria-label（zh/en 两套内置文案）精确命中；不隐藏任何容器/整段工作区列表。
+      '[aria-label="添加工作区"],',
+      '[aria-label="Add workspace"] { display: none !important; }',
     ].join('\n');
     document.head.appendChild(style);
 
