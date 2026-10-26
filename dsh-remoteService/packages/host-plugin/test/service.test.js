@@ -88,9 +88,64 @@ test('RemoteService: TLS certificate rotation hot-reloads listener without resta
     assert.notEqual(rotated.host.tls.notAfter, firstNotAfter, 'notAfter 应变为新证书');
     assert.notEqual(service.listenPort, firstPort, '监听应重建（新端口）');
     assert.equal(rotated.enabled, true);
+
+    // 热加载到「证书与私钥不匹配」：停止监听，且不能继续显示旧证书「有效」
+    writeFileSync(certPath, cert2.certPem, { mode: 0o600 });
+    writeFileSync(keyPath, cert1.keyPem, { mode: 0o600 });
+    const broken = await service.reloadTls();
+    assert.match(broken.relay.lastError, /证书与私钥不匹配/);
+    assert.equal(service.listenPort, 0);
+    assert.equal(broken.host.tls.valid, false);
+    assert.equal(broken.host.tls.certFile, certPath);
   } finally {
     await service.dispose();
     await new Promise((resolve) => wss.close(resolve));
+    home.cleanup();
+  }
+});
+
+test('RemoteService: TLS 证书与私钥不匹配时给出可读错误，且不启动监听/中继', async () => {
+  const home = withTempHome();
+  try {
+    const leaf = makeServerCert('h_badkey.relay.test', 30);
+    const other = makeServerCert('h_badkey.relay.test', 30);
+    const certPath = `${home.dir}/bad-cert.pem`;
+    const keyPath = `${home.dir}/bad-key.pem`;
+    writeFileSync(certPath, leaf.certPem, { mode: 0o600 });
+    writeFileSync(keyPath, other.keyPem, { mode: 0o600 });
+
+    const { saveConfig } = await import('../lib/config.js');
+    const { RemoteService } = await import('../lib/service.js');
+    saveConfig({
+      enabled: true,
+      relayUrl: 'ws://127.0.0.1:1',
+      relayDomain: 'relay.test',
+      hostId: 'h_badkey',
+      hostToken: 'tok',
+      hostName: 'Bad Key Host',
+      tlsCertFile: certPath,
+      tlsKeyFile: keyPath,
+      relayTlsInsecure: true,
+    });
+    const fakeCtx = {
+      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
+      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
+      effect: (fn) => fn(),
+      on: () => () => {},
+    };
+    const service = new RemoteService(fakeCtx);
+    try {
+      await service.ready;
+      const status = service.status();
+      assert.match(status.relay.lastError, /证书与私钥不匹配/);
+      assert.match(status.relay.lastError, /fullchain\.pem/);
+      assert.equal(status.relay.connected, false);
+      assert.equal(service.listenPort, 0);
+      assert.equal(status.host.tls.valid, false);
+    } finally {
+      await service.dispose();
+    }
+  } finally {
     home.cleanup();
   }
 });

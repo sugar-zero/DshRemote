@@ -12,8 +12,9 @@ import { RelayConnector } from './connector.js';
 import { createRemoteServer } from './server.js';
 import { createPushNotifier } from './push.js';
 import { createApnsClient } from './apns.js';
+import { checkTlsKeyPair } from './tls-check.js';
 
-const VERSION = '0.1.6';
+const VERSION = '0.1.7';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -139,8 +140,26 @@ export class RemoteService {
         return;
       }
     }
+    // 配置级自检：证书/私钥不是一对、证书 SAN 不覆盖主机域名 ——
+    // 这两类错误在 Node 里只会表现为晦涩的 TLS 错误或手机端「无法连接」，提前给出可读原因。
+    // 注意：自签的开发证书（无 tlsCertFile 时生成）同样走这里。
+    const fqdn = hostFqdn(config);
+    const tlsCheck = checkTlsKeyPair({ certPem, keyPem, fqdn });
+    if (tlsCheck.error) {
+      // 清掉上一次成功启动的 tlsInfo，避免热加载失败后状态页仍显示旧证书「有效」
+      this.tlsInfo = undefined;
+      this.lastError = tlsCheck.error;
+      return;
+    }
     const certInfo = inspectCert(certPem);
-    this.tlsInfo = { certFile, dev, fqdn: hostFqdn(config), ...certInfo };
+    this.tlsInfo = {
+      certFile,
+      dev,
+      fqdn,
+      keyMatch: true,
+      hostnameOk: tlsCheck.warnings.length === 0,
+      ...certInfo,
+    };
     try {
       const runtime = createRemoteServer({
         certPem,
@@ -190,7 +209,8 @@ export class RemoteService {
         this.connector.registerPushToken({ deviceId: entry.deviceId, provider: entry.provider, token: entry.token });
       }
     }
-    this.lastError = tlsError;
+    this.lastError = [tlsError, ...tlsCheck.warnings].filter(Boolean).join('; ') || null;
+    if (tlsCheck.warnings.length > 0) this.log(`TLS 证书告警: ${tlsCheck.warnings.join('; ')}`);
     this.log(`remote server on 127.0.0.1:${this.listenPort}${dev ? ' (dev self-signed TLS)' : ''}`);
     this.#watchCertFiles(config);
   }

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { withTempHome, makeCsr } from './helpers.js';
+import { X509Certificate, createPrivateKey } from 'node:crypto';
+import { withTempHome, makeCsr, makeEcCsrJs, withoutOpenssl } from './helpers.js';
 import { buildPairingUri, parsePairingUri } from 'dsh-remote-protocol';
 
 test('pairing: create session -> pending approval -> paired -> device registered; secret single use', async () => {
@@ -125,6 +126,49 @@ test('pairing: publicPort is included in the QR host (direct relay mode)', async
     const parsed = parsePairingUri(session.uri);
     assert.equal(parsed.host, 'h_test.relay.test:1443');
     assert.equal(parsed.relayDomain, 'relay.test');
+  } finally {
+    home.cleanup();
+  }
+});
+
+test('pairing: EC（Secure Enclave）CSR 在无 openssl 主机上也能完成配对', async () => {
+  const home = withTempHome();
+  try {
+    const { loadOrCreateHostIdentity, loadOrCreateDeviceCa } = await import('../lib/identity.js');
+    const { DeviceStore } = await import('../lib/devices.js');
+    const { AuditLog } = await import('../lib/audit.js');
+    const { PairingManager } = await import('../lib/pairing.js');
+    const identity = loadOrCreateHostIdentity();
+    const ca = loadOrCreateDeviceCa();
+    const devices = new DeviceStore();
+    const config = { hostId: 'h_ec', relayDomain: 'relay.test', hostName: 'Test Win', requireApproval: false };
+    const pairing = new PairingManager({ identity, ca, devices, audit: new AuditLog(), getConfig: () => config });
+
+    const session = pairing.createSession();
+    const parsed = parsePairingUri(session.uri);
+    const csr = makeEcCsrJs('iPhone SE');
+    // 模拟 Windows 主机：PATH 置空 → 主机端找不到 openssl，走纯 JS 回退
+    const paired = withoutOpenssl(() =>
+      pairing.handlePairRequest({
+        secret: parsed.secret,
+        csrPem: csr.csrPem,
+        deviceName: 'iPhone SE',
+        platform: 'ios',
+        remoteAddress: '127.0.0.1',
+      }),
+    );
+    assert.equal(paired.status, 'paired');
+    assert.match(paired.certPem, /BEGIN CERTIFICATE/);
+    assert.equal(devices.list().length, 1);
+    assert.equal(devices.list()[0].name, 'iPhone SE');
+
+    const leaf = new X509Certificate(paired.certPem);
+    const caCert = new X509Certificate(paired.caPem);
+    assert.equal(leaf.checkIssued(caCert), true);
+    assert.equal(leaf.verify(caCert.publicKey), true);
+    // 手机端后续 mTLS 用的就是这把 EC 私钥
+    assert.equal(leaf.checkPrivateKey(createPrivateKey(csr.privateKeyPem)), true);
+    assert.equal(leaf.serialNumber.toUpperCase(), paired.serial);
   } finally {
     home.cleanup();
   }
