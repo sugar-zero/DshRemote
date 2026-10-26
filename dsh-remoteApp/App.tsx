@@ -49,6 +49,9 @@ import { colors, spacing, typography } from './src/theme';
 
 type Route = 'loading' | 'home' | 'pairing' | 'webview' | 'devices' | 'settings';
 
+/** 应用内通知卡片自动消失时间：太短会来不及点（原 5s → 20s）。 */
+const IN_APP_NOTIFICATION_DISMISS_MS = 20_000;
+
 /** APNs payload 的 body 字典（host/sessionId 由 host 插件附带，用于点通知跳会话）。 */
 function notificationDataOf(data: unknown): { sessionId?: string; host?: string } {
   if (!data || typeof data !== 'object') return {};
@@ -279,10 +282,10 @@ export default function App() {
     return () => subscription.remove();
   }, []);
 
-  // 应用内通知卡片 5 秒自动消失；锁屏时立即清除，避免内容泄露。
+  // 应用内通知卡片 20 秒自动消失；锁屏时立即清除，避免内容泄露。
   useEffect(() => {
     if (!inAppMessage) return undefined;
-    const timer = setTimeout(() => setInAppMessage(null), 5000);
+    const timer = setTimeout(() => setInAppMessage(null), IN_APP_NOTIFICATION_DISMISS_MS);
     return () => clearTimeout(timer);
   }, [inAppMessage]);
 
