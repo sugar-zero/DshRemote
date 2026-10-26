@@ -19,10 +19,10 @@
  *      点抽屉外不误触内容、关闭后清理状态、宽屏恢复 DSH 原生布局。
  *   8. 外链（target=_blank 锚点 / window.open）：注入壳拦截 http(s) 外链并上报
  *      App（系统浏览器打开），同源锚点不受影响（原生 WebView 没有新窗口能力）。
- *   9. 隐藏「在主机本机打开」控件（@deepseek-ai/dsh-client-ui-open-in-app）：
- *      只按稳定 data-* 属性隐藏 split 控件/内部按钮/加载骨架，同一 [data-slot] 里的
- *      其它插件按钮保持可见可点；该控件永远操作主机本机，规则与 WebView 宽度无关
- *      （手机/iPad 都隐藏，宽屏下同样验证）。
+ *   9. 隐藏「在主机本机打开」类入口（@deepseek-ai/dsh-client-ui-open-in-app 的
+ *      split 控件/内部按钮/加载骨架，按稳定 data-* 属性；以及工作区的「添加工作区」＋
+ *      按钮，按 aria-label）。同一 [data-slot] 里的其它插件按钮保持可见可点；这些动作
+ *      永远发生在主机本机，规则与 WebView 宽度无关（手机/iPad 都隐藏，宽屏同样验证）。
  *
  * 用法：node scripts/check-injected-shell.mjs   （本机没有 Chrome 时自动跳过，退出码 0）
  * 开发对照：node scripts/check-injected-shell.mjs --shell-js /tmp/old-mobileWebShell.ts
@@ -434,6 +434,8 @@ const OPEN_IN_APP_FIXTURE_HTML = `<!doctype html>
   .fixture-header-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   /* 会话 header 右侧 utilities 槽：open-in-app 与其它插件按钮并列。 */
   .fixture-utilities { display: flex; align-items: center; gap: 8px; flex: none; }
+  .fixture-workspace-header { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l4); }
+  .fixture-workspace-title { flex: 1 1 auto; font-size: 12px; color: var(--dsw-alias-label-secondary); }
   .fixture-other-button { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
   /* ===== OpenTargetButton.module.css（DSH 0.2.1-rc.3，关键规则逐字保留） ===== */
   .ga5fXW_menuAnchor { flex: none; align-self: center; display: inline-flex; }
@@ -476,6 +478,10 @@ const OPEN_IN_APP_FIXTURE_HTML = `<!doctype html>
     </div>
   </div>
 </header>
+<div class="fixture-workspace-header">
+  <span class="fixture-workspace-title">工作区</span>
+  <button type="button" class="fixture-other-button" id="workspace-add-button" aria-label="添加工作区">＋</button>
+</div>
 <div style="padding: 16px; color: #61666b;">会话内容（fixture 占位）</div>
 </body></html>`;
 
@@ -519,6 +525,8 @@ const OPEN_IN_APP_SNAPSHOT_JS = `(() => {
     clientRects: element.getClientRects().length,
     rendered: element.offsetParent !== null,
   }));
+  const workspaceAdd = document.getElementById('workspace-add-button');
+  const workspaceAddStyle = workspaceAdd ? getComputedStyle(workspaceAdd) : null;
   const sibling = document.getElementById('other-plugin-button');
   const siblingStyle = sibling ? getComputedStyle(sibling) : null;
   const siblingRect = sibling ? sibling.getBoundingClientRect() : null;
@@ -531,6 +539,11 @@ const OPEN_IN_APP_SNAPSHOT_JS = `(() => {
     splitCount: splitRoots.length,
     splitDisplays: splitRoots.map((element) => getComputedStyle(element).display),
     inner,
+    workspaceAdd: workspaceAdd ? {
+      display: workspaceAddStyle.display,
+      clientRects: workspaceAdd.getClientRects().length,
+      rendered: workspaceAdd.offsetParent !== null,
+    } : null,
     sibling: sibling ? {
       display: siblingStyle.display,
       visibility: siblingStyle.visibility,
@@ -1270,6 +1283,7 @@ async function runChecks(chromePath, shellJs) {
       && document.getElementById('dsh-mobile-shell-style')
       && window.matchMedia('(max-width: 760px)').matches
       && document.getElementById('other-plugin-button')
+      && document.getElementById('workspace-add-button')
       && document.querySelectorAll('[data-open-target]').length === 4
       && document.querySelectorAll(
         '[data-open-path-open], [data-open-path-more], [data-open-path-unpreviewable], [data-open-target-skeleton]'
@@ -1671,6 +1685,22 @@ check(
     && openInAppMobile.sibling.clientRects === 1
     && openInAppMobile.sibling.hit === true,
   `display=${openInAppMobile.sibling?.display}, visibility=${openInAppMobile.sibling?.visibility}, hit=${openInAppMobile.sibling?.hit}`,
+);
+check(
+  '工作区「添加工作区」＋按钮被隐藏（原生目录选择只会在主机弹文件夹对话框）',
+  Boolean(openInAppMobile.workspaceAdd)
+    && openInAppMobile.workspaceAdd.display === 'none'
+    && openInAppMobile.workspaceAdd.clientRects === 0
+    && !openInAppMobile.workspaceAdd.rendered,
+  `display=${openInAppMobile.workspaceAdd?.display}, rects=${openInAppMobile.workspaceAdd?.clientRects}`,
+);
+check(
+  '宽屏（1000×800 / iPad）同样隐藏「添加工作区」按钮',
+  Boolean(openInAppDesktop.workspaceAdd)
+    && openInAppDesktop.workspaceAdd.display === 'none'
+    && openInAppDesktop.workspaceAdd.clientRects === 0
+    && !openInAppDesktop.workspaceAdd.rendered,
+  `display=${openInAppDesktop.workspaceAdd?.display}, rects=${openInAppDesktop.workspaceAdd?.clientRects}`,
 );
 check(
   '宽屏（1000×800 / iPad）同样隐藏 open-in-app 控件（规则与宽度无关）',
