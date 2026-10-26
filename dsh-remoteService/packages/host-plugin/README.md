@@ -289,6 +289,45 @@ DSH Web 客户端采用引用计数式 retention：切换会话时旧会话实�
 
 ---
 
+## 4.3 手机端历史分片拉取（Client 半，0.1.8）
+
+DSH 客户端打开会话时 `session/follow` 的窗口是硬编码的
+`{ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }`，大会话一帧可达数 MB
+（本机大会话实测 3.5–4.5MB，更极端的更大）。手机弱网下这一帧就是「打开会话要等几秒」。
+Host 侧 `paginate()` 返回 `cut..cursor` 的**全部事件**，所以窗口越大帧越大。
+
+手机远程 WebView（`?dsh_mobile=1`）下，插件的 Client 半包装 DSH Client
+`SessionEventStream` 的 `repairRequest`（`session/follow` 首屏/重连 tail）与 `readPage`
+（`session/page` 翻页/跳转），把**请求窗口**压小，历史交给 DSH 既有「加载更早」按需补齐：
+
+| 场景 | 默认窗口（maxMessages / minMessages / minTurns） |
+|---|---|
+| 首屏 / 重连 tail | `6 / 3 / 1` |
+| 向上翻页 / 跳转 | `10 / 5 / 1` |
+
+这是**客户端自己发更小的请求**（不是代理改帧）：`address`/`beforeSeq`/`throughSeq`/返回值
+全部原样透传，Host 的窗口校验与客户端 `assertPageThrough` 都满足。桌面本机完全不安装；
+DSH 版本改了内部方法名时自动降级（只打一条 `console.warn`），不影响主 UI。
+
+调试覆盖（刷新页面生效）：
+
+```js
+globalThis.__DSH_REMOTE_MOBILE_HISTORY__ = {
+  open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
+  page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+  enabled: false, // 关掉分片，恢复 DSH 默认窗口
+};
+```
+
+诊断：`__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__` 为生效窗口；置
+`__DSH_REMOTE_MOBILE_HISTORY_STATS__ = true` 后 `__DSH_REMOTE_MOBILE_HISTORY_LOG__`
+记录最近 100 次分页请求/响应（窗口、`beforeSeq`、记录数、耗时），可在手机 Web Inspector 查。
+
+> 生效方式同 §4.2：Host 插件 ≥ 0.1.8 + 重启 DSH；App 无需重新构建。
+> 实测量化与限制见 [`docs/diagnostics/09-mobile-history-slicing.md`](../../../docs/diagnostics/09-mobile-history-slicing.md)。
+
+---
+
 ## 5. 排障
 
 | 现象 | 检查 |
@@ -301,7 +340,7 @@ DSH Web 客户端采用引用计数式 retention：切换会话时旧会话实�
 | App 扫描后“网络连接失败” | 先重新生成二维码；确认 host 带 `:端口`；再查 `*.relayDomain` 泛解析、手机代理/VPN、云安全组、主机数据面证书 SAN |
 | 设置里 publicPort 又变回 0 | Host 半还是旧代码；重启 DSH；确认 `~/.dsh/remote-access/config.json` 有 `publicPort` |
 | 主机在线但 App 连不上 | 控制面 8443 和数据面不是一条链路；看 [server/README.md §9.2](../../../server/README.md#92-主机显示在线但-app-配对网络连接失败) |
-| 打开大会话「载入历史」很久/失败、画面反复跳 | ① 插件是否已重启加载新代码（旧代码没有 WS 心跳桥，慢链路上 mux 会被 DSH 心跳误杀）；② relay 带宽/线路是否过慢（4MB 历史快照 / 5Mbps ≈ 7s）；详见 [`docs/diagnostics/00-root-cause.md`](../../../docs/diagnostics/00-root-cause.md) |
+| 打开大会话「载入历史」很久/失败、画面反复跳 | ① 插件是否已重启加载新代码（旧代码没有 WS 心跳桥，慢链路上 mux 会被 DSH 心跳误杀）；② 手机 WebView 是否加载了历史分片（≥0.1.8，控制台应有 `[dsh-remote] mobile session history window:`）；③ relay 带宽/线路是否过慢；详见 [`docs/diagnostics/09-mobile-history-slicing.md`](../../../docs/diagnostics/09-mobile-history-slicing.md)、[`00-root-cause.md`](../../../docs/diagnostics/00-root-cause.md) |
 
 ---
 

@@ -53,6 +53,7 @@
 | 看手机端「设置页太挤」的全屏化 + 分区抽屉修复 | **[docs/diagnostics/06-mobile-settings-drawer.md](docs/diagnostics/06-mobile-settings-drawer.md)** |
 | 看手机端「查询用量/充值/意见反馈点击没反应」的外链修复 | **[docs/diagnostics/07-mobile-external-links.md](docs/diagnostics/07-mobile-external-links.md)** |
 | 看 Windows 主机无 openssl 时 EC 设备配对失败的根因与修复 | **[docs/diagnostics/08-host-ec-csr-windows.md](docs/diagnostics/08-host-ec-csr-windows.md)** |
+| 看手机端「打开大会话要等几秒」的历史分片拉取（首屏小窗口 + 按需翻页） | **[docs/diagnostics/09-mobile-history-slicing.md](docs/diagnostics/09-mobile-history-slicing.md)** |
 
 ### 服务器如何配置（摘要）
 

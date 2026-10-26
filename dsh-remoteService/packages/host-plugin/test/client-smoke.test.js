@@ -775,7 +775,7 @@ test('会话热缓存只在远程 WebView（?dsh_mobile=1）安装，桌面本�
   const mobileModule = mobileBundle.captured.factory(() => createFakeReact());
   const mobileCtx = createFakeCtx({ sessions: fake.sessions, uiWorkspace });
   mobileModule.apply(mobileCtx.ctx);
-  assert.deepEqual(mobileCtx.injectedServices, [['sessions', 'connection'], ['uiWorkspace']], '远程 WebView 应注入 sessions/connection 与会话桥 uiWorkspace 服务');
+  assert.deepEqual(mobileCtx.injectedServices, [['sessions', 'connection'], ['uiWorkspace'], ['sessions']], '远程 WebView 应注入 sessions/connection、会话桥 uiWorkspace 与服务就绪后的历史分片');
   assert.equal(typeof mobileBundle.sandbox.__DSH_REMOTE_OPEN_SESSION__, 'function', '手机 WebView 暴露打开会话入口');
   assert.equal(mobileBundle.sandbox.__DSH_REMOTE_CURRENT_SESSION__?.sessionId, 's_mobile', '手机 WebView 上报当前会话');
 
@@ -936,4 +936,233 @@ test('设备列表：已撤销设备提供「删除」（二次确认）并 POST
   assert.ok(calls.some((call) => call.url.includes('/status')), '删除后应刷新 status');
   tree = renderer.render();
   assert.equal(findAll(tree, (el) => el.props['data-ra-action'] === 'device-delete').length, 0, '删除后该设备不再出现');
+});
+
+/* ────────────────────── 手机端会话历史分片（首屏 + 翻页窗口） ────────────────────── */
+
+/** 形状与 DSH Client 的 SessionEventStream 一致的最小 fake（本插件只包装 repairRequest/readPage）。 */
+function createFakeSessionEventStream() {
+  return class FakeSessionEventStream {
+    constructor() {
+      this.pages = [];
+    }
+
+    repairRequest(request) {
+      return {
+        ...request.maxMessages === undefined ? {} : { maxMessages: request.maxMessages },
+        ...request.turnWindow === undefined ? {} : { turnWindow: request.turnWindow },
+      };
+    }
+
+    async readPage(request, throughSeq, signal) {
+      this.pages.push({ request, throughSeq, signal });
+      return { records: [{ type: 'event', event: { seq: throughSeq } }], hasMore: true };
+    }
+  };
+}
+
+function createFakeModuleTable(modules) {
+  const calls = [];
+  const require = (spec) => {
+    calls.push(spec);
+    if (spec === 'react') return createFakeReact();
+    if (Object.prototype.hasOwnProperty.call(modules, spec)) {
+      const value = modules[spec];
+      if (value instanceof Error) throw value;
+      return value;
+    }
+    throw new Error(`module table missed ${spec}`);
+  };
+  require.calls = calls;
+  return require;
+}
+
+const DSH_SESSION_CONTROLLER = '@deepseek-ai/dsh-api-session-controller';
+
+/** VM 沙箱里创建的对象属于另一个 realm；deepStrictEqual 前先转成本 realm 的纯 JSON。 */
+function plain(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
+}
+
+test('手机端历史分片：首屏与翻页窗口压到手机预算（follow + page + 跳转）', async () => {
+  const FakeStream = createFakeSessionEventStream();
+  const bundle = loadBundle({
+    location: { search: '?dsh_mobile=1' },
+    globals: { __DSH_REMOTE_MOBILE_HISTORY_STATS__: true },
+  });
+  const clientModule = bundle.captured.factory(createFakeModuleTable({
+    [DSH_SESSION_CONTROLLER]: { SessionEventStream: FakeStream },
+  }));
+  const context = createFakeCtx({ sessions: {} });
+  clientModule.apply(context.ctx);
+
+  // 生效窗口挂到 globalThis，便于在手机 Web Inspector 里确认
+  assert.deepEqual(plain(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__), {
+    open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
+    page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+  }, '安装后应暴露生效窗口');
+
+  const stream = new FakeStream();
+  // 首屏/重连 tail：DSH 默认 500 / 50 / 2 → 压到手机预算
+  assert.deepEqual(
+    plain(stream.repairRequest({ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } })),
+    { maxMessages: 6, turnWindow: { minMessages: 3, minTurns: 1 } },
+    'session/follow 首屏窗口应压到 6/3/1',
+  );
+
+  // 向上翻历史（loadOlder）：500 / 50 / 2 → 10 / 5 / 1
+  await stream.readPage({ beforeSeq: 420, maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }, 500, undefined);
+  assert.deepEqual(plain(stream.pages[0].request), {
+    beforeSeq: 420,
+    maxMessages: 10,
+    turnWindow: { minMessages: 5, minTurns: 1 },
+  }, 'session/page 翻页窗口应压到 10/5/1 且保留 beforeSeq');
+  assert.equal(stream.pages[0].throughSeq, 500, 'throughSeq 必须原样传给原方法');
+
+  // 跳转（loadThrough，minMessages 200）：同样收紧，避免单帧数 MB
+  await stream.readPage({ beforeSeq: 900, maxMessages: 500, turnWindow: { minMessages: 200, minTurns: 2 } }, 950, undefined);
+  assert.deepEqual(plain(stream.pages[1].request), {
+    beforeSeq: 900,
+    maxMessages: 10,
+    turnWindow: { minMessages: 5, minTurns: 1 },
+  }, '跳转翻页窗口也应压到 10/5/1');
+
+  // message-aligned 模式（无 turnWindow）：只压 maxMessages，不凭空添加 turnWindow
+  await stream.readPage({ beforeSeq: 3, maxMessages: 500 }, 10, undefined);
+  assert.deepEqual(plain(stream.pages[2].request), { beforeSeq: 3, maxMessages: 10 }, '不得凭空添加 turnWindow');
+
+  // 只收紧不放大：请求本来更小时保留请求值
+  await stream.readPage({ beforeSeq: 1, maxMessages: 3, turnWindow: { minMessages: 1, minTurns: 1 } }, 5, undefined);
+  assert.deepEqual(plain(stream.pages[3].request), {
+    beforeSeq: 1,
+    maxMessages: 3,
+    turnWindow: { minMessages: 1, minTurns: 1 },
+  }, '不得放大调用方更小的窗口');
+
+  // 诊断：记录请求窗口与响应规模
+  const log = bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_LOG__;
+  assert.ok(Array.isArray(log) && log.length >= 4, '开启统计后应记录分页请求');
+  assert.equal(log[0].kind, 'follow');
+  assert.ok(log.some((entry) => entry.kind === 'page' && entry.window.maxMessages === 10 && entry.beforeSeq === 420));
+  await flushAsync();
+  assert.ok(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_LOG__.some((entry) => entry.kind === 'page-result' && entry.records === 1), '应记录翻页响应规模');
+
+  // 插件卸载后恢复 DSH 原方法
+  for (const dispose of [...context.disposers].reverse()) dispose();
+  assert.equal(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__, undefined, '卸载后应清理生效窗口');
+});
+
+test('手机端历史分片：桌面本机不装、模块缺失/关闭时静默降级', () => {
+  // 桌面本机：不 require session 控制器，prototype 保持原样
+  const DesktopStream = createFakeSessionEventStream();
+  const desktopRequire = createFakeModuleTable({});
+  const desktopBundle = loadBundle();
+  const desktopModule = desktopBundle.captured.factory(desktopRequire);
+  const desktopCtx = createFakeCtx({ sessions: {} });
+  desktopModule.apply(desktopCtx.ctx);
+  assert.deepEqual(desktopCtx.injectedServices, [], '桌面本机不安装历史分片');
+  assert.deepEqual(desktopRequire.calls, ['react'], '桌面本机只 require react');
+  assert.deepEqual(plain(DesktopStream.prototype.repairRequest({ maxMessages: 500 })), { maxMessages: 500 }, '桌面本机窗口不变');
+
+  // 手机 WebView 但浏览器模块表里没有 session 控制器：只告警，不抛错
+  const MobileStream = createFakeSessionEventStream();
+  const originalRepair = MobileStream.prototype.repairRequest;
+  const warnings = [];
+  const mobileBundle = loadBundle({
+    location: { search: '?dsh_mobile=1' },
+    globals: {
+      console: {
+        info() {},
+        log() {},
+        warn(...args) { warnings.push(args.map(String).join(' ')); },
+        error() {},
+      },
+    },
+  });
+  const mobileModule = mobileBundle.captured.factory(createFakeModuleTable({}));
+  const mobileCtx = createFakeCtx({ sessions: {} });
+  assert.doesNotThrow(() => mobileModule.apply(mobileCtx.ctx), '模块缺失不得影响主 UI');
+  assert.equal(MobileStream.prototype.repairRequest, originalRepair, '模块缺失时不包装');
+  assert.ok(warnings.some((message) => message.includes('mobile session history')), '应留下降级告警');
+
+  // enabled:false：不安装
+  const DisabledStream = createFakeSessionEventStream();
+  const disabledBundle = loadBundle({
+    location: { search: '?dsh_mobile=1' },
+    globals: { __DSH_REMOTE_MOBILE_HISTORY__: { enabled: false } },
+  });
+  const disabledModule = disabledBundle.captured.factory(createFakeModuleTable({
+    [DSH_SESSION_CONTROLLER]: { SessionEventStream: DisabledStream },
+  }));
+  disabledModule.apply(createFakeCtx({ sessions: {} }).ctx);
+  assert.equal(disabledBundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__, undefined, 'enabled:false 时不安装');
+});
+
+test('手机端历史分片：globalThis 覆盖窗口（调试用）', () => {
+  const FakeStream = createFakeSessionEventStream();
+  const bundle = loadBundle({
+    location: { search: '?dsh_mobile=1' },
+    globals: {
+      __DSH_REMOTE_MOBILE_HISTORY__: {
+        open: { maxMessages: 12 },
+        page: { maxMessages: 20, minMessages: 8, minTurns: 2 },
+      },
+    },
+  });
+  const clientModule = bundle.captured.factory(createFakeModuleTable({
+    [DSH_SESSION_CONTROLLER]: { SessionEventStream: FakeStream },
+  }));
+  clientModule.apply(createFakeCtx({ sessions: {} }).ctx);
+  assert.deepEqual(plain(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__), {
+    open: { maxMessages: 12, minMessages: 3, minTurns: 1 },
+    page: { maxMessages: 20, minMessages: 8, minTurns: 2 },
+  }, '覆盖值应与默认值合并');
+  const stream = new FakeStream();
+  assert.deepEqual(
+    plain(stream.repairRequest({ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } })),
+    { maxMessages: 12, turnWindow: { minMessages: 3, minTurns: 1 } },
+    '首屏应使用覆盖后的窗口',
+  );
+});
+
+test('手机端历史分片：重复安装幂等、配置解析兜底', () => {
+  const FakeStream = createFakeSessionEventStream();
+  const proto = FakeStream.prototype;
+  const originalRepair = proto.repairRequest;
+  const originalReadPage = proto.readPage;
+  const bundle = loadBundle({ location: { search: '?dsh_mobile=1' } });
+  const clientModule = bundle.captured.factory(createFakeModuleTable({
+    [DSH_SESSION_CONTROLLER]: { SessionEventStream: FakeStream },
+  }));
+  const context = createFakeCtx({ sessions: {} });
+  clientModule.apply(context.ctx);
+  const installedRepair = proto.repairRequest;
+  assert.notEqual(installedRepair, originalRepair, '应安装包装');
+  clientModule.apply(context.ctx);
+  assert.equal(proto.repairRequest, installedRepair, '重复 apply 不应叠加包装');
+  assert.deepEqual(plain(new FakeStream().repairRequest({ maxMessages: 500 })), { maxMessages: 6 }, '重复安装后仍只压一次');
+
+  for (const dispose of [...context.disposers].reverse()) dispose();
+  assert.equal(proto.repairRequest, originalRepair, 'dispose 后恢复原 repairRequest');
+  assert.equal(proto.readPage, originalReadPage, 'dispose 后恢复原 readPage');
+
+  const { __test } = clientModule;
+  assert.deepEqual(plain(__test.resolveMobileHistoryWindows(undefined)), {
+    open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
+    page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+  }, '默认窗口');
+  assert.equal(__test.resolveMobileHistoryWindows({ enabled: false }), null, 'enabled:false 返回 null');
+  assert.deepEqual(plain(__test.resolveMobileHistoryWindows({ open: { maxMessages: 0, minMessages: -2, minTurns: 'x' } })), {
+    open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
+    page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+  }, '非法值应回退默认');
+  assert.deepEqual(plain(__test.resolveMobileHistoryWindows({ page: { maxMessages: 3, minMessages: 9 } })), {
+    open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
+    page: { maxMessages: 3, minMessages: 3, minTurns: 1 },
+  }, 'minMessages 应收敛到 ≤ maxMessages');
+  assert.equal(__test.applyMobileHistoryWindow(undefined, __test.MOBILE_HISTORY_DEFAULTS.page), undefined, '非对象请求原样返回');
+  assert.deepEqual(plain(__test.applyMobileHistoryWindow({ beforeSeq: 7 }, __test.MOBILE_HISTORY_DEFAULTS.page)), {
+    beforeSeq: 7,
+    maxMessages: 10,
+  }, '无窗口字段的请求只补 maxMessages');
 });

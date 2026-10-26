@@ -7,6 +7,40 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-26 新增：手机端会话历史分片拉取（host-plugin 0.1.8，todo T1）
+
+- **目标**：手机 App（远程 WebView，`?dsh_mobile=1`）打开会话时只拉最近一小段历史，
+  往上翻再一页页补，不再「打开就整段拉」——大会话在弱网下首帧数 MB、打开要等数秒。
+- **根因**：DSH 客户端打开会话时 `session/follow` 的历史窗口是硬编码的
+  `{ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }`；本机大会话实测单帧
+  3.5–4.5MB，更极端的会话更大（本机 30 个大会话离线复算：首帧 p50 7.5MB / max 22.9MB）。
+  手机弱网下这条大帧就是「载入历史很久」本身。
+- **做法**（`dsh-remoteService/packages/host-plugin/client.js`，Client 半）：
+  只在 `?dsh_mobile=1` 下包装 DSH Client `SessionEventStream` 的 `repairRequest`
+  （`session/follow` 首屏 + 重连 tail）与 `readPage`（`session/page` 翻页/跳转），把**请求窗口**
+  压到手机预算（默认首屏 `6 / 3 / 1`、翻页 `10 / 5 / 1`），其余字段与协议语义不变；
+  历史靠 DSH 既有「加载更早」/ `loadThrough` 按需补齐。桌面本机完全不装。
+  可用 `globalThis.__DSH_REMOTE_MOBILE_HISTORY__` 覆盖窗口 / `enabled:false` 关闭；
+  生效窗口挂在 `__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__`，置 `__DSH_REMOTE_MOBILE_HISTORY_STATS__ = true`
+  可记录最近 100 次分页请求/响应规模（手机 Web Inspector 里可查）。
+- **为什么不是代理改帧**：代理重写 `session/follow` 请求帧属于协议 MITM，且客户端
+  `assertPageThrough` 要求快照末尾等于 cursor；本方案是**客户端自己发更小的请求**，
+  请求与响应两侧语义一致，Host 的 `maxMessages`/`turnWindow` 校验与客户端断言都满足
+  （见 [`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md)）。
+- **验证**：`npm test` **128/128**（新增 client-smoke 4 项：窗口压缩/幂等与恢复/桌面不装与降级/配置兜底）；
+  `validate:artifacts` 通过；离线把补丁打到**从已安装 DSH 解包出来的真实
+  `dsh-api-session-controller` Client 模块**上，确认 `repairRequest`/`readPage` 几何形状、
+  参数透传与卸载恢复都符合预期；用真实会话日志按 Host `paginate` 规则离线复算首帧/翻页字节：
+  30 个大会话首屏 p50 **7.5MB → 362KB**、p90 436KB、max 559KB（`300KB/s` 下约 1.2s，
+  原 p50 约 25s）；翻页单页 median 540KB（原 p50 max 7.1MB）。
+- **生效**：Host 插件 **0.1.8**，重启 DSH 后加载新 Client 半；App 无需重新构建，
+  在 App 内刷新/重开 WebView 即可（若 DSH 缓存启动 bundle 则重启 DSH 一次）。
+- **已知限制**：单条消息/单个 turn 本身可能很大（工具结果、request header），分片只能缩小
+  「一次拉多少条消息」，无法把一条消息拆开；极大会话仍可能遇到单帧 >1MB。首屏 6 条消息
+  为手机一屏左右的量，小会话（历史不足 6 条）行为不变。
+- **相关**：[`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md)、
+  [`docs/diagnostics/01-dsh-heartbeat.md`](docs/diagnostics/01-dsh-heartbeat.md) §3.3
+
 ## 2026-10-26 修复：Windows 主机无 openssl 时 EC 设备 CSR 配对失败（host-plugin 0.1.7）
 
 - **现象**：第二台主机（Windows）扫码配对返回 `invalid_request`：

@@ -131,3 +131,8 @@ DSH 写 4MB 帧后，后续 2s Ping 帧是**排在同一个发送队列的字节
 | [`02-heartbeat-harness.md`](02-heartbeat-harness.md) | 慢链路心跳复现/验收工具（`poc/heartbeat-verify.js` + `poc/heartbeat-runner.js`）的用法与实测数据 |
 | [`03-app-webview.md`](03-app-webview.md) | App 侧跳动源/进程回收恢复/误报的排查与修复、真机验收清单 |
 | [`04-session-switch-cache.md`](04-session-switch-cache.md) | 会话切换重复同步/重连重载的客户端本地缓存（warm cache）与差异更新 |
+| [`05-mobile-right-panel.md`](05-mobile-right-panel.md) | 手机窄屏右侧栏被注入壳 CSS 隐藏的修复 |
+| [`06-mobile-settings-drawer.md`](06-mobile-settings-drawer.md) | 手机设置弹窗改全屏 + 分区菜单抽屉 |
+| [`07-mobile-external-links.md`](07-mobile-external-links.md) | 手机端外链交给系统浏览器打开 |
+| [`08-host-ec-csr-windows.md`](08-host-ec-csr-windows.md) | Windows 主机 EC 设备 CSR 配对失败（无 openssl）的修复 |
+| [`09-mobile-history-slicing.md`](09-mobile-history-slicing.md) | 手机端会话历史分片拉取（首屏小窗口 + 按需翻页），本文件「大快照」问题的客户端侧解法 |

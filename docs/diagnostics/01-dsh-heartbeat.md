@@ -217,6 +217,13 @@ min 4.399 / p50 5.688 / p90 9.926 / max 13.734 (s)
 
 ⇒ **结论：不存在「安全且治本」的代理侧缩小首帧方案**；正确的切入点只有心跳/保活（§5）或 DSH 配置（§4）。
 
+> **补充（2026-10-26，host-plugin 0.1.8）**：除 §4/§5 之外还有第三条路——**客户端侧注入**
+> （不是代理改帧）：插件的 Client 半包装 DSH `SessionEventStream.prototype.repairRequest/readPage`，
+> 让浏览器**自己**用更小的 `maxMessages/turnWindow` 发 `session/follow` / `session/page`。
+> 请求与响应两侧语义一致，满足 `assertPageThrough` 与 Host 的窗口校验，§3.3 的 1–4 条约束都不冲突
+> （第 3 条的「语义代价」被接受：首屏就是最近几条 + 按需翻页）。实现、默认窗口（首屏 6/3/1、
+> 翻页 10/5/1）与真实日志复算收益见 [`09-mobile-history-slicing.md`](09-mobile-history-slicing.md)。
+
 ---
 
 ## 4. 用 DSH 配置 patch 覆盖 `websocketHeartbeatIntervalMs`（可行性、精确片段、风险）

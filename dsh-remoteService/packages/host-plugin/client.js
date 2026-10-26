@@ -6,7 +6,8 @@
  *   2. settings.section      —— 设置里的「远程访问」页（连接配置/配对/设备/审计）。
  * 数据全部走本机管理 API（同源 /api/remote-access/*，契约见 docs/ADMIN-API.md），
  * fetch 一律带 credentials: 'include'；hostToken 只上行不下行，DOM 里永远不回显。
- * 纯前端单文件，无构建步骤：只 require('react')，没有 Node 内置模块。
+ * 纯前端单文件，无构建步骤：只 require('react')（手机 WebView 下额外按需 require DSH 的
+ * session 控制器 Client 模块做历史分片，见 installMobileHistory）；没有 Node 内置模块。
  * ============================================================================
  */
 window.__ModuleLoader__.load({
@@ -22,6 +23,39 @@ window.__ModuleLoader__.load({
     const DEFAULT_SESSION_CACHE_SIZE = 3;
     /** 手机 WebView 从后台恢复超过该时长后，主动重连以刷新会话状态（可用 globalThis 覆盖）。 */
     const RESUME_RECONNECT_AFTER_MS = 10_000;
+    /**
+     * 手机远程 WebView 的会话历史分片预算（T1）：首屏窗口 + 每次「加载更早」的翻页窗口。
+     *
+     * DSH 客户端打开会话时请求 `session/follow` 的历史窗口固定为
+     * `{ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }`，大会话一帧可达
+     * 数 MB（本机实测 3.5–4.5MB，更极端的大会话十几 MB），手机弱网下打开要等数秒。
+     * 这里只在 `?dsh_mobile=1` 下把发往 Host 的**请求窗口参数**压小（`session/follow` 的首屏/
+     * 重连 tail，以及 `session/page` 的翻页/跳转），随后由 DSH 既有分页（「加载更早」按钮、
+     * `loadThrough`）按需补齐——不是代理层改帧，请求与响应两侧语义一致，符合 Host 的
+     * `maxMessages`/`turnWindow` 校验与客户端的 `assertPageThrough`。
+     *
+     * 覆盖方式（调试用，改完刷新页面即可）：
+     *   globalThis.__DSH_REMOTE_MOBILE_HISTORY__ = {
+     *     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },    // 首屏/重连
+     *     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },   // 向上翻历史/跳转
+     *     enabled: false,                                            // 关掉分片，恢复 DSH 默认窗口
+     *   };
+     * 省略字段 = 用默认值；非法值忽略；`minMessages` 自动收敛到 ≤ `maxMessages`。
+     */
+    const MOBILE_HISTORY_DEFAULTS = Object.freeze({
+      open: Object.freeze({ maxMessages: 6, minMessages: 3, minTurns: 1 }),
+      page: Object.freeze({ maxMessages: 10, minMessages: 5, minTurns: 1 }),
+    });
+    /** globalThis 覆盖键：{ open?, page?, enabled? }。 */
+    const MOBILE_HISTORY_OVERRIDE_KEY = '__DSH_REMOTE_MOBILE_HISTORY__';
+    /** 诊断用：安装成功后把生效窗口挂到这里（globalThis.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__）。 */
+    const MOBILE_HISTORY_ACTIVE_KEY = '__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__';
+    /** 诊断用：置 true 后把最近 100 次分页请求/响应记到 __DSH_REMOTE_MOBILE_HISTORY_LOG__。 */
+    const MOBILE_HISTORY_STATS_KEY = '__DSH_REMOTE_MOBILE_HISTORY_STATS__';
+    /** DSH Session 控制器 Client 半在浏览器模块表里的 id（`SessionEventStream` 由它导出）。 */
+    const SESSION_CONTROLLER_MODULE = '@deepseek-ai/dsh-api-session-controller';
+    /** 已安装标记（挂在 SessionEventStream.prototype 上；跨模块实例/重复 apply 幂等）。 */
+    const MOBILE_HISTORY_INSTALLED = '__dshRemoteMobileHistoryWindow';
     const POLL_MS = 2000;
     const FLASH_GOOD_MS = 2600;
     const FLASH_WARN_MS = 5200;
@@ -2042,6 +2076,229 @@ window.__ModuleLoader__.load({
       }, 'remote-access: resume reconnect');
     }
 
+    /* ────────────────── 手机端会话历史分片（首屏窗口 + 翻页窗口） ────────────────── */
+
+    /**
+     * 读 globalThis 覆盖并规整成生效窗口；`enabled:false` 返回 null（= 不分片）。
+     *
+     * @param {*} [raw] 覆盖对象；缺省读 `globalThis.__DSH_REMOTE_MOBILE_HISTORY__`（测试可传）。
+     * @returns {{open: {maxMessages:number,minMessages:number,minTurns:number},
+     *            page: {maxMessages:number,minMessages:number,minTurns:number}} | null}
+     */
+    function resolveMobileHistoryWindows(raw) {
+      let source = raw;
+      if (source === undefined) {
+        try { source = typeof globalThis === 'object' && globalThis ? globalThis[MOBILE_HISTORY_OVERRIDE_KEY] : undefined; } catch { source = undefined; }
+      }
+      if (source && typeof source === 'object' && source.enabled === false) return null;
+      const pick = (name) => {
+        const defaults = MOBILE_HISTORY_DEFAULTS[name];
+        const window = { maxMessages: defaults.maxMessages, minMessages: defaults.minMessages, minTurns: defaults.minTurns };
+        const candidate = source && typeof source === 'object' && source[name] && typeof source[name] === 'object' ? source[name] : null;
+        if (candidate !== null) {
+          for (const key of ['maxMessages', 'minMessages', 'minTurns']) {
+            const value = Number(candidate[key]);
+            if (Number.isSafeInteger(value) && value > 0) window[key] = value;
+          }
+        }
+        // Host 校验：minMessages 必须是 ≤ maxMessages 的正整数；minTurns 至少 1。
+        window.minMessages = Math.min(window.minMessages, window.maxMessages);
+        window.minTurns = Math.max(1, window.minTurns);
+        return window;
+      };
+      return { open: pick('open'), page: pick('page') };
+    }
+
+    /**
+     * 把一条分页/跟进请求的窗口参数压到手机预算；其余字段原样保留。
+     *
+     * 只收紧、不放大：请求本来就更小（例如未来 UI 自己传了更小的窗口）时保留请求值。
+     * 请求没有 `turnWindow`（Host 的 message-aligned 模式）时不凭空添加，只压 `maxMessages`。
+     *
+     * @param {*} request `session/follow` / `session/page` 的请求对象。
+     * @param {{maxMessages:number,minMessages:number,minTurns:number}} window 目标窗口。
+     * @returns {*} 新请求对象；输入不是对象时原样返回。
+     */
+    function applyMobileHistoryWindow(request, window) {
+      if (!request || typeof request !== 'object' || !window) return request;
+      const next = { ...request };
+      const requestedMax = Number.isSafeInteger(request.maxMessages) && request.maxMessages > 0 ? request.maxMessages : null;
+      next.maxMessages = requestedMax === null ? window.maxMessages : Math.min(requestedMax, window.maxMessages);
+      const turnWindow = request.turnWindow && typeof request.turnWindow === 'object' ? request.turnWindow : null;
+      if (turnWindow !== null) {
+        const requestedMinMessages = Number.isSafeInteger(turnWindow.minMessages) && turnWindow.minMessages > 0 ? turnWindow.minMessages : window.minMessages;
+        const requestedMinTurns = Number.isSafeInteger(turnWindow.minTurns) && turnWindow.minTurns > 0 ? turnWindow.minTurns : window.minTurns;
+        next.turnWindow = {
+          minMessages: Math.min(requestedMinMessages, window.minMessages, next.maxMessages),
+          minTurns: Math.max(1, Math.min(requestedMinTurns, window.minTurns)),
+        };
+      }
+      return next;
+    }
+
+    /** 诊断日志（仅 `globalThis.__DSH_REMOTE_MOBILE_HISTORY_STATS__ === true` 时记录，最多 100 条）。 */
+    function recordMobileHistoryStat(entry) {
+      try {
+        if (typeof globalThis !== 'object' || globalThis === null) return;
+        if (globalThis[MOBILE_HISTORY_STATS_KEY] !== true) return;
+        let log = globalThis.__DSH_REMOTE_MOBILE_HISTORY_LOG__;
+        if (!Array.isArray(log)) {
+          log = [];
+          globalThis.__DSH_REMOTE_MOBILE_HISTORY_LOG__ = log;
+        }
+        log.push({ at: Date.now(), ...entry });
+        if (log.length > 100) log.splice(0, log.length - 100);
+      } catch { /* 诊断失败不影响分页 */ }
+    }
+
+    /** 只在手机预算统计开启时返回 performance.now() 基线。 */
+    function mobileHistoryClock() {
+      try {
+        if (typeof globalThis !== 'object' || globalThis === null || globalThis[MOBILE_HISTORY_STATS_KEY] !== true) return null;
+        return typeof performance !== 'undefined' && typeof performance.now === 'function' ? performance.now() : Date.now();
+      } catch { return null; }
+    }
+
+    /**
+     * 安装「手机端历史窗口」：包装 DSH Client 的 `SessionEventStream.prototype.repairRequest`
+     * （`session/follow` 首屏 + 重连 tail 的窗口来源）与 `.readPage`（`session/page` 翻页/跳转），
+     * 把请求窗口压到 {@link MOBILE_HISTORY_DEFAULTS} 或 `globalThis.__DSH_REMOTE_MOBILE_HISTORY__`。
+     *
+     * 任何一步拿不到（模块不在浏览器模块表、DSH 版本改了类/方法名）都只返回 null 静默降级，
+     * 主 UI 行为与桌面完全不受影响；重复安装（HMR / 二次 apply）复用同一份包装。
+     *
+     * @param {{effect?: Function}} scope 已 inject "sessions" 的 Client 上下文。
+     * @param {{loadModule?: Function, windows?: object|null}} options loadModule = 模块表 require。
+     * @returns {{windows: object, reused: boolean, dispose: Function} | null}
+     */
+    function installMobileHistoryWindow(scope, options) {
+      const opts = options && typeof options === 'object' ? options : {};
+      const loadModule = typeof opts.loadModule === 'function' ? opts.loadModule : null;
+      if (loadModule === null) return null;
+      const windows = opts.windows === undefined ? resolveMobileHistoryWindows() : opts.windows;
+      if (windows === null) return null;
+      let controller = null;
+      try {
+        controller = loadModule(SESSION_CONTROLLER_MODULE);
+      } catch (error) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[dsh-remote] mobile session history unavailable:', error);
+        }
+        return null;
+      }
+      const StreamClass = controller && controller.SessionEventStream;
+      const proto = StreamClass && StreamClass.prototype;
+      if (!proto || typeof proto.repairRequest !== 'function' || typeof proto.readPage !== 'function') return null;
+
+      // 幂等：同一页面重复安装不叠加包装，只把窗口更新为最新配置。
+      const existing = proto[MOBILE_HISTORY_INSTALLED];
+      if (existing !== undefined && existing !== null && typeof existing.update === 'function') {
+        existing.update(windows);
+        return { windows: existing.windows, reused: true, dispose() {} };
+      }
+
+      const current = {
+        open: { ...windows.open },
+        page: { ...windows.page },
+      };
+      const original = { repairRequest: proto.repairRequest, readPage: proto.readPage };
+      let publishedActive = null;
+      const publishActive = () => {
+        try {
+          if (typeof globalThis !== 'object' || globalThis === null) return;
+          publishedActive = { open: { ...current.open }, page: { ...current.page } };
+          globalThis[MOBILE_HISTORY_ACTIVE_KEY] = publishedActive;
+        } catch { /* ignore */ }
+      };
+
+      function patchedRepairRequest(request) {
+        recordMobileHistoryStat({ kind: 'follow', window: { ...current.open } });
+        const repaired = original.repairRequest.call(this, request);
+        return applyMobileHistoryWindow(repaired, current.open);
+      }
+
+      function patchedReadPage(request, throughSeq, signal) {
+        const window = current.page;
+        const next = applyMobileHistoryWindow(request, window);
+        recordMobileHistoryStat({
+          kind: 'page',
+          window: { ...window },
+          beforeSeq: typeof next?.beforeSeq === 'number' ? next.beforeSeq : undefined,
+        });
+        const startedAt = mobileHistoryClock();
+        const result = original.readPage.call(this, next, throughSeq, signal);
+        if (startedAt !== null && result && typeof result.then === 'function') {
+          result.then((page) => {
+            const endedAt = mobileHistoryClock();
+            recordMobileHistoryStat({
+              kind: 'page-result',
+              records: Array.isArray(page?.records) ? page.records.length : 0,
+              hasMore: page?.hasMore === true,
+              ...endedAt === null ? {} : { ms: Math.round(endedAt - startedAt) },
+            });
+          }, () => {});
+        }
+        return result;
+      }
+
+      const handle = {
+        windows: current,
+        reused: false,
+        update(next) {
+          if (!next || typeof next !== 'object') return;
+          current.open = { ...next.open };
+          current.page = { ...next.page };
+          publishActive();
+        },
+        dispose() {
+          try {
+            if (proto.repairRequest === patchedRepairRequest) proto.repairRequest = original.repairRequest;
+            if (proto.readPage === patchedReadPage) proto.readPage = original.readPage;
+            if (proto[MOBILE_HISTORY_INSTALLED] === handle) delete proto[MOBILE_HISTORY_INSTALLED];
+            if (typeof globalThis === 'object' && globalThis !== null
+              && globalThis[MOBILE_HISTORY_ACTIVE_KEY] === publishedActive) {
+              delete globalThis[MOBILE_HISTORY_ACTIVE_KEY];
+            }
+          } catch { /* 恢复失败不影响页面 */ }
+        },
+      };
+      try {
+        Object.defineProperty(proto, MOBILE_HISTORY_INSTALLED, { value: handle, configurable: true, writable: true });
+      } catch {
+        proto[MOBILE_HISTORY_INSTALLED] = handle;
+      }
+      proto.repairRequest = patchedRepairRequest;
+      proto.readPage = patchedReadPage;
+      publishActive();
+      if (typeof console !== 'undefined' && typeof console.info === 'function') {
+        console.info('[dsh-remote] mobile session history window:', JSON.stringify(current));
+      }
+      if (scope && typeof scope.effect === 'function') {
+        scope.effect(() => () => handle.dispose(), 'remote-access: mobile session history window');
+      }
+      return handle;
+    }
+
+    /** 手机 WebView 下安装历史分片（等 sessions 服务就绪 = Session 控制器 Client 模块已加载）。 */
+    function installMobileHistory(ctx, loadModule) {
+      if (!ctx || typeof ctx.inject !== 'function') return;
+      try {
+        ctx.inject(['sessions'], (scope) => {
+          try {
+            installMobileHistoryWindow(scope, { loadModule });
+          } catch (error) {
+            if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+              console.warn('[dsh-remote] mobile session history unavailable:', error);
+            }
+          }
+        });
+      } catch (error) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[dsh-remote] mobile session history unavailable:', error);
+        }
+      }
+    }
+
     /**
      * 手机 WebView 的会话桥：
      *  - 订阅 `uiWorkspace.selection`，把当前会话（host + sessionId）通过原生 WebView 桥
@@ -2180,7 +2437,21 @@ window.__ModuleLoader__.load({
     return {
       inject: ['slots', 'locale'],
       // 仅供 packages/host-plugin/test/client-smoke.test.js 使用；DSH 运行时只消费 inject/apply。
-      __test: { RemoteEntry, PairingDialog, SettingsPage, draftFromStatus, installSessionWarmCache, installResumeReconnect, installSessionBridge, DEFAULT_SESSION_CACHE_SIZE },
+      __test: {
+        RemoteEntry,
+        PairingDialog,
+        SettingsPage,
+        draftFromStatus,
+        installSessionWarmCache,
+        installResumeReconnect,
+        installSessionBridge,
+        installMobileHistory,
+        installMobileHistoryWindow,
+        resolveMobileHistoryWindows,
+        applyMobileHistoryWindow,
+        MOBILE_HISTORY_DEFAULTS,
+        DEFAULT_SESSION_CACHE_SIZE,
+      },
       apply(ctx) {
         ctx.effect(injectStyles, 'remote-access: 样式');
 
@@ -2201,6 +2472,8 @@ window.__ModuleLoader__.load({
         if (isRemoteWebView) {
           installRemoteSessionCache(ctx);
           installSessionBridge(ctx);
+          // T1：只收紧手机 WebView 的历史窗口（首屏 + 翻页）；桌面本机完全不装。
+          installMobileHistory(ctx, require);
         }
 
         const hasLocale = !!(locale && typeof locale.register === 'function');
