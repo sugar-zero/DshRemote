@@ -2,7 +2,7 @@
   "expo": {
     "name": "DSH Remote",
     "slug": "dsh-remote",
-    "version": "0.1.13",
+    "version": "0.1.14",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "scheme": "dshremote",
@@ -14,7 +14,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "15"
+      "buildNumber": "17"
     },
     "android": {
       "package": "com.amesucre.dshremote",
@@ -29,7 +29,7 @@
         "USE_BIOMETRIC"
       ],
       "predictiveBackGestureEnabled": false,
-      "versionCode": 15
+      "versionCode": 17
     },
     "web": {
       "favicon": "./assets/favicon.png"
