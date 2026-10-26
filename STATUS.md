@@ -7,6 +7,35 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-26 修复：Windows 主机无 openssl 时 EC 设备 CSR 配对失败（host-plugin 0.1.7）
+
+- **现象**：第二台主机（Windows）扫码配对返回 `invalid_request`：
+  `CSR 解析失败（forge: Cannot read public key. OID is not RSA.; openssl: … spawnSync openssl ENOENT）`。
+- **根因**：iOS Secure Enclave 设备密钥是 EC P-256（`ecdsa-with-SHA256` CSR），node-forge
+  只支持 RSA；原实现用系统 `openssl` 兜底，而 Windows 默认没有 openssl → 两条路都失败。
+  与 hostId/token/端口/证书无关（请求已到主机插件、TLS 正常）。
+- **修复**：
+  1. 新增 `lib/ec-csr.js`：纯 JS（`node:crypto` + `forge.asn1`）解析 PKCS#10、校验自签名、
+     构造 X.509 v3 证书并用设备 CA（RSA）以 SHA-256 签名；签发后自检链/公钥/serial；
+  2. `identity.js` 引擎选择：RSA → forge；非 RSA → **优先 openssl**（行为不变）；
+     openssl 不可用（ENOENT/ENOTDIR/EACCES/EPERM）→ 回退纯 JS；openssl 明确拒绝时**不回退放行**；
+     openssl 通过后只要 CSR 能被纯 JS 解析，还会用 node:crypto 再独立复核一次自签名；
+     回退会在日志/审计标 `engine=js`；EC 设备公钥指纹改为 SPKI 的 SHA-256（与 RSA 语义一致）；
+  3. 新增 `lib/tls-check.js`：启动监听前检查证书/私钥是否成对（`checkPrivateKey`，RSA/EC 都支持）
+     与 SAN 是否覆盖 `<hostId>.<relayDomain>`，失败原因写进管理页「最近错误」——
+     避免手机端只看到「无法连接」。
+- **「证书与密钥不匹配」误报**：EC 证书用 `openssl x509/rsa -modulus` 比对必然失败
+  （`No modulus for this public key type` / `Not an RSA key`），不等于不匹配；
+  本机（macOS）实测证书与私钥公钥 SHA-256 相同、`checkPrivateKey()=true`、SAN 匹配、
+  relay 连接 ESTABLISHED。正确比对方式与排查步骤见 host-plugin README。
+- **验证**：`npm test` **124/124**（新增 EC CSR 纯 JS 回退 14 项、TLS 自检 7 项、
+  EC 配对集成 1 项、service 级 2 项；含假 openssl 的 fail-closed 用例）；`validate:artifacts` 通过；纯 JS 签发证书经 `openssl verify`
+  独立验链通过；`PATH=''` 模拟无 openssl 跑通校验+签发；篡改签名/SPKI 与签名密钥不匹配的
+  CSR 均被拒绝；另用 `poc/native-csr/gen-csr.swift`（与 App 同一实现）生成的真实 Apple 路径
+  CSR 在两种引擎下均通过、纯 JS 签发证书验链与公钥一致。详情：[`docs/diagnostics/08-host-ec-csr-windows.md`](docs/diagnostics/08-host-ec-csr-windows.md)。
+- **生效**：更新 DSH 里的 remote-access 插件到 **0.1.7+** 并**重启 DSH**；Windows 无需安装
+  openssl（装了则优先使用）；现有主机证书/私钥无需重签。
+
 ## 2026-10-26 修复：主机设备列表清理 + App 解除配对入口合并（App 0.1.9 / host-plugin 0.1.6）
 
 1. **主机侧「已配对设备」列表无法删除已撤销设备** → host-plugin `DeviceStore.remove()` +

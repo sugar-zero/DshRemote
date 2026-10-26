@@ -1,4 +1,5 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
+import { generateKeyPairSync, sign as cryptoSign } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -142,4 +143,82 @@ export function once(emitter, event, timeoutMs = 3000) {
       resolve(args);
     });
   });
+}
+
+/** 系统里是否有可用的 openssl（非 RSA CSR 的优先路径；没有时会回退纯 JS）。 */
+export function hasOpenssl() {
+  const result = spawnSync('openssl', ['version'], { stdio: 'ignore', timeout: 10_000 });
+  return result.status === 0;
+}
+
+/** 在「找不到 openssl」的环境下执行同步回调（验证纯 JS 回退路径）。 */
+export function withoutOpenssl(fn) {
+  const previous = process.env.PATH;
+  process.env.PATH = '';
+  try {
+    return fn();
+  } finally {
+    if (previous === undefined) delete process.env.PATH;
+    else process.env.PATH = previous;
+  }
+}
+
+/** PEM 编码（测试用，不依赖 lib 内部实现）。 */
+export function pemEncode(der, label) {
+  const body = Buffer.from(der).toString('base64');
+  return `-----BEGIN ${label}-----\n${body.match(/.{1,64}/g).join('\n')}\n-----END ${label}-----\n`;
+}
+
+/**
+ * 纯 JS（node:crypto + forge.asn1）生成 EC P-256 CSR，不依赖 openssl。
+ * mismatchSignature=true 时 SPKI 用 A 的公钥、签名却用 B 的私钥（用于断言签名校验不会被绕过）。
+ */
+export function makeEcCsrJs(commonName = 'ec-device', { mismatchSignature = false, keys: providedKeys } = {}) {
+  const keys = providedKeys ?? generateKeyPairSync('ec', { namedCurve: 'prime256v1' });
+  const signingKey = mismatchSignature
+    ? generateKeyPairSync('ec', { namedCurve: 'prime256v1' }).privateKey
+    : keys.privateKey;
+  const asn1 = forge.asn1;
+  const U = asn1.Class.UNIVERSAL;
+  const seq = (items) => asn1.create(U, asn1.Type.SEQUENCE, true, items);
+  const oid = (value) => asn1.create(U, asn1.Type.OID, false, asn1.oidToDer(value).getBytes());
+  const spkiDer = keys.publicKey.export({ type: 'spki', format: 'der' });
+  const spki = asn1.fromDer(forge.util.createBuffer(Buffer.from(spkiDer).toString('binary')), {
+    strict: true,
+    decodeBitStrings: false,
+  });
+  const cri = seq([
+    asn1.create(U, asn1.Type.INTEGER, false, asn1.integerToDer(0).getBytes()),
+    seq([
+      asn1.create(U, asn1.Type.SET, true, [
+        seq([
+          oid('2.5.4.3'),
+          asn1.create(U, asn1.Type.UTF8, false, forge.util.encodeUtf8(commonName)),
+        ]),
+      ]),
+    ]),
+    spki,
+    asn1.create(asn1.Class.CONTEXT_SPECIFIC, 0, true, []),
+  ]);
+  const tbs = Buffer.from(asn1.toDer(cri).getBytes(), 'binary');
+  const signature = cryptoSign('sha256', tbs, signingKey);
+  const csr = seq([
+    cri,
+    seq([oid('1.2.840.10045.4.3.2')]),
+    asn1.create(U, asn1.Type.BITSTRING, false, `\x00${signature.toString('binary')}`),
+  ]);
+  const der = Buffer.from(asn1.toDer(csr).getBytes(), 'binary');
+  return {
+    csrPem: pemEncode(der, 'CERTIFICATE REQUEST'),
+    privateKeyPem: keys.privateKey.export({ type: 'pkcs8', format: 'pem' }),
+    publicKeyPem: keys.publicKey.export({ type: 'spki', format: 'pem' }),
+    der,
+  };
+}
+
+/** 把 PEM 解成 DER（测试用）。 */
+export function pemToDer(pem, label) {
+  const match = new RegExp(`-----BEGIN ${label}-----([\\s\\S]*?)-----END ${label}-----`).exec(pem);
+  if (!match) throw new Error(`no ${label} PEM`);
+  return Buffer.from(match[1].replace(/\s+/g, ''), 'base64');
 }

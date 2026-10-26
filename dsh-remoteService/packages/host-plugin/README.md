@@ -103,6 +103,57 @@ relay 的公网数据端口：
     -noout -subject -ext subjectAltName
   ```
 
+### 主机端依赖：openssl（可选，Windows 无需安装）
+
+配对时主机要校验设备 CSR 并签发设备证书，具体走哪条路取决于设备密钥类型：
+
+- **RSA 设备密钥**（Android Keystore / 软件密钥）：内置 node-forge 处理，**不需要** openssl；
+- **EC P-256 设备密钥**（iOS Secure Enclave，`ecdsa-with-SHA256` CSR）：forge 不支持
+  （`Cannot read public key. OID is not RSA.`），插件**优先调用系统 `openssl`** 校验/签发；
+- 找不到 `openssl`（Windows 默认没有，典型报错 `spawnSync openssl ENOENT`）时，自动
+  **回退到纯 JS** 实现（`node:crypto` + `forge.asn1`），配对/签发照常完成；
+  插件日志会出现 `已回退纯 JS 校验/签发 EC 设备证书`。
+
+因此 **Windows 主机不需要额外安装 openssl**。如果希望优先走 openssl（与 macOS/Linux
+上的行为完全一致）：
+
+1. 安装 OpenSSL 3.x，或直接使用 Git for Windows 自带的
+   `C:\Program Files\Git\usr\bin\openssl.exe`，把该目录加入 **PATH**；
+2. **重启 DSH**（已在运行的进程不会重新继承新的 PATH）；
+3. 配对日志不再出现「回退纯 JS」即表示走的是 openssl。
+
+> 如果配对返回 `invalid_request`，且消息里同时出现 `OID is not RSA` 与
+> `spawnSync openssl ENOENT`，说明主机上还是**没有纯 JS 回退的旧版插件**；
+> 升级到 host-plugin **0.1.7+** 并重启 DSH 即可。
+
+### 证书与私钥不匹配 / 手机「无法连接」怎么查
+
+主机插件启动远程 TLS 监听前会自检两项，并把原因写进 DSH 设置 → 远程访问 → **最近错误**：
+
+- `TLS 证书与私钥不匹配：证书公钥 <hash>，私钥公钥 <hash>`：`fullchain.pem` 与
+  `privkey.pem` 不是同一次签发的一对（常见于从 nginx 拷证书时跨目录拼了 cert/key）；
+- `TLS 证书 SAN 未覆盖主机名 <hostId>.<relayDomain>`：拷成了别的域名或非通配证书。
+
+手动核对时注意：**EC 证书不能用 RSA modulus 比对**。`openssl x509 -modulus` 在 EC 证书上
+只会输出 `Modulus=No modulus for this public key type`，`openssl rsa -modulus` 会报
+`Not an RSA key` —— 两条命令都失败 **不代表**证书与私钥不匹配。正确做法是比较公钥指纹：
+
+```bash
+# 两行应输出同一个 SHA-256
+openssl x509 -in fullchain.pem -noout -pubkey | openssl pkey -pubin -outform der | openssl dgst -sha256
+openssl pkey -in privkey.pem -pubout -outform der | openssl dgst -sha256
+
+# 确认 SAN 覆盖主机子域
+openssl x509 -in fullchain.pem -noout -checkhost <hostId>.<relayDomain>
+openssl x509 -in fullchain.pem -noout -subject -dates -ext subjectAltName
+```
+
+Windows（PowerShell）命令相同，把 `openssl` 换成已安装的 `openssl.exe`（或 PATH 里的名字）。
+
+> 若证书与私钥真的不匹配，插件**不会启动**远程 TLS 监听（管理页显示
+> 「TLS 证书与私钥不匹配…」），手机侧表现为「无法连接」，而不是配对请求报错。
+> 反过来说：手机能收到主机返回的 JSON 错误，说明 TLS 监听是起来的、证书与私钥是匹配的。
+
 ### 如果 DSH 主机运行在 Docker 中
 
 把主机证书挂进 **DSH 容器**（不是 relay 容器）：

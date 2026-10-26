@@ -154,6 +154,9 @@ export class PairingManager {
       throw new PairingError('invalid-secret', '配对密钥不正确', 403);
     }
     const parsed = parseDeviceCsr(csrPem);
+    if (parsed.engine === 'js') {
+      this.log('openssl 不可用，已回退纯 JS 校验 EC 设备 CSR（Windows 无需安装 openssl）');
+    }
     const sas = pairingSas(s.secret, this.identity.publicKeyDerB64, parsed.publicKeyFingerprint);
     const temp = {
       deviceId: `d_${randomBytes(6).toString('hex')}`,
@@ -196,6 +199,9 @@ export class PairingManager {
       commonName: temp.name,
       days: 30,
     });
+    if (signed.engine === 'js') {
+      this.log('openssl 不可用或签发失败，已回退纯 JS 签发 EC 设备证书');
+    }
     const device = this.devices.add({
       id: temp.deviceId,
       name: temp.name,
