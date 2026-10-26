@@ -631,7 +631,11 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       if (!isOpen()) return;
       var bar = sidebar();
       if (bar && bar.contains(target)) {
-        if (target.closest('[data-row-key^="workspace:"]')) return;
+        // 侧栏内「展开类」控件不收起抽屉：工作区行（展开/收起会话列表）以及
+        // 「展开其余 N 个会话 / 收起」按钮（data-row-key="overflow:<group>"）。
+        // 它们只是展开侧栏内容，不是导航；点一下就把抽屉关掉会看不到展开结果。
+        if (target.closest('[data-row-key^="workspace:"]')
+          || target.closest('[data-row-key^="overflow:"]')) return;
         closeDrawer();
         return;
       }

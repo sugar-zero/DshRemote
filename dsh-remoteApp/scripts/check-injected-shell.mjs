@@ -56,11 +56,17 @@ const FIXTURE_HTML = `<!doctype html>
   .kiGsTW_titleRow { display: flex; align-items: center; grid-column: 2; min-height: 30px; }
   .railMarkBox { display: flex; align-items: center; justify-content: center; width: 40px; height: 40px; }
   .railMarkBox svg { width: 24px; height: 24px; }
+  .fixtureRow { padding: 8px 12px; font: 13px sans-serif; text-align: left; background: 0 0; border: 0; }
 </style></head>
 <body>
 <div class="PIRFFq_frame">
   <div class="PIRFFq_sidebarCol">
     <div class="railMarkBox ab_railMark"><svg viewBox="0 0 24 24"><path d="M2 12h20v8H2z"/></svg></div>
+    <!-- 真实 DSH 侧栏（@deepseek-ai/dsh-client-ui-workspace）里的行：
+         工作区行只展开/收起、会话行是导航、overflow 按钮展开「其余 N 个会话」。 -->
+    <div class="fixtureRow" data-row-key="workspace:ws1" role="treeitem" aria-expanded="true">工作区</div>
+    <div class="fixtureRow" data-row-key="session:s1" role="treeitem">会话 A</div>
+    <button type="button" class="fixtureRow" data-row-key="overflow:ws1" aria-expanded="false">展开其余 4 个会话</button>
   </div>
   <div class="PIRFFq_centerCol">
     <header class="kiGsTW_header">
@@ -558,13 +564,38 @@ async function runChecks(chromePath, shellJs) {
     })()`);
 
     const drawer = await evaluate(`(async () => {
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+      const isOpen = () => document.documentElement.classList.contains('dsh-mobile-drawer-open');
       const fab = document.querySelector('.dsh-mobile-native-trigger');
       fab.click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      const opened = document.documentElement.classList.contains('dsh-mobile-drawer-open');
+      await sleep(30);
+      const opened = isOpen();
+      // 工作区行：只展开/收起会话列表，不应收起抽屉
+      document.querySelector('[data-row-key^="workspace:"]').click();
+      await sleep(30);
+      const workspaceKept = isOpen();
+      // 「展开其余 N 个会话」按钮：只是展开侧栏内容，不应收起抽屉（回归 bug）
+      document.querySelector('[data-row-key^="overflow:"]').click();
+      await sleep(30);
+      const overflowKept = isOpen();
+      // 会话行是导航：点击后应收起抽屉
+      document.querySelector('[data-row-key^="session:"]').click();
+      await sleep(30);
+      const sessionClosed = !isOpen();
+      // 重新打开：背景点击仍能收起
+      fab.click();
+      await sleep(30);
+      const reopened = isOpen();
       document.querySelector('.dsh-mobile-backdrop').click();
-      await new Promise((resolve) => setTimeout(resolve, 30));
-      return { opened, closed: !document.documentElement.classList.contains('dsh-mobile-drawer-open') };
+      await sleep(30);
+      return {
+        opened,
+        workspaceKept,
+        overflowKept,
+        sessionClosed,
+        reopened,
+        closed: !isOpen(),
+      };
     })()`);
 
     // ===== 第二阶段：窄屏（390×844）下的 DSH 右侧栏全屏面板 =====
@@ -1192,8 +1223,11 @@ check('DSH 重建 header 时标题不横移（槽位预留宽度）', Math.abs(r
 check('鲸鱼入口在槽位重建后补挂回去', reRender.fabRepairedIntoSameSlot);
 check('流式 DOM 变更不触发全量 querySelector（O(1) 快路径）', churn.querySelectorDelta === 0, `querySelector×${churn.querySelectorDelta} / ${churn.batches} batches`);
 check('流式渲染后不再改写 viewport', churn.viewportWritesAfterLoad === 1, `writes=${churn.viewportWritesAfterLoad}`);
-check('抽屉可打开', drawer.opened);
-check('抽屉可关闭', drawer.closed);
+check('抽屉可打开', drawer.opened && drawer.reopened);
+check('抽屉内工作区行不收起抽屉', drawer.workspaceKept);
+check('抽屉内「展开其余 N 个会话」不收起抽屉（回归）', drawer.overflowKept);
+check('抽屉内会话行点击后收起抽屉', drawer.sessionClosed);
+check('抽屉可关闭（背景点击）', drawer.closed);
 
 // ---- 第二阶段：窄屏（390×844）右侧栏全屏覆盖层 ----
 check(
