@@ -183,7 +183,9 @@ test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn�
     service = new RemoteService(fakeCtx, { spawnHostRestart: fakeSpawn, hostRestartEnv: restartEnv });
     await service.ready;
     assert.ok(service.listenPort > 0);
-    assert.equal(service.status().version, '0.1.10');
+    const { readFileSync: readPkg } = await import('node:fs');
+    const pkgVersion = JSON.parse(readPkg(new URL('../package.json', import.meta.url), 'utf8')).version;
+    assert.equal(service.status().version, pkgVersion, '管理 API 展示的版本应与 package.json 一致');
 
     // 签一台设备证书并加入注册表（相当于已完成配对）
     const { signDeviceCertificate } = await import('../lib/identity.js');

@@ -1,22 +1,32 @@
 /**
  * 主机 DSH 客户端「远程重启」的调度实现（Host 半，零新依赖）。
  *
- * 只做两件事：
- * 1. `createHostRestartPlan()`：纯函数，按平台/可执行文件路径算出「怎么把当前 DSH 重新拉起来」；
- * 2. `scheduleHostRestart()`：起一个 **detached** 的 shell helper（stdio ignore + unref）——
- *    先等 ~1s 让 HTTP 202 响应发完 → 杀当前 pid（SIGTERM；超时 ~10s 后 SIGKILL）→ 再等一点 → 重新拉起。
+ * 三种运行形态（由 `createHostRestartPlan()` 纯函数判定）：
+ * 1. **DSH 桌面端（Electron shell + host 子进程）**：本插件跑在 shell 派生的 host 子进程里，
+ *    `process.pid` 只是 host 子进程；杀它只会让 Electron shell 弹出「应用无法启动或已意外停止」
+ *    崩溃对话框，不能完成重启。正确目标是**整个 DSH 应用进程组**（shell 是组长，
+ *    host/渲染/utility 都是同一 pgid）：`kill -TERM -- -<shellPid>` 整组退出 →
+ *    等进程组清空 → `open -n <...app>` 重新拉起桌面端。
+ * 2. **Windows 桌面端**：同样以 shell pid 为目标（`taskkill /PID <shell> /F`），再补杀 host
+ *    子进程，最后 `start "" "<exe>"`（best-effort）。
+ * 3. **Node CLI（`dsh web` 等）**：本进程就是主进程，SIGTERM 自己后按 `execPath + argv` 原样拉起。
  *
- * 边界：
- * - 只重启**当前 DSH 进程**（Electron 桌面端或 `dsh web` Node CLI），不碰 relay / 系统服务 / ~/.dsh 数据；
- * - 重新拉起的子进程继承当前工作目录与环境变量（与 DSH 启动时一致），不做任何提权；
+ * 公共约束：
+ * - 先等 ~1s 让 HTTP 202 响应发完再动手；
+ * - 重启 helper 用 `spawn(..., { detached: true, stdio: 'ignore' }).unref()`：自成进程组，
+ *   被杀的 DSH 进程树不会连带杀掉它；它也不阻塞旧进程退出；
+ * - 只在确认旧实例退出后才拉起新实例，避免「两个 DSH 同时跑」抢端口（DSH 桌面端会因此
+ *   直接崩溃）；
  * - spawn 可注入（生产默认 `node:child_process.spawn`，测试注入 fake，**绝不真的杀进程**）；
  * - `DSH_REMOTE_DISABLE_HOST_RESTART=1` 时拒绝调度（测试/CI 防误重启本机）。
  */
 
-import { spawn } from 'node:child_process';
+import { execFileSync, spawn } from 'node:child_process';
 
-/** 禁用远程重启的环境变量；为 '1' 时调度直接抛 501。 */
+/** 禁止远程重启的环境变量；为 '1' 时调度直接抛 501。 */
 export const HOST_RESTART_DISABLE_ENV = 'DSH_REMOTE_DISABLE_HOST_RESTART';
+/** DSH 桌面端给 host 子进程注入的标记：值是 Electron 可执行文件路径。 */
+export const DESKTOP_HOST_ENV = 'DSH_DESKTOP_NODE_EXECUTABLE';
 
 /** 默认：先等 1s 让 202 响应发完再杀进程。 */
 export const HOST_RESTART_DELAY_MS = 1000;
@@ -24,6 +34,8 @@ export const HOST_RESTART_DELAY_MS = 1000;
 export const HOST_RESTART_KILL_GRACE_MS = 10_000;
 /** 默认：当前进程退出后再等 1s 才重新拉起（给端口/单实例锁留释放时间）。 */
 export const HOST_RESTART_RELAUNCH_DELAY_MS = 1000;
+/** 桌面端整组退出后额外等待：端口（如插件占用的 host web port）要完全释放。 */
+export const DESKTOP_RELAUNCH_DELAY_MS = 2500;
 /** 默认：`createHostRestartScheduler` 的去重窗口 —— 10s 内的重复请求只调度一次。 */
 export const HOST_RESTART_DEDUPE_WINDOW_MS = 10_000;
 
@@ -58,8 +70,7 @@ export function shellQuote(value) {
 
 /**
  * Windows `cmd.exe` 双引号转义：空格/元字符放进双引号里即按字面量处理，内部双引号转义。
- * 仅用于 `start "" "<exe>"`、taskkill 等固定形态的命令；路径里出现 `%` 的极端情况未做处理
- * （Windows 下 DSH 安装路径不会包含 `%`）。
+ * 仅用于 `start "" "<exe>"`、taskkill 等固定形态的命令。
  * @param {unknown} value
  * @returns {string}
  */
@@ -84,22 +95,120 @@ export function extractMacBundlePath(execPath) {
   return raw.slice(0, appIndex + '.app'.length);
 }
 
+/** 去掉首尾空白与包裹引号，便于比较 ps 输出的命令。 */
+function normalizeCommand(value) {
+  let text = String(value ?? '').trim();
+  if (text.length >= 2 && text.startsWith('"') && text.endsWith('"')) text = text.slice(1, -1);
+  return text;
+}
+
+/**
+ * 默认的父进程命令行读取（POSIX `ps -o comm=`；Windows 无对应命令，返回 undefined）。
+ * @param {number} pid
+ * @returns {string|undefined}
+ */
+export function readParentCommand(pid) {
+  if (process.platform === 'win32') return undefined;
+  try {
+    const output = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 });
+    const text = normalizeCommand(output);
+    return text === '' ? undefined : text;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * 本进程的 argv 是否像 DSH 桌面端的 host 子进程入口。
+ *
+ * DSH 桌面端 shell 用 `spawn(electron, ['--expose-internals', <runtimeDir>/node_modules/
+ * @deepseek-ai/dsh-desktop-host/lib/index.js, ...])`（ELECTRON_RUN_AS_NODE=1）拉起 Host；
+ * 该入口是桌面端特有的，`dsh web` 等 CLI 不会出现。
+ *
+ * @param {string[]} argv 进程参数（Node 语义：process.argv）。
+ * @returns {boolean}
+ */
+export function isDesktopHostEntry(argv) {
+  if (!Array.isArray(argv)) return false;
+  return argv.some((value) => {
+    const text = normalizeCommand(value).replace(/\\/g, '/');
+    return text.includes('dsh-desktop-host/lib/index.js') || text.endsWith('@deepseek-ai/dsh-desktop-host');
+  });
+}
+
+/**
+ * 判断本进程是不是 DSH 桌面端派生出来的 host 子进程，以及 shell 的 pid。
+ *
+ * 判据（任一不满足都不算桌面端，避免误杀无关父进程）：
+ * 1. 运行在 Electron 里，且 argv 里有 `dsh-desktop-host/lib/index.js` 入口
+ *    （旧版/特殊启动器可能改为注入 `DSH_DESKTOP_NODE_EXECUTABLE` 环境标记，两种都认）；
+ * 2. `process.ppid` 合法（>1 且不是自己）；
+ * 3. POSIX 下父进程的可执行文件是同一个 Electron 可执行文件 / 标记值
+ *    （防止在 DSH 内开的终端里再起 `dsh web` 时误把终端 shell 当 DSH shell）。
+ *
+ * @param {{
+ *   platform?: string,
+ *   env?: NodeJS.ProcessEnv,
+ *   argv?: string[],
+ *   execPath?: string,
+ *   ppid?: number,
+ *   selfPid?: number,
+ *   readParentCommand?: (pid: number) => string|undefined,
+ * }} [options]
+ * @returns {{desktopHost: boolean, shellPid?: number, reason?: string}}
+ */
+export function detectDesktopShell({
+  platform = process.platform,
+  env = process.env,
+  argv = process.argv,
+  execPath = process.execPath,
+  ppid = process.ppid,
+  selfPid = process.pid,
+  readParentCommand: readCommand = readParentCommand,
+} = {}) {
+  const marker = normalizeCommand(env?.[DESKTOP_HOST_ENV]);
+  const entry = isDesktopHostEntry(argv);
+  const parentPid = Number(ppid);
+  if (marker === '' && !entry) {
+    return { desktopHost: false, reason: '当前进程不是 DSH 桌面端 host 子进程（没有 dsh-desktop-host 入口，也没有桌面端环境标记）' };
+  }
+  if (!Number.isInteger(parentPid) || parentPid <= 1 || parentPid === selfPid) {
+    return { desktopHost: false, reason: `父进程 pid 非法（ppid=${String(ppid)}）` };
+  }
+  // 桌面端 shell 就是启动本进程的 Electron 可执行文件（标记值或 execPath）。
+  const expected = marker !== '' ? marker : normalizeCommand(execPath);
+  if (platform !== 'win32') {
+    const command = readCommand ? readCommand(parentPid) : undefined;
+    if (command !== undefined) {
+      const normalized = normalizeCommand(command);
+      const expectedBase = expected === '' ? '' : expected.split(/[\\/]/).pop();
+      const samePath = normalized !== ''
+        && (normalized === expected || (expectedBase !== '' && normalized.split(/[\\/]/).pop() === expectedBase));
+      if (!samePath) return { desktopHost: false, reason: `父进程不是 DSH 桌面端 shell：${normalized}` };
+    }
+  }
+  return { desktopHost: true, shellPid: parentPid };
+}
+
 /**
  * 生成「重新拉起当前 DSH」的计划（纯函数，不执行任何进程操作）。
  *
  * 返回值形状：
- * - `{ mode: 'mac-app', supported: true, platform, execPath, bundle, command }`
- * - `{ mode: 'win-app', supported: true, platform, execPath, command }`
+ * - `{ mode: 'desktop-app', supported: true, platform, shellPid, hostPid, bundle?, command, ... }`
+ *   —— DSH 桌面端：目标是整个应用进程组（shell 为组长），命令重新打开 `.app` / `.exe`；
  * - `{ mode: 'node', supported: true, platform, execPath, argv, command }`
- * - `{ mode: 'unsupported', supported: false, platform, reason }`（环境不支持，不算崩溃）
- *
- * `command` 是已带引号的「重新拉起命令」片段，由 shell helper 在最后一步执行。
+ *   —— Node CLI：目标是当前进程自己；
+ * - `{ mode: 'unsupported', supported: false, platform, reason }`（环境不支持，不算崩溃）。
  *
  * @param {{
  *   platform?: string,
  *   execPath?: string,
  *   argv?: string[],
  *   versions?: Record<string, string>,
+ *   env?: NodeJS.ProcessEnv,
+ *   ppid?: number,
+ *   selfPid?: number,
+ *   readParentCommand?: (pid: number) => string|undefined,
  * }} [options]
  */
 export function createHostRestartPlan({
@@ -107,6 +216,10 @@ export function createHostRestartPlan({
   execPath = process.execPath,
   argv = process.argv,
   versions = process.versions,
+  env = process.env,
+  ppid = process.ppid,
+  selfPid = process.pid,
+  readParentCommand: readCommand = readParentCommand,
 } = {}) {
   const platformName = String(platform ?? '');
   const exec = String(execPath ?? '');
@@ -117,6 +230,23 @@ export function createHostRestartPlan({
   }
 
   if (isElectron) {
+    const shell = detectDesktopShell({
+      platform: platformName,
+      env,
+      argv,
+      execPath: exec,
+      ppid,
+      selfPid,
+      readParentCommand: readCommand,
+    });
+    if (!shell.desktopHost) {
+      return {
+        mode: 'unsupported',
+        supported: false,
+        platform: platformName,
+        reason: shell.reason ?? '无法确认 DSH 桌面端 shell（不以某个子进程为目标，避免误杀）',
+      };
+    }
     if (platformName === 'darwin') {
       const bundle = extractMacBundlePath(exec);
       if (!bundle) {
@@ -128,20 +258,28 @@ export function createHostRestartPlan({
         };
       }
       return {
-        mode: 'mac-app',
+        mode: 'desktop-app',
         supported: true,
         platform: platformName,
         execPath: exec,
         bundle,
+        shellPid: shell.shellPid,
+        hostPid: selfPid,
+        groupKill: true,
+        relaunchDelayMs: DESKTOP_RELAUNCH_DELAY_MS,
         command: `open -n ${shellQuote(bundle)}`,
       };
     }
     if (platformName === 'win32') {
       return {
-        mode: 'win-app',
+        mode: 'desktop-app',
         supported: true,
         platform: platformName,
         execPath: exec,
+        shellPid: shell.shellPid,
+        hostPid: selfPid,
+        groupKill: false,
+        relaunchDelayMs: DESKTOP_RELAUNCH_DELAY_MS,
         command: `start "" ${windowsQuote(exec)}`,
       };
     }
@@ -182,23 +320,110 @@ function secondsOf(ms, min = 0) {
   return Math.max(min, Math.ceil(value / 1000));
 }
 
-/**
- * 生成 shell helper 的脚本文本（POSIX `/bin/sh -c` 或 Windows `cmd.exe /c`）。
- * 脚本顺序：等待 → 杀当前 pid（SIGTERM，超时 SIGKILL）→ 等待 → 重新拉起。
- *
- * @param {ReturnType<typeof createHostRestartPlan>} plan
- * @param {{pid?: number, delayMs?: number, killGraceMs?: number, relaunchDelayMs?: number}} [options]
- * @returns {string}
- */
-export function buildHostRestartScript(plan, {
-  pid = process.pid,
-  delayMs = HOST_RESTART_DELAY_MS,
-  killGraceMs = HOST_RESTART_KILL_GRACE_MS,
-  relaunchDelayMs = HOST_RESTART_RELAUNCH_DELAY_MS,
-} = {}) {
-  if (!plan?.supported) {
-    throw hostRestartError(501, 'host-restart-unsupported', plan?.reason ?? '当前环境不支持自动重启');
+/** POSIX 桌面端脚本：整组 SIGTERM → 组内退出（超时整组 SIGKILL）→ 拉起新实例。 */
+function buildDesktopPosixScript(plan, { delayMs, killGraceMs, relaunchDelayMs }) {
+  const shellPid = Number(plan.shellPid);
+  const hostPid = Number(plan.hostPid);
+  if (!Number.isInteger(shellPid) || shellPid <= 1) {
+    throw hostRestartError(500, 'host-restart-invalid-pid', 'DSH 桌面端 shell pid 非法，无法安排重启');
   }
+  const delay = secondsOf(delayMs);
+  const grace = secondsOf(killGraceMs, 1);
+  const relaunch = secondsOf(relaunchDelayMs);
+  const execPath = String(plan.execPath ?? '').replace(/'/g, `'\\''`);
+  const bundle = String(plan.bundle ?? '').replace(/'/g, `'\\''`);
+  return [
+    '# 重启 helper 日志：排查「已关掉但没拉起来」时直接看这里（不含凭据）',
+    'LOG="${HOME}/.dsh/remote-access/host-restart.log"',
+    'log() { /bin/date "+%Y-%m-%d %H:%M:%S" >> "$LOG" 2>/dev/null; printf "[host-restart] %s\\n" "$1" >> "$LOG" 2>/dev/null; }',
+    `log "helper start (shell pid ${shellPid}, host pid ${hostPid})"`,
+    `/bin/sleep ${delay}`,
+    'shell_alive() {',
+    `  s=\$(/bin/ps -o stat= -p ${shellPid} 2>/dev/null | /usr/bin/tr -d ' ')`,
+    '  case "\$s" in',
+    '    ""|Z*|z*) return 1 ;;',
+    '    *) return 0 ;;',
+    '  esac',
+    '}',
+    '# .app 是否已经跑起来（execPath 是 Electron 可执行文件；helper 自己是 /bin/sh，不会误判）',
+    'app_running() {',
+    `  /bin/ps -axo comm= 2>/dev/null | /usr/bin/grep -F -x '${execPath}' >/dev/null 2>&1`,
+    '}',
+    '# 清理被 SIGKILL 的旧实例留下的单实例锁（SingletonLock/Cookie/Socket）：',
+    '# 不清理的话新实例会把「锁的主进程已死」误判为已有实例，启动 100ms 内直接退出（表现为「没拉起来」）。',
+    'cleanup_singleton_locks() {',
+    '  cleaned=0',
+    '  for dir in "$HOME/Library/Application Support/@deepseek-ai/dsh-desktop" "$HOME/Library/Application Support/DeepSeek Harness" "$HOME/Library/Application Support/dsh-desktop"; do',
+    '    [ -d "$dir" ] || continue',
+    '    lock="$dir/SingletonLock"',
+    '    [ -L "$lock" ] || continue',
+    '    owner=$(/usr/bin/readlink "$lock" 2>/dev/null)',
+    '    owner_pid="${owner##*-}"',
+    '    if [ -n "$owner_pid" ] && kill -0 "$owner_pid" 2>/dev/null; then continue; fi',
+    '    /bin/rm -f "$lock" "$dir/SingletonCookie" "$dir/SingletonSocket" 2>/dev/null && cleaned=1',
+    '  done',
+    '  log "singleton cleanup: cleaned=$cleaned"',
+    '}',
+    '# 关键：先直接 SIGKILL 浏览器主进程（shell）。不能先 SIGTERM：Electron/Chromium 收到 TERM 会走',
+    '# 优雅关闭、先杀 renderer，shell 的 renderer 崩溃处理会弹「应用无法启动或已意外停止」对话框。',
+    `kill -KILL ${shellPid} 2>/dev/null || true`,
+    'log "shell killed"',
+    `kill -KILL -- -${shellPid} 2>/dev/null || true`,
+    `if kill -0 ${hostPid} 2>/dev/null; then kill -KILL ${hostPid} 2>/dev/null || true; fi`,
+    'log "process group killed"',
+    `/bin/sleep ${relaunch}`,
+    'if shell_alive; then log "abort: shell still alive"; exit 1; fi',
+    'cleanup_singleton_locks',
+    `sleep 1`,
+    '# 1) 首选 LaunchServices 正常激活（窗口/Dock 行为与手动打开一致）',
+    `/usr/bin/open -n '${bundle}' >/dev/null 2>&1`,
+    `open_rc=$?`,
+    'log "open -n rc=$open_rc; waiting for app"',
+    'n=0',
+    'while [ "$n" -lt 10 ]; do',
+    '  app_running && break',
+    '  n=$((n + 1))',
+    '  /bin/sleep 1',
+    'done',
+    'if app_running; then log "relaunched via open"; exit 0; fi',
+    'log "open did not start the app; fallback to direct exec"',
+    '# 2) 兜底：直接执行 .app 内的可执行文件。必须清掉 ELECTRON_RUN_AS_NODE / IPC 环境变量，',
+    '#    否则 Electron 会以 Node 模式运行、不会起 GUI。',
+    `/usr/bin/env -u ELECTRON_RUN_AS_NODE -u NODE_CHANNEL_FD -u NODE_CHANNEL_SERIALIZATION_MODE '${execPath}' >/dev/null 2>&1 &`,
+    'n=0',
+    'while [ "$n" -lt 10 ]; do',
+    '  app_running && break',
+    '  n=$((n + 1))',
+    '  /bin/sleep 1',
+    'done',
+    'if app_running; then log "relaunched via direct exec"; exit 0; fi',
+    'log "FAILED: app still not running after open + direct exec"',
+    'exit 1',
+  ].join('\n');
+}
+
+/** Windows 桌面端脚本（best-effort）：先杀 shell、再补杀 host 子进程，最后 start 新实例。 */
+function buildDesktopWindowsScript(plan, { delayMs, killGraceMs, relaunchDelayMs }) {
+  const shellPid = Number(plan.shellPid);
+  const hostPid = Number(plan.hostPid);
+  if (!Number.isInteger(shellPid) || shellPid <= 1) {
+    throw hostRestartError(500, 'host-restart-invalid-pid', 'DSH 桌面端 shell pid 非法，无法安排重启');
+  }
+  const delay = secondsOf(delayMs);
+  const grace = secondsOf(killGraceMs, 1);
+  const relaunch = secondsOf(relaunchDelayMs);
+  return [
+    `ping -n ${Math.max(2, delay + 1)} 127.0.0.1 >nul 2>&1`,
+    `taskkill /PID ${shellPid} /F >nul 2>&1`,
+    `ping -n ${Math.max(2, grace + 1)} 127.0.0.1 >nul 2>&1`,
+    `taskkill /PID ${hostPid} /F >nul 2>&1`,
+    `ping -n ${Math.max(2, relaunch + 1)} 127.0.0.1 >nul 2>&1`,
+    plan.command,
+  ].join(' & ');
+}
+
+/** POSIX CLI 模式脚本：延迟 → SIGTERM 自己（超时 SIGKILL）→ 延迟 → 原样重新拉起。 */
+function buildNodeScript(plan, { pid, delayMs, killGraceMs, relaunchDelayMs }) {
   const targetPid = Number(pid);
   if (!Number.isInteger(targetPid) || targetPid <= 0) {
     throw hostRestartError(500, 'host-restart-invalid-pid', '当前进程 pid 非法，无法安排重启');
@@ -206,24 +431,8 @@ export function buildHostRestartScript(plan, {
   const delay = secondsOf(delayMs);
   const grace = secondsOf(killGraceMs, 1);
   const relaunch = secondsOf(relaunchDelayMs);
-
-  if (plan.platform === 'win32') {
-    // Windows best-effort：
-    // - 用 ping 延迟而不是 timeout：timeout 在 stdin 被重定向（stdio: 'ignore'）时会立即失败，
-    //   导致 202 还没发完就 taskkill；ping -n <秒数+1> 是无需控制台的等秒惯用法；
-    // - taskkill /F 立即结束目标进程（不加 /T，避免连带杀掉本 helper 自身——helper 是目标进程的子进程）；
-    // - start "" 由 cmd 内再拉起（失败时用户仍需手动打开 DSH）；
-    // - 用 `& ` 串成单行：cmd /c 里多行脚本文本不可靠。
-    return [
-      `ping -n ${Math.max(2, delay + 1)} 127.0.0.1 >nul 2>&1`,
-      `taskkill /PID ${targetPid} /F >nul 2>&1`,
-      `ping -n ${Math.max(2, relaunch + 1)} 127.0.0.1 >nul 2>&1`,
-      plan.command,
-    ].join(' & ');
-  }
-
   return [
-    `sleep ${delay}`,
+    `/bin/sleep ${delay}`,
     `kill -TERM ${targetPid} 2>/dev/null || true`,
     'n=0',
     `while kill -0 ${targetPid} 2>/dev/null; do`,
@@ -236,11 +445,59 @@ export function buildHostRestartScript(plan, {
   ].join('\n');
 }
 
+/** Windows CLI（非桌面端）：延迟 → taskkill 自己 → 再延迟 → start 重新拉起。 */
+function buildNodeWindowsScript(plan, { pid, delayMs, killGraceMs, relaunchDelayMs }) {
+  const targetPid = Number(pid);
+  if (!Number.isInteger(targetPid) || targetPid <= 0) {
+    throw hostRestartError(500, 'host-restart-invalid-pid', '当前进程 pid 非法，无法安排重启');
+  }
+  const delay = secondsOf(delayMs);
+  const grace = secondsOf(killGraceMs, 1);
+  const relaunch = secondsOf(relaunchDelayMs);
+  return [
+    `ping -n ${Math.max(2, delay + 1)} 127.0.0.1 >nul 2>&1`,
+    `taskkill /PID ${targetPid} /F >nul 2>&1`,
+    `ping -n ${Math.max(2, grace + 1)} 127.0.0.1 >nul 2>&1`,
+    `ping -n ${Math.max(2, relaunch + 1)} 127.0.0.1 >nul 2>&1`,
+    plan.command,
+  ].join(' & ');
+}
+
+/**
+ * 生成 shell helper 的脚本文本（POSIX `/bin/sh -c` 或 Windows `cmd.exe /c`）。
+ * 脚本顺序：等待 → 杀目标（桌面端=整组 + 补杀 host；CLI=自己）→ 等待 → 重新拉起。
+ *
+ * @param {ReturnType<typeof createHostRestartPlan>} plan
+ * @param {{
+ *   pid?: number,
+ *   delayMs?: number,
+ *   killGraceMs?: number,
+ *   relaunchDelayMs?: number,
+ * }} [options]
+ * @returns {string}
+ */
+export function buildHostRestartScript(plan, {
+  pid = process.pid,
+  delayMs = HOST_RESTART_DELAY_MS,
+  killGraceMs = HOST_RESTART_KILL_GRACE_MS,
+  relaunchDelayMs = plan?.relaunchDelayMs ?? HOST_RESTART_RELAUNCH_DELAY_MS,
+} = {}) {
+  if (!plan?.supported) {
+    throw hostRestartError(501, 'host-restart-unsupported', plan?.reason ?? '当前环境不支持自动重启');
+  }
+  if (plan.platform === 'win32') {
+    if (plan.mode === 'desktop-app') return buildDesktopWindowsScript(plan, { delayMs, killGraceMs, relaunchDelayMs });
+    return buildNodeWindowsScript(plan, { pid, delayMs, killGraceMs, relaunchDelayMs });
+  }
+  if (plan.mode === 'desktop-app') return buildDesktopPosixScript(plan, { delayMs, killGraceMs, relaunchDelayMs });
+  return buildNodeScript(plan, { pid, delayMs, killGraceMs, relaunchDelayMs });
+}
+
 /**
  * 起 detached shell helper 执行重启（**真会杀进程**；测试必须注入 fake spawnImpl）。
  *
  * helper 与当前进程的关系：它是当前进程的子进程，但 `detached: true` 后自成进程组，
- * 父进程被 SIGTERM/SIGKILL 后仍能继续执行「重新拉起」步骤。
+ * 父进程（以及整个 DSH 桌面端进程组）被 SIGTERM/SIGKILL 后仍能继续执行「重新拉起」步骤。
  *
  * @param {ReturnType<typeof createHostRestartPlan>} plan
  * @param {{
@@ -261,7 +518,7 @@ export function scheduleHostRestart(plan, {
   env = process.env,
   delayMs = HOST_RESTART_DELAY_MS,
   killGraceMs = HOST_RESTART_KILL_GRACE_MS,
-  relaunchDelayMs = HOST_RESTART_RELAUNCH_DELAY_MS,
+  relaunchDelayMs = plan?.relaunchDelayMs ?? HOST_RESTART_RELAUNCH_DELAY_MS,
 } = {}) {
   if (env?.[HOST_RESTART_DISABLE_ENV] === '1') {
     throw hostRestartError(501, 'host-restart-disabled', `主机重启已被环境变量 ${HOST_RESTART_DISABLE_ENV}=1 禁用`);
@@ -281,8 +538,7 @@ export function scheduleHostRestart(plan, {
   let args;
   if (isWindows) {
     // cmd.exe 的引号规则很绕：用 `/d`（跳过 AutoRun）+ `/s`（去掉最外层引号后原样执行），
-    // 配合 windowsVerbatimArguments 把「已带引号的整段命令」直接交给 cmd，
-    // 避免 Node 的参数转义与 cmd /c 的引号启发式互相打架（脚本里还有 start "" "<exe>" 的双引号）。
+    // 配合 windowsVerbatimArguments 把「已带引号的整段命令」直接交给 cmd。
     shell = 'cmd.exe';
     args = ['/d', '/s', '/c', `"${script}"`];
     spawnOptions.windowsVerbatimArguments = true;
@@ -305,7 +561,8 @@ export function scheduleHostRestart(plan, {
   } catch {
     /* unref 失败不影响 helper 运行（helper 已 detached） */
   }
-  log(`已安排主机重启助手（mode=${plan.mode}, pid=${pid}）：约 ${secondsOf(delayMs)}s 后重启`);
+  const target = plan.mode === 'desktop-app' ? `shell pid ${String(plan.shellPid)}（整组）` : `pid ${pid}`;
+  log(`已安排主机重启助手（mode=${plan.mode}, ${target}）：约 ${secondsOf(delayMs)}s 后重启`);
   return { mode: plan.mode, pid, shell, args, script, child };
 }
 
@@ -325,20 +582,23 @@ export function scheduleHostRestart(plan, {
  */
 export function requestHostRestart(options = {}) {
   const {
-    platform = process.platform,
-    execPath = process.execPath,
-    argv = process.argv,
-    versions = process.versions,
+    platform,
+    execPath,
+    argv,
+    versions,
+    env = process.env,
+    ppid,
+    selfPid,
+    readParentCommand: readCommand,
     pid = process.pid,
     log = () => {},
     spawnImpl,
-    env,
     delayMs,
     killGraceMs,
     relaunchDelayMs,
   } = options;
 
-  const plan = createHostRestartPlan({ platform, execPath, argv, versions });
+  const plan = createHostRestartPlan({ platform, execPath, argv, versions, env, ppid, selfPid, readParentCommand: readCommand });
   if (!plan.supported) {
     throw hostRestartError(501, 'host-restart-unsupported', plan.reason ?? '当前环境不支持自动重启');
   }
