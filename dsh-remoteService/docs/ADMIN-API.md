@@ -198,6 +198,42 @@ Body：
 > 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
 > 删除设备记录目前只在**本机管理 API**（`POST /api/remote-access/devices/:id/delete`）开放，远程隧道不提供。
 
+### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.10+）
+远程触发**主机 DSH 客户端**重启（App「重启主机」入口，用于更新 Host/Client 半后不必回电脑
+手动重启）。请求无 body；主机先回 202，再在约 1s 后结束当前 DSH 进程并重新拉起：
+```json
+{ "ok": true, "data": { "restarting": true, "mode": "mac-app" } }
+```
+`mode` 表示当前 Host 的重启方式：
+
+| mode | 场景 | 重新拉起方式 |
+|---|---|---|
+| `mac-app` | macOS Electron 桌面端 | `open -n <...app>`（从 `execPath` 截出 `.app` bundle） |
+| `win-app` | Windows Electron 桌面端 | `cmd.exe /c start "" "<exe>"`（best-effort） |
+| `node` | Node CLI（例如 `dsh web`） | 当前 `execPath` + 原 `argv.slice(1)` 原样重新拉起 |
+
+错误：
+- **405** `method-not-allowed`：非 POST；
+- **501** `host-restart-unavailable`（旧监听/未注入）、`host-restart-unsupported`（环境不支持，
+  如 Linux Electron、执行文件不在 `.app` 内；`message` 给可读原因）、`host-restart-disabled`
+  （`DSH_REMOTE_DISABLE_HOST_RESTART=1`，供测试/CI 防误重启）；
+- **500** `host-restart-spawn-failed`：无法启动重启 helper（调度失败）。
+
+安全说明：
+- 认证与其它 `/__dsh_remote/*` 完全一致：**只认设备 mTLS 客户端证书**，没有额外 token；
+  配对设备本来就能经隧道完整操作主机 DSH（Web UI/WS），远程重启**不是新的提权面**；
+- 只结束当前 DSH 进程：不碰 relay / 系统服务 / `~/.dsh` 数据；重新拉起的进程继承当前工作
+  目录与环境变量，不做提权；
+- 重启 helper 是 detached shell：先等 ~1s 让 202 响应发完 → `SIGTERM` 当前 pid（~10s 未退出
+  则 `SIGKILL`）→ 再等 ~1s → 重新拉起；helper 用 `stdio: ignore` + `unref`，不阻塞进程退出；
+- 10s 内的重复请求去重（第二次直接回 202 + 上次 `mode`，不再调度第二次）；
+- 审计（`audit.jsonl`）：每次请求一条 `{ deviceId, action: "host-restart", result: "accepted" | "failed" }`，
+  `hash` 标记实际 mode / `deduped` / 错误码，可在 `GET /__dsh_remote/audit` 查看；
+- Windows 的 kill/拉起为 best-effort（`taskkill /F` + `start`），失败不保证自动恢复；
+- supervisor 托管（launchd `KeepAlive` / systemd `Restart=`）的 `dsh web`：supervisor 也会自动
+  拉起，可能与 helper 的重新拉起短暂竞争（多起的实例因端口占用退出）；这类部署建议在
+  supervisor 层重启（`launchctl kickstart -k` / `systemctl restart`）。
+
 ### 其余路径
 全部反代到本机 DSH Web 服务（`http://127.0.0.1:<webServer.port>`），并：
 - 剥离 `Cookie / Authorization / Host / Origin / Forwarded / X-Forwarded-* / X-Real-IP / Sec-Fetch-*`；

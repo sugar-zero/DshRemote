@@ -1,9 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import forge from 'node-forge';
 import { WebSocketServer } from 'ws';
-import { withTempHome } from './helpers.js';
+import { RESTART_PATH } from 'dsh-remote-protocol';
+import { makeCsr, tlsRequest, withTempHome } from './helpers.js';
 
 function serial() {
   return `01${forge.util.bytesToHex(forge.random.getBytesSync(15))}`;
@@ -146,6 +147,86 @@ test('RemoteService: TLS 证书与私钥不匹配时给出可读错误，且不�
       await service.dispose();
     }
   } finally {
+    home.cleanup();
+  }
+});
+
+test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn，绝不真的重启）', async () => {
+  const home = withTempHome();
+  const spawnCalls = [];
+  const fakeSpawn = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return { pid: 1, unref: () => {} };
+  };
+  const restartEnv = {};
+  let service;
+  try {
+    const { saveConfig } = await import('../lib/config.js');
+    const { RemoteService } = await import('../lib/service.js');
+    const { paths } = await import('../lib/paths.js');
+    saveConfig({
+      enabled: true,
+      relayUrl: 'ws://127.0.0.1:1',
+      relayDomain: 'relay.test',
+      hostId: 'h_restart',
+      hostToken: 'tok',
+      hostName: 'Restart Host',
+      relayTlsInsecure: true,
+    });
+    const fakeCtx = {
+      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
+      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
+      effect: (fn) => fn(),
+      on: () => () => {},
+    };
+    // spawnHostRestart 注入 fake：若注入没生效，这里会真的去杀测试进程，测试直接炸掉暴露问题。
+    service = new RemoteService(fakeCtx, { spawnHostRestart: fakeSpawn, hostRestartEnv: restartEnv });
+    await service.ready;
+    assert.ok(service.listenPort > 0);
+    assert.equal(service.status().version, '0.1.10');
+
+    // 签一台设备证书并加入注册表（相当于已完成配对）
+    const { signDeviceCertificate } = await import('../lib/identity.js');
+    const deviceCsr = makeCsr('Restart iPhone');
+    const signed = signDeviceCertificate({ ca: service.ca, csrPem: deviceCsr.csrPem, deviceId: 'd_restart', commonName: 'Restart iPhone' });
+    service.devices.add({ id: 'd_restart', name: 'Restart iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
+
+    const fqdn = 'h_restart.relay.test';
+    const devCertPem = readFileSync(paths.devTlsCert(), 'utf8');
+    const request = (options) => tlsRequest({
+      port: service.listenPort,
+      servername: fqdn,
+      caPem: devCertPem,
+      certPem: signed.certPem,
+      keyPem: deviceCsr.privateKeyPem,
+      ...options,
+    });
+
+    // 第一次：进入调度（spawn 为 fake，且断言 helper 脚本针对当前测试进程 pid）
+    const first = await request({ method: 'POST', path: RESTART_PATH });
+    assert.equal(first.status, 202);
+    assert.equal(JSON.parse(first.body).data.mode, 'node', '测试进程是 Node CLI，应为 node 模式');
+    assert.equal(spawnCalls.length, 1);
+    assert.equal(spawnCalls[0].command, '/bin/sh');
+    assert.equal(spawnCalls[0].args[0], '-c');
+    assert.ok(spawnCalls[0].args[1].includes(`kill -TERM ${process.pid}`));
+    assert.equal(spawnCalls[0].options.detached, true);
+
+    // 第二次（10s 去重窗口内）：仍 202，但不得再调度一次
+    const second = await request({ method: 'POST', path: RESTART_PATH });
+    assert.equal(second.status, 202);
+    assert.equal(JSON.parse(second.body).data.mode, 'node');
+    assert.equal(spawnCalls.length, 1, '去重窗口内不得再次调度');
+
+    // 审计：每次请求一条 host-restart（tail 是「最新在前」）
+    const entries = service.audit.tail(20).filter((entry) => entry.action === 'host-restart');
+    assert.equal(entries.length, 2);
+    assert.equal(entries[0].deviceId, 'd_restart');
+    assert.equal(entries[0].result, 'accepted');
+    assert.equal(entries[0].hash, 'deduped');
+    assert.equal(entries[1].hash, 'node');
+  } finally {
+    await service?.dispose();
     home.cleanup();
   }
 });

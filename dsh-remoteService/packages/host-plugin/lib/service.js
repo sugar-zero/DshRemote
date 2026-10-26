@@ -13,14 +13,20 @@ import { createRemoteServer } from './server.js';
 import { createPushNotifier } from './push.js';
 import { createApnsClient } from './apns.js';
 import { checkTlsKeyPair } from './tls-check.js';
+import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.1.9';
+const VERSION = '0.1.10';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
   /**
    * @param {object} ctx DSH 插件上下文
-   * @param {{createApnsClient?: typeof createApnsClient}} [options] 测试注入用
+   * @param {{
+   *   createApnsClient?: typeof createApnsClient,
+   *   spawnHostRestart?: typeof import('node:child_process').spawn,
+   *   hostRestartDedupeMs?: number,
+   *   hostRestartEnv?: NodeJS.ProcessEnv,
+   * }} [options] 测试注入用
    */
   constructor(ctx, options = {}) {
     this.ctx = ctx;
@@ -29,6 +35,16 @@ export class RemoteService {
     this.log = (message) => {
       try { console.log(`[dsh-remote] ${message}`); } catch { /* ignore */ }
     };
+    // 远程「重启主机 DSH」：短窗口去重 + 可注入 spawn（测试绝不真的杀进程）。
+    this.hostRestartScheduler = createHostRestartScheduler({
+      windowMs: options.hostRestartDedupeMs,
+      log: this.log,
+      request: () => requestHostRestart({
+        log: this.log,
+        spawnImpl: options.spawnHostRestart,
+        env: options.hostRestartEnv,
+      }),
+    });
     this.pushTokens = new Map();
     this.pushNotifier = createPushNotifier({
       getConfig: () => this.config ?? {},
@@ -171,6 +187,7 @@ export class RemoteService {
         audit: this.audit,
         getConfig: () => this.config,
         savePushToken: (entry) => this.#savePushToken(entry),
+        restartHost: (request) => this.#restartHost(request),
         getStatus: () => ({
           tls: this.tlsInfo
             ? {
@@ -213,6 +230,32 @@ export class RemoteService {
     if (tlsCheck.warnings.length > 0) this.log(`TLS 证书告警: ${tlsCheck.warnings.join('; ')}`);
     this.log(`remote server on 127.0.0.1:${this.listenPort}${dev ? ' (dev self-signed TLS)' : ''}`);
     this.#watchCertFiles(config);
+  }
+
+  /**
+   * 远程「重启主机 DSH」：去重后调度 detached helper 杀进程并重新拉起。
+   *
+   * 只做调度，不自己动手杀进程；实际重启由 lib/host-restart.js 的 helper 在 ~1s 后完成，
+   * 这样 HTTP 202 能先发回手机。审计由 server.js 的 /__dsh_remote/restart 路由统一写
+   * （每请求一条 accepted/failed，去重命中标 hash=deduped），这里只记日志，避免重复条目。
+   *
+   * @param {{device?: {id?: string}}} [request] server.js 传入的请求上下文
+   * @returns {{mode: string, deduped: boolean}}
+   */
+  #restartHost(request = {}) {
+    const deviceId = request?.device?.id ?? 'unknown';
+    try {
+      const result = this.hostRestartScheduler.request();
+      if (result.deduped) {
+        this.log(`host-restart: 忽略 ${this.hostRestartScheduler.windowMs}ms 内的重复请求（device=${deviceId}, mode=${result.mode}）`);
+      } else {
+        this.log(`host-restart: 已安排重启（device=${deviceId}, mode=${result.mode}），DSH 将在约 1s 后退出并重新拉起`);
+      }
+      return result;
+    } catch (error) {
+      this.log(`host-restart: 调度失败（device=${deviceId}）: ${error?.message ?? error}`);
+      throw error;
+    }
   }
 
   /**

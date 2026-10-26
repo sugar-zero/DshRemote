@@ -5,6 +5,7 @@ import {
   PAIR_PATH,
   PAIR_STATUS_PATH,
   PUSH_TOKEN_PATH,
+  RESTART_PATH,
   STATUS_PATH,
   TUNNEL_BASE,
 } from 'dsh-remote-protocol';
@@ -64,6 +65,7 @@ export function createRemoteServer({
   getConfig,
   savePushToken,
   getStatus,
+  restartHost,
   log = () => {},
 }) {
   const verifyPeer = createPeerVerifier({ devices, caCertPem });
@@ -190,7 +192,31 @@ export function createRemoteServer({
       return;
     }
 
-    // 未知的远程内部路径（已知的 pair/devices/push-token 已在上方处理）
+    if (pathname === RESTART_PATH) {
+      if (req.method !== 'POST') { sendError(res, 405, 'method-not-allowed', '仅支持 POST'); return; }
+      if (typeof restartHost !== 'function') {
+        audit.append({ deviceId: peer.device.id, action: 'host-restart', result: 'failed', hash: 'not-enabled' });
+        sendError(res, 501, 'host-restart-unavailable', '当前主机未启用远程重启（插件版本或运行环境不支持）');
+        return;
+      }
+      try {
+        const result = await restartHost({ device: peer.device });
+        const mode = String(result?.mode ?? 'unknown');
+        audit.append({
+          deviceId: peer.device.id,
+          action: 'host-restart',
+          result: 'accepted',
+          hash: result?.deduped ? 'deduped' : mode,
+        });
+        sendJson(res, 202, { ok: true, data: { restarting: true, mode } });
+      } catch (error) {
+        audit.append({ deviceId: peer.device.id, action: 'host-restart', result: 'failed', hash: error?.code ?? 'restart-failed' });
+        sendError(res, error.status ?? 500, error.code ?? 'host-restart-failed', error.message ?? '安排主机重启失败');
+      }
+      return;
+    }
+
+    // 未知的远程内部路径（已知的 pair/devices/push-token/restart 已在上方处理）
     if (pathname.startsWith(`${TUNNEL_BASE}/`)) {
       sendError(res, 404, 'not-found', '未知远程路径');
       return;

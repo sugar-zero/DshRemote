@@ -210,6 +210,30 @@ volumes:
 > 内容），配置见 [`../relay/README.md`](../relay/README.md) §6.1；默认不启用。
 > 安全边界：`.p8` 与设备 token 都只在本机；relay 不参与自托管 APNs 通道，也看不到 token。
 
+### 手机 App 重启主机 DSH（0.1.10+）
+
+主机插件更新（linked 包/新版本）后，需要重启一次 DSH 才会加载新的 Host/Client 半。以前
+得回到电脑上手动退出再打开；**0.1.10 起**，手机 App 的「重启主机」按钮可以远程触发：
+
+- 通道：App 经 mTLS 调 `POST /__dsh_remote/restart`（与 `/__dsh_remote/status` 同一个
+  TLS 监听），主机先回 **202**，再在约 1s 后结束当前 DSH 进程并在约 1~2s 内重新拉起；
+- 怎么拉起：按运行形态自适应 —— macOS Electron 桌面端 `open -n <...app>`；Windows
+  Electron 桌面端 `cmd.exe /c start "" "<exe>"`（best-effort）；Node CLI（`dsh web`）
+  用当前 `execPath` + 原参数重新拉起；
+- 只重启**当前 DSH 进程**：不碰 relay / 系统服务 / `~/.dsh` 数据；重新拉起的进程继承当前
+  工作目录与环境变量，不做提权；
+- 10s 内的重复点击只调度一次（第二次仍回 202，不会重复杀进程）；
+- 审计：`~/.dsh/remote-access/audit.jsonl` 记 `action: host-restart`、`result: accepted|failed`；
+- CI/测试可设 `DSH_REMOTE_DISABLE_HOST_RESTART=1`，端点会返回 501 拒绝执行。
+
+> **要重启一次 DSH 加载本插件新版本（≥0.1.10）后，App 里这个按钮才可用**（旧版 Host 半
+> 没有该端点，App 会收到 404/501）。首次升级仍建议在电脑上手动重启一次；之后即可远程重启。
+> 平台限制：Linux Electron 暂不支持（返回 501）；Windows 的 kill/拉起为 best-effort。
+> supervisor 注意：若 `dsh web` 由 launchd（`KeepAlive`，见 `deploy/launchd/`）或 systemd
+> （`Restart=`）托管，被杀后 supervisor 自己也会拉起一份，可能与 helper 的重新拉起短暂竞争
+> （多起的实例会因端口占用退出，不影响先起的实例）；这类部署更稳妥的做法是在 supervisor 层
+> 重启（`launchctl kickstart -k` / `systemctl restart`）。
+
 ---
 
 ## 3. 本机接口
@@ -223,6 +247,7 @@ Host 半注册在 DSH 本机 webServer：
 | `/__dsh_remote/status` | 主机状态（mTLS） |
 | `/__dsh_remote/devices` | 设备列表/撤销（mTLS） |
 | `/__dsh_remote/audit` | 审计（mTLS） |
+| `/__dsh_remote/restart` | 远程重启主机 DSH（mTLS，POST，0.1.10+） |
 | `/api/remote-access/*` | 本机管理 API（仅本机已认证 DSH 浏览器） |
 
 管理 API 的完整契约见 [`../../docs/ADMIN-API.md`](../../docs/ADMIN-API.md)。
