@@ -9,12 +9,12 @@ plugins {
 }
 
 group = 'com.dsh.remote.mtls'
-version = '0.1.9'
+version = '0.1.11'
 
 android {
   namespace 'com.dsh.remote.mtls'
   defaultConfig {
-    versionCode 12
-    versionName '0.1.10'
+    versionCode 13
+    versionName '0.1.11'
   }
 }

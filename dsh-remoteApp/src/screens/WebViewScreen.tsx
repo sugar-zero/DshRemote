@@ -33,6 +33,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type Ref } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   AppState,
   Linking,
   Platform,
@@ -45,10 +46,11 @@ import {
 import { WebView, type WebViewNavigation, type WebViewProps } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { webUiUrl } from '../lib/protocol';
+import { restartHostUrl, webUiUrl } from '../lib/protocol';
 import { MOBILE_WEB_SHELL_JS } from '../lib/mobileWebShell';
 import type { StoredConnection } from '../lib/store';
 import {
+  DshMtlsUnavailableError,
   evaluateJavaScript,
   getDshMtlsWebView,
   requestWithClientCert,
@@ -94,6 +96,79 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
   online: colors.success,
   error: colors.danger,
 };
+
+// ---------------------------------------------------------------------------
+// 「重启主机 DSH」：请求 + 等待恢复
+// ---------------------------------------------------------------------------
+
+/** 重启请求被接受后，轮询状态探活的节奏：每 1.5s 一次、单次 3s 超时、最多等 30s。 */
+const HOST_RESTART_POLL_INTERVAL_MS = 1500;
+const HOST_RESTART_PROBE_TIMEOUT_MS = 3000;
+const HOST_RESTART_POLL_TIMEOUT_MS = 30_000;
+/** 发起重启请求本身的最长等待（主机应尽快回 202；等不到就按失败提示）。 */
+const HOST_RESTART_REQUEST_TIMEOUT_MS = 10_000;
+
+/** `/__dsh_remote/status`（设备 mTLS）：进入主机时的探活与重启恢复探测共用。 */
+function hostStatusUrl(host: string): string {
+  return `https://${host}/__dsh_remote/status`;
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+/**
+ * 给原生 mTLS 请求加超时。原生 `requestWithClientCert` 没有 Abort 通道：超时后
+ * 只是不再等待结果，请求会在原生侧自行结束（不影响后续探测）。
+ */
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => {
+    if (timer) clearTimeout(timer);
+  });
+}
+
+/** 从重启失败的响应体里取主机返回的错误信息（`{ok:false,error:{code,message}}`）。 */
+function restartFailureDetail(body: string): string {
+  try {
+    const parsed = JSON.parse(body) as { error?: { code?: unknown; message?: unknown } };
+    if (typeof parsed.error?.message === 'string' && parsed.error.message) return parsed.error.message;
+    if (typeof parsed.error?.code === 'string' && parsed.error.code) return `错误码：${parsed.error.code}`;
+  } catch {
+    // 非 JSON（如中继/网关错误页）：不附带原文。
+  }
+  return '';
+}
+
+/** 把重启请求的非 2xx 响应翻译成用户可读的失败原因。 */
+function describeRestartFailure(status: number, body: string): string {
+  const detail = restartFailureDetail(body);
+  const suffix = detail ? `\n\n${detail}` : '';
+  if (status === 401 || status === 403) {
+    return `主机拒绝了连接（HTTP ${status}）：设备证书可能已失效或已被撤销，请检查配对状态。${suffix}`;
+  }
+  if (status === 405) {
+    return `主机不支持该重启请求（HTTP 405）：主机端插件可能版本过旧，没有提供重启接口。${suffix}`;
+  }
+  if (status === 501) {
+    return `主机不支持重启 DSH（HTTP 501）：重启入口可能被禁用，或当前环境不支持。${suffix}`;
+  }
+  return `重启请求失败（HTTP ${status}）。${suffix}`;
+}
+
+/** 请求没有拿到响应（原生模块缺失 / 网络错误 / 超时）时的用户提示。 */
+function describeRestartError(error: unknown): string {
+  if (error instanceof DshMtlsUnavailableError) {
+    return '当前构建不支持 mTLS 请求（原生模块未链接），无法重启主机。请使用包含 dsh-mtls 模块的构建。';
+  }
+  if (error instanceof Error && error.message) return error.message;
+  return '重启请求失败，请稍后重试。';
+}
 
 /**
  * 顶栏副标题只展示「主机 ID」：从 connection.host（<hostId>.<relayDomain>[:port]）
@@ -149,8 +224,13 @@ export function WebViewScreen({
 
   // WebSocket 断开后的自动恢复；隐藏时先记下，等页面重新可见再 reload。
   const [wsRecoveryPending, setWsRecoveryPending] = useState(false);
+  // 「重启主机」进行中：从发请求到等待主机恢复为止，按钮禁用并显示 spinner。
+  const [restarting, setRestarting] = useState(false);
   // 60s 内最多自动重连 2 次，避免「主机一直拒绝 WS → reload → 又断开」的死循环。
   const wsRecoveryRef = useRef({ count: 0, since: 0 });
+  // 重启请求进行中 / 当前等待恢复会话（可取消：卸载后轮询不再 reload）。
+  const restartInFlightRef = useRef(false);
+  const restartSessionRef = useRef<{ cancelled: boolean } | null>(null);
 
   // 最近一次健康检查的序号 / 是否在途，避免 AppState + 可见性双触发时重复 reload。
   const healthCheckRef = useRef({ inFlight: false, lastStartedAt: 0 });
@@ -492,7 +572,7 @@ export function WebViewScreen({
     try {
       const response = await Promise.race([
         requestWithClientCert({
-          url: `https://${connection.host}/__dsh_remote/status`,
+          url: hostStatusUrl(connection.host),
           method: 'GET',
         }),
         timeout,
@@ -539,6 +619,123 @@ export function WebViewScreen({
     return () => subscription.remove();
   }, [checkHostHealth]);
 
+  /**
+   * 重启请求被接受后等待主机恢复：轮询 GET /__dsh_remote/status（设备 mTLS）。
+   *
+   * - 每 1.5s 探一次、单次 3s 超时、总时长最多 30s；
+   * - 主机重启期间连接被拒 / TLS 握手失败 / 502/503 都是预期错误，继续等；
+   * - 只有 200 才算恢复；`session.cancelled` 由调用方在卸载/切主机时置位，
+   *   轮询下一拍立即退出。
+   */
+  const waitForHostRecovery = useCallback(async (session: { cancelled: boolean }): Promise<boolean> => {
+    const deadline = Date.now() + HOST_RESTART_POLL_TIMEOUT_MS;
+    while (!session.cancelled) {
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await sleep(Math.min(HOST_RESTART_POLL_INTERVAL_MS, remaining));
+      if (session.cancelled) return false;
+      try {
+        const response = await withTimeout(
+          requestWithClientCert({ url: hostStatusUrl(connection.host), method: 'GET' }),
+          HOST_RESTART_PROBE_TIMEOUT_MS,
+          'restart-probe-timeout',
+        );
+        if (session.cancelled) return false;
+        if (response.status === 200) return true;
+      } catch {
+        // 主机还在重启（连接被拒/超时）：继续下一轮。
+      }
+    }
+    return false;
+  }, [connection.host]);
+
+  /**
+   * 重启主机 DSH：POST /__dsh_remote/restart（设备 mTLS）→ 轮询状态等待恢复 → reload。
+   *
+   * 主机接受重启后可能先返回 202 再断开 WebSocket；这里先把 status 切到 connecting
+   * 并清掉 wsRecoveryPending，避免 WS close 的自动恢复和本流程互相触发多次 reload。
+   */
+  const restartHost = useCallback(async () => {
+    if (restartInFlightRef.current) return;
+    restartInFlightRef.current = true;
+    const session = { cancelled: false };
+    restartSessionRef.current = session;
+    setRestarting(true);
+    // 在途健康检查立即失效：否则它会把重启造成的失败再转成一次 reload。
+    healthCheckSeq.current += 1;
+    setWsRecoveryPending(false);
+    try {
+      if (connection.certRef) {
+        try {
+          // requestWithClientCert 使用全局 configuredLabel；切主机后先对齐当前设备身份。
+          await setClientIdentity(connection.certRef);
+        } catch {
+          // 原生模块未链接时，下面的 requestWithClientCert 会给出更明确的错误。
+        }
+      }
+      const response = await withTimeout(
+        requestWithClientCert({
+          url: restartHostUrl(connection.host),
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: '{}',
+        }),
+        HOST_RESTART_REQUEST_TIMEOUT_MS,
+        '重启请求超时：主机没有响应。',
+      );
+      if (session.cancelled) return;
+      if (response.status !== 200 && response.status !== 202) {
+        Alert.alert('重启主机失败', describeRestartFailure(response.status, response.body));
+        return;
+      }
+      // 主机已接受重启：先进入「连接中」，让进度条显示并拦掉 WS 自动恢复。
+      // 202 与 WebSocket 断开几乎同时发生：POST 期间到达的 ws-close 可能已排了
+      // 600ms 自动 reload，这里再清一次，避免它在主机还没恢复时 reload 出错误页。
+      statusRef.current = 'connecting';
+      setStatus('connecting');
+      setErrorMessage(null);
+      setWsRecoveryPending(false);
+      Alert.alert('已请求重启', '等待主机恢复中，恢复后会自动重新加载页面。', [{ text: '好' }]);
+      const recovered = await waitForHostRecovery(session);
+      if (session.cancelled) return;
+      if (recovered) {
+        reload();
+        return;
+      }
+      Alert.alert(
+        '主机重启超时',
+        `等待主机恢复超过 ${Math.round(HOST_RESTART_POLL_TIMEOUT_MS / 1000)} 秒。主机可能仍在重启，请稍后点击右上角刷新重试。`,
+      );
+    } catch (error) {
+      if (session.cancelled) return;
+      Alert.alert('重启主机失败', describeRestartError(error));
+    } finally {
+      restartInFlightRef.current = false;
+      if (restartSessionRef.current === session) restartSessionRef.current = null;
+      if (!session.cancelled) setRestarting(false);
+    }
+  }, [connection.certRef, connection.host, reload, waitForHostRecovery]);
+
+  /** 「重启主机」按钮：先二次确认（会短暂断开），确认后才发重启请求。 */
+  const confirmRestartHost = useCallback(() => {
+    if (restarting) return;
+    Alert.alert(
+      '重启主机 DSH',
+      '将请求主机重启 DSH 客户端。重启期间连接会短暂断开，恢复后页面会自动重新加载；若等待超时，可点右上角刷新重试。',
+      [
+        { text: '取消', style: 'cancel' },
+        { text: '重启', style: 'destructive', onPress: () => { void restartHost(); } },
+      ],
+    );
+  }, [restartHost, restarting]);
+
+  // 组件卸载/切主机（App 用 key={host} 重建本屏）时停止等待恢复：避免残留轮询
+  // 把 reload 打到已经销毁的 WebView 上（轮询循环每 1.5s 检查一次 cancelled）。
+  useEffect(() => () => {
+    if (restartSessionRef.current) restartSessionRef.current.cancelled = true;
+    restartSessionRef.current = null;
+  }, []);
+
   const topInset = insets.top;
 
   return (
@@ -553,14 +750,34 @@ export function WebViewScreen({
               {connection.hostName ?? connection.host}
             </Text>
             <View style={styles.statusRow}>
-              <View style={[styles.statusDot, { backgroundColor: STATUS_COLORS[status] }]} />
+              {/* 重启流程期间状态文案优先显示「重启中」，避免和普通连接中混淆。 */}
+              <View style={[styles.statusDot, { backgroundColor: STATUS_COLORS[restarting ? 'connecting' : status] }]} />
               <Text style={styles.statusText} numberOfLines={1}>
-                {STATUS_LABELS[status]} · {hostIdOf(connection.host)}
+                {restarting ? '重启中' : STATUS_LABELS[status]} · {hostIdOf(connection.host)}
               </Text>
             </View>
           </View>
           <TouchableOpacity accessibilityLabel="设置" onPress={onOpenSettings} style={styles.iconButton}>
             <Text style={styles.iconGlyphSmall}>⚙︎</Text>
+          </TouchableOpacity>
+          {/*
+            * 重启主机 DSH：请求经 mTLS 隧道发给主机插件，主机重启客户端；App 等到
+            * /__dsh_remote/status 恢复后自动 reload。进行中禁用按钮并显示 spinner，
+            * 避免重复点出多轮轮询。
+            */}
+          <TouchableOpacity
+            accessibilityLabel="重启主机"
+            accessibilityHint="向主机发送重启请求，主机恢复后自动重新加载页面"
+            accessibilityState={{ disabled: restarting, busy: restarting }}
+            disabled={restarting}
+            onPress={confirmRestartHost}
+            style={[styles.iconButton, restarting ? styles.iconButtonBusy : null]}
+          >
+            {restarting ? (
+              <ActivityIndicator color={colors.text} size="small" />
+            ) : (
+              <Text style={styles.iconGlyphSmall}>⏻</Text>
+            )}
           </TouchableOpacity>
           <TouchableOpacity accessibilityLabel="刷新" onPress={reload} style={styles.iconButton}>
             <Text style={styles.iconGlyphSmall}>↻</Text>
@@ -703,6 +920,10 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: colors.surfaceRaised,
+  },
+  /** 「重启主机」进行中：按钮禁用，降低存在感并显示 spinner。 */
+  iconButtonBusy: {
+    opacity: 0.55,
   },
   iconGlyph: {
     color: colors.text,

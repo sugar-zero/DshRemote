@@ -19,6 +19,10 @@
  *      点抽屉外不误触内容、关闭后清理状态、宽屏恢复 DSH 原生布局。
  *   8. 外链（target=_blank 锚点 / window.open）：注入壳拦截 http(s) 外链并上报
  *      App（系统浏览器打开），同源锚点不受影响（原生 WebView 没有新窗口能力）。
+ *   9. 隐藏「在主机本机打开」控件（@deepseek-ai/dsh-client-ui-open-in-app）：
+ *      只按稳定 data-* 属性隐藏 split 控件/内部按钮/加载骨架，同一 [data-slot] 里的
+ *      其它插件按钮保持可见可点；该控件永远操作主机本机，规则与 WebView 宽度无关
+ *      （手机/iPad 都隐藏，宽屏下同样验证）。
  *
  * 用法：node scripts/check-injected-shell.mjs   （本机没有 Chrome 时自动跳过，退出码 0）
  * 开发对照：node scripts/check-injected-shell.mjs --shell-js /tmp/old-mobileWebShell.ts
@@ -381,6 +385,100 @@ const SETTINGS_FIXTURE_HTML = `<!doctype html>
 </script>
 </body></html>`;
 
+/**
+ * 第四份 fixture：按 DSH 0.2.1-rc.3 的真实 DOM/CSS 复刻「在主机本机打开」控件
+ * （@deepseek-ai/dsh-client-ui-open-in-app 的 OpenTargetButton）。
+ *
+ * 规则来源（只读提取，未复制大段真实代码）：dsh-client-ui-open-in-app/lib/client.js 里
+ * OpenTargetButton.js 的 DOM（`data-open-target` / `data-open-path-open|more|unpreviewable` /
+ * `data-open-target-skeleton` / `data-size` / `data-state`）与 OpenTargetButton.module.css
+ * 的 `_split/_main/_chevron/_skeleton` 几何规则。
+ *
+ * 场景：会话 header 右侧的 utilities 槽（真实 DSH 里 open-in-app 就注册在
+ * `conversation.session.header.utilities` / `sidebar.right.tab.files.actions` 等 slot）
+ * 同时放着「其它插件按钮」和 4 种形态的 open-in-app 控件：
+ *   - 目录 compact split（会话 header：主按钮 + 下拉箭头）
+ *   - 文件 compact split（`data-open-path` + `data-open-path-open` / `-more`）
+ *   - 文件 prominent split（大号、`data-open-path-unpreviewable`）
+ *   - 加载中 skeleton（`data-open-target-skeleton` 在 split 主按钮内）
+ * 注入壳应只隐藏这些控件（不隐藏整个 `[data-slot]`），同 slot 的其它插件按钮保持可见
+ * 可点；规则与宽度无关（App 的 WebView 都是远程设备，iPad 宽屏也隐藏）——窄屏与宽屏
+ * 各跑一次快照。
+ *
+ * 与真实 DSH 的已知偏差（只为让断言可重复，不改变被验证的行为）：
+ *  - 图标/文案都是占位，没有接入真实应用图标与宿主菜单（Menu portal）；
+ *  - 只保留复现隐藏行为所需的最小 header/CSS，省略主题字体、tooltip 等外观规则。
+ */
+const OPEN_IN_APP_FIXTURE_HTML = `<!doctype html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>dsh open-in-app fixture</title>
+<style>
+  :root {
+    --dsw-alias-bg-base: #ffffff;
+    --dsw-alias-label-primary: #1f2328;
+    --dsw-alias-label-secondary: #61666b;
+    --dsw-alias-border-l2: #d0d7de;
+    --dsw-alias-border-l4: #e3e3e3;
+    --dsw-alias-interactive-bg-hover: rgba(31, 35, 40, 0.08);
+    --dsw-radius-xs: 4px;
+    --dsw-radius-sm: 6px;
+    --dsw-radius-md: 8px;
+    --dsw-font-family: -apple-system, system-ui, sans-serif;
+  }
+  html, body { height: 100%; margin: 0; background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); font-family: var(--dsw-font-family); }
+  body { overflow: hidden; }
+  /* ===== 会话 header（最小布局；完整 header 结构见另外两份 fixture） ===== */
+  .fixture-header { display: flex; align-items: center; gap: 8px; min-height: 56px; padding: 8px 12px; border-bottom: 1px solid var(--dsw-alias-border-l4); box-sizing: border-box; }
+  .fixture-header-leading { display: flex; align-items: center; min-width: 34px; min-height: 30px; }
+  .fixture-header-title { flex: 1 1 auto; min-width: 0; font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  /* 会话 header 右侧 utilities 槽：open-in-app 与其它插件按钮并列。 */
+  .fixture-utilities { display: flex; align-items: center; gap: 8px; flex: none; }
+  .fixture-other-button { height: 28px; padding: 0 10px; font-size: 12px; border-radius: 6px; border: .5px solid var(--dsw-alias-border-l4); background: var(--dsw-alias-bg-base); color: var(--dsw-alias-label-primary); }
+  /* ===== OpenTargetButton.module.css（DSH 0.2.1-rc.3，关键规则逐字保留） ===== */
+  .ga5fXW_menuAnchor { flex: none; align-self: center; display: inline-flex; }
+  .ga5fXW_split { box-sizing: border-box; border: .5px solid var(--dsw-alias-border-l4); border-radius: var(--dsw-radius-sm); height: 24px; font-family: var(--dsw-font-family); align-items: stretch; display: inline-flex; overflow: hidden; }
+  .ga5fXW_main, .ga5fXW_chevron { color: var(--dsw-alias-label-primary); white-space: nowrap; cursor: pointer; background: 0 0; border: 0; justify-content: center; align-items: center; font-size: 11px; line-height: 16px; display: inline-flex; }
+  .ga5fXW_main { gap: 4px; padding: 3px 5px; }
+  .ga5fXW_chevron { border-left: .5px solid var(--dsw-alias-border-l4); color: var(--dsw-alias-label-secondary); padding: 3px 4px 3px 3px; }
+  .ga5fXW_split[data-size=large] { border-radius: var(--dsw-radius-md); border-color: var(--dsw-alias-border-l2); height: 36px; }
+  .ga5fXW_split[data-size=large] .ga5fXW_main { gap: 6px; padding: 6px 14px; font-size: 14px; }
+  .ga5fXW_split[data-size=large] .ga5fXW_chevron { padding: 6px 10px; }
+  .ga5fXW_skeleton { border-radius: var(--dsw-radius-xs); background: var(--dsw-alias-interactive-bg-hover); flex: none; display: inline-block; }
+</style></head>
+<body>
+<header class="fixture-header">
+  <div class="fixture-header-leading"><div data-slot="conversation.header.leading"></div></div>
+  <div class="fixture-header-title">会话标题</div>
+  <div class="fixture-utilities" data-slot="conversation.session.header.utilities">
+    <!-- 同一 slot 里的其它插件按钮：注入壳只能隐藏 open-in-app 控件，不能整段隐藏 slot。 -->
+    <button type="button" class="fixture-other-button" id="other-plugin-button">其它插件按钮</button>
+    <!-- 目录打开控件（会话 header）：compact split，主按钮 + 下拉箭头。 -->
+    <div class="ga5fXW_split" data-open-target="directory" data-size="compact" data-state="idle">
+      <button type="button" class="ga5fXW_main" aria-label="在 Finder 中显示"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M2 4h4l1.5 2H14v6H2z" fill="currentColor"/></svg></button>
+      <button type="button" class="ga5fXW_chevron" aria-haspopup="menu" aria-expanded="false" aria-label="更多打开方式"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    </div>
+    <!-- 文件打开控件（右栏文件 tab）：compact split，带 data-open-path* 标记。 -->
+    <div class="ga5fXW_split" data-open-target="file" data-open-path="" data-size="compact" data-state="idle">
+      <button type="button" class="ga5fXW_main" data-open-path-open="" aria-label="用默认应用打开"><svg viewBox="0 0 16 16" width="13" height="13" aria-hidden="true"><path d="M3 2h7l3 3v9H3z" fill="none" stroke="currentColor" stroke-width="1.2"/></svg></button>
+      <button type="button" class="ga5fXW_chevron" data-open-path-more="" aria-haspopup="menu" aria-expanded="false" aria-label="更多打开方式"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    </div>
+    <!-- 不可预览文件的 prominent 控件：大号 split，主按钮带 unpreviewable 标记。 -->
+    <div class="ga5fXW_split" data-open-target="file" data-size="large" data-state="idle">
+      <button type="button" class="ga5fXW_main" data-open-path-unpreviewable="">在默认应用中打开</button>
+    </div>
+    <!-- 文件关联仍在查询时的加载骨架（skeleton 在 split 主按钮内）。 -->
+    <div class="ga5fXW_split" data-open-target="file" data-open-path="" data-size="compact" data-state="busy">
+      <button type="button" class="ga5fXW_main" data-open-path-open="" aria-label="正在查询可用应用">
+        <span class="ga5fXW_skeleton" data-open-target-skeleton="" aria-hidden="true" style="width: 13px; height: 13px;"></span>
+      </button>
+      <button type="button" class="ga5fXW_chevron" data-open-path-more="" aria-haspopup="menu" aria-expanded="false" aria-label="更多打开方式"><svg viewBox="0 0 16 16" width="10" height="10" aria-hidden="true"><path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" stroke-width="1.5"/></svg></button>
+    </div>
+  </div>
+</header>
+<div style="padding: 16px; color: #61666b;">会话内容（fixture 占位）</div>
+</body></html>`;
+
 /** Counts querySelector calls so the churn assertion has something to measure. */
 const INSTRUMENT_JS = `(() => {
   window.__shellStats = { querySelector: 0, viewportWrites: 0 };
@@ -398,6 +496,49 @@ const INSTRUMENT_JS = `(() => {
     return setAttribute.call(this, name, value);
   };
 })();`;
+
+/**
+ * open-in-app fixture 的样式快照（窄屏/宽屏各跑一次）：
+ *  - split 控件根用 getComputedStyle().display 判断是否被注入 CSS 隐藏；
+ *  - 控件内部按钮/骨架用 getClientRects()/offsetParent 判断是否真的不再渲染
+ *    （它们的 computed display 仍是自己的 inline-flex/inline-block，只有祖先 display:none
+ *     才会不渲染，所以不能只看 getComputedStyle）；
+ *  - 同 slot 的「其它插件按钮」必须保持可见、可命中（证明没有整段隐藏 slot）。
+ */
+const OPEN_IN_APP_SNAPSHOT_JS = `(() => {
+  const splitRoots = Array.prototype.slice.call(document.querySelectorAll('[data-open-target]'));
+  const innerSelectors = [
+    '[data-open-path-open]',
+    '[data-open-path-more]',
+    '[data-open-path-unpreviewable]',
+    '[data-open-target-skeleton]',
+  ];
+  const inner = Array.prototype.slice.call(document.querySelectorAll(innerSelectors.join(','))).map((element) => ({
+    tag: element.tagName.toLowerCase(),
+    attrs: innerSelectors.filter((selector) => element.matches(selector)),
+    clientRects: element.getClientRects().length,
+    rendered: element.offsetParent !== null,
+  }));
+  const sibling = document.getElementById('other-plugin-button');
+  const siblingStyle = sibling ? getComputedStyle(sibling) : null;
+  const siblingRect = sibling ? sibling.getBoundingClientRect() : null;
+  const hit = siblingRect
+    ? document.elementFromPoint(siblingRect.left + siblingRect.width / 2, siblingRect.top + siblingRect.height / 2)
+    : null;
+  return {
+    viewportWidth: window.innerWidth,
+    mobileMedia: window.matchMedia('(max-width: 760px)').matches,
+    splitCount: splitRoots.length,
+    splitDisplays: splitRoots.map((element) => getComputedStyle(element).display),
+    inner,
+    sibling: sibling ? {
+      display: siblingStyle.display,
+      visibility: siblingStyle.visibility,
+      clientRects: sibling.getClientRects().length,
+      hit: Boolean(hit && (hit === sibling || sibling.contains(hit))),
+    } : null,
+  };
+})()`;
 
 const shellPath = fileURLToPath(new URL('../src/lib/mobileWebShell.ts', import.meta.url));
 
@@ -473,9 +614,11 @@ async function runChecks(chromePath, shellJs) {
   const fixtureFile = join(fixtureDir, 'fixture.html');
   const rightbarFixtureFile = join(fixtureDir, 'rightbar-fixture.html');
   const settingsFixtureFile = join(fixtureDir, 'settings-fixture.html');
+  const openInAppFixtureFile = join(fixtureDir, 'open-in-app-fixture.html');
   writeFileSync(fixtureFile, FIXTURE_HTML, 'utf8');
   writeFileSync(rightbarFixtureFile, RIGHTBAR_FIXTURE_HTML, 'utf8');
   writeFileSync(settingsFixtureFile, SETTINGS_FIXTURE_HTML, 'utf8');
+  writeFileSync(openInAppFixtureFile, OPEN_IN_APP_FIXTURE_HTML, 'utf8');
   const port = 9450 + Math.floor(Math.random() * 300);
   const child = spawn(chromePath, [
     '--headless=new',
@@ -1118,6 +1261,34 @@ async function runChecks(chromePath, shellJs) {
       };
     })()`);
 
+    // ===== 第四阶段：窄屏隐藏「在主机本机打开」控件（open-in-app） =====
+    // 该插件在会话 header utilities / 右栏文件 tab 渲染「打开 / 在文件夹中显示」split 控件，
+    // 点击会在主机本机打开：手机上应只隐藏这些控件，同 slot 的其它插件按钮必须保留。
+    await cdp.send('Page.navigate', { url: `file://${openInAppFixtureFile}` });
+    const openInAppReady = await waitForPage(`Boolean(
+      window.__dshMobileShellInstalled
+      && document.getElementById('dsh-mobile-shell-style')
+      && window.matchMedia('(max-width: 760px)').matches
+      && document.getElementById('other-plugin-button')
+      && document.querySelectorAll('[data-open-target]').length === 4
+      && document.querySelectorAll(
+        '[data-open-path-open], [data-open-path-more], [data-open-path-unpreviewable], [data-open-target-skeleton]'
+      ).length === 6
+    )`);
+    const openInAppMobile = await evaluate(OPEN_IN_APP_SNAPSHOT_JS);
+
+    // 宽屏（1000×800）：App 在 iPad 上同样不应出现「在主机本机打开」控件，规则与宽度无关。
+    await cdp.send('Emulation.setDeviceMetricsOverride', {
+      width: 1000,
+      height: 800,
+      screenWidth: 1000,
+      screenHeight: 800,
+      deviceScaleFactor: 2,
+      mobile: false,
+    });
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    const openInAppDesktop = await evaluate(OPEN_IN_APP_SNAPSHOT_JS);
+
     const exceptions = cdp.events
       .filter((event) => event.method === 'Runtime.exceptionThrown')
       .map((event) => event.params?.exceptionDetails?.text ?? 'unknown exception');
@@ -1135,6 +1306,9 @@ async function runChecks(chromePath, shellJs) {
       settings,
       settingsDesktop,
       settingsRemobile,
+      openInAppReady,
+      openInAppMobile,
+      openInAppDesktop,
       exceptions,
     };
   } finally {
@@ -1212,6 +1386,9 @@ const {
   settings,
   settingsDesktop,
   settingsRemobile,
+  openInAppReady,
+  openInAppMobile,
+  openInAppDesktop,
   exceptions,
 } = result;
 check('注入脚本已初始化', initial.installed);
@@ -1466,6 +1643,43 @@ check(
     && settingsRemobile.barInjected
     && rectCoversViewport(settingsRemobile.panelRect, 390, 844),
   `mobileClass=${settingsRemobile.mobileClass}, bar=${settingsRemobile.barInjected}, rect=${formatRect(settingsRemobile.panelRect)}`,
+);
+
+// ---- 第四阶段：窄屏隐藏「在主机本机打开」控件（open-in-app） ----
+check(
+  '窄屏 open-in-app fixture 已加载（4 个控件 / 同 slot 其它插件按钮）',
+  openInAppReady && openInAppMobile.splitCount === 4 && openInAppMobile.inner.length === 6,
+  `ready=${openInAppReady}, splits=${openInAppMobile.splitCount}, inner=${openInAppMobile.inner.length}`,
+);
+check(
+  '窄屏隐藏「在主机本机打开」控件根（display:none）',
+  openInAppMobile.splitCount === 4
+    && openInAppMobile.splitDisplays.every((display) => display === 'none'),
+  `displays=${openInAppMobile.splitDisplays.join('/')}`,
+);
+check(
+  '窄屏 open-in-app 内部主按钮/下拉箭头/加载骨架不再渲染（属性规则生效）',
+  openInAppMobile.inner.length === 6
+    && openInAppMobile.inner.every((item) => item.clientRects === 0 && !item.rendered),
+  openInAppMobile.inner.map((item) => `${item.attrs.join('+')}:rects=${item.clientRects}`).join('; '),
+);
+check(
+  '同 slot 的其它插件按钮仍可见可点（没有整段隐藏 [data-slot]）',
+  Boolean(openInAppMobile.sibling)
+    && openInAppMobile.sibling.display !== 'none'
+    && openInAppMobile.sibling.visibility === 'visible'
+    && openInAppMobile.sibling.clientRects === 1
+    && openInAppMobile.sibling.hit === true,
+  `display=${openInAppMobile.sibling?.display}, visibility=${openInAppMobile.sibling?.visibility}, hit=${openInAppMobile.sibling?.hit}`,
+);
+check(
+  '宽屏（1000×800 / iPad）同样隐藏 open-in-app 控件（规则与宽度无关）',
+  openInAppDesktop.viewportWidth === 1000
+    && !openInAppDesktop.mobileMedia
+    && openInAppDesktop.splitCount === 4
+    && openInAppDesktop.splitDisplays.every((display) => display === 'none')
+    && openInAppDesktop.inner.every((item) => item.clientRects === 0 && !item.rendered),
+  `viewport=${openInAppDesktop.viewportWidth}, media=${openInAppDesktop.mobileMedia}, displays=${openInAppDesktop.splitDisplays.join('/')}`,
 );
 
 check('页面无未捕获 JS 异常', exceptions.length === 0, exceptions.join('; '));

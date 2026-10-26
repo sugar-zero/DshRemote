@@ -26,6 +26,8 @@ export const REMOTE_PATHS = {
   pair: '/__dsh_remote/pair',
   pairStatus: '/__dsh_remote/pair/status',
   pushToken: '/__dsh_remote/push-token',
+  /** 重启主机 DSH 客户端（设备 mTLS；成功返回 202，见 ADMIN-API.md）。 */
+  restart: '/__dsh_remote/restart',
 } as const;
 
 /**
@@ -391,6 +393,14 @@ export function pushTokenUrl(host: string): string {
 }
 
 /**
+ * 重启主机 DSH 客户端的隧道地址（`POST`，需设备 mTLS；成功返回 202）。
+ * 这里只负责发起重启请求；主机恢复后由调用方轮询 `/__dsh_remote/status` 再重载页面。
+ */
+export function restartHostUrl(host: string): string {
+  return remoteUrl(host, REMOTE_PATHS.restart);
+}
+
+/**
  * Local admin API URL. Only works from an authenticated browser running on the
  * host itself; the remote tunnel denies these paths (ADMIN-API.md §2).
  */
@@ -462,6 +472,16 @@ export interface PushTokenRequestBody {
   token: string;
   /** APNs 环境：开发签名包为 development（sandbox），发布签名包为 production。 */
   environment?: PushTokenEnvironment;
+}
+
+/**
+ * `POST /__dsh_remote/restart` 成功（202）返回的 envelope data。
+ * 主机在接受请求后自行重启 DSH；App 侧继续轮询 `/__dsh_remote/status` 等待恢复。
+ */
+export interface RestartHostData {
+  restarting: true;
+  /** 主机选择的重启方式（实现细节，仅用于诊断展示；旧版主机可能不返回）。 */
+  mode?: string;
 }
 
 /** Admin API device record (ADMIN-API.md §1 `GET /status` / `GET /devices`). */

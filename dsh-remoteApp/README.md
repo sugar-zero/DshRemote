@@ -14,7 +14,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 
 1. **扫码配对**：扫主机桌面端生成的 `dshremote://pair?...` 二维码（或手动粘贴），本地校验主机地址、完整 SHA-256 指纹、有效期。
 2. **安全存储**：`expo-secure-store`（iOS Keychain / Android EncryptedSharedPreferences）保存 host / deviceId / 证书 PEM；**设备私钥永不进入 JS**。
-3. **加载 DSH Web UI**：`https://<hostId>.<relayDomain>/?dsh_mobile=1`，顶部状态条显示主机名 + 状态/主机 ID，刷新；外部链接（`target=_blank` / `window.open`，如查询用量/充值/意见反馈）在 App 内嵌浏览器打开（可一键切系统浏览器）；底部连接信息条只在 Debug 构建显示（Release 让位给主界面）。
+3. **加载 DSH Web UI**：`https://<hostId>.<relayDomain>/?dsh_mobile=1`，顶部状态条显示主机名 + 状态/主机 ID，提供刷新与「重启主机」（二次确认后经 mTLS 请求主机重启 DSH 客户端，探测到主机恢复后自动重新加载页面）；外部链接（`target=_blank` / `window.open`，如查询用量/充值/意见反馈）在 App 内嵌浏览器打开（可一键切系统浏览器）；底部连接信息条只在 Debug 构建显示（Release 让位给主界面）。
 4. **mTLS 客户端证书**：自定义原生 WebView（iOS `WKNavigationDelegate.didReceive challenge` + `SecIdentity`；Android `WebViewClient.onReceivedClientCertRequest` + Keystore）在 TLS 握手中出示设备证书。
 
 接口契约见 [`../dsh-remoteService/docs/ADMIN-API.md`](../dsh-remoteService/docs/ADMIN-API.md)，设计依据见
@@ -33,7 +33,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | iOS 推送 | ✅ 自托管 APNs 直连（APNs device token + aps-environment；通知取会话标题+助手回复摘要；点击通知跳对应会话，2026-10-25 真机验证；App 锁屏时按系统通知显示）；Android FCM 未接入 |
 | 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，5s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
 | 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
-| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层；窄屏设置→全屏 + 分区菜单抽屉（左上返回退出设置）；外链→App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）（`src/lib/mobileWebShell.ts`、`src/screens/WebViewScreen.tsx`；`npm run check:shell` 无头 Chrome 回归） |
+| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层；窄屏设置→全屏 + 分区菜单抽屉（左上返回退出设置）；外链→App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）；窄屏隐藏 DSH 的「在主机本机打开」控件（open-in-app，只按稳定 `data-*` 属性隐藏控件本身、不整段隐藏插件槽位）（`src/lib/mobileWebShell.ts`、`src/screens/WebViewScreen.tsx`；`npm run check:shell` 无头 Chrome 回归） |
 | 主机列表管理 | ✅ 多主机列表；每台可单独删除本机记录（确认框，不进入配对流程）；主机改名自动同步；主机侧撤销设备后卡片显示警示并可删除（0.1.8，真机验证）；「设备与安全」页只保留单一「解除本机配对」入口（0.1.9） |
 | 配对默认设备名 | ✅ 使用系统本机设备名（`expo-device`；系统只给通用名时回退机型名），可自定义；不再写死「我的 iPhone」 |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
