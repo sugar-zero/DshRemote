@@ -35,6 +35,9 @@ POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收
   原 p50 约 25s）；翻页单页 median 540KB（原 p50 max 7.1MB）。
 - **生效**：Host 插件 **0.1.8**，重启 DSH 后加载新 Client 半；App 无需重新构建，
   在 App 内刷新/重开 WebView 即可（若 DSH 缓存启动 bundle 则重启 DSH 一次）。
+- **未做真机实测**：本环境没有手机 WebView/浏览器自动化，且未重启用户 DSH（不擅自打断
+  用户会话）——真机验收步骤见 [`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md) §7；
+  上线时按「重启 DSH → App 内刷新/重开 WebView → 打开大会话」确认。
 - **已知限制**：单条消息/单个 turn 本身可能很大（工具结果、request header），分片只能缩小
   「一次拉多少条消息」，无法把一条消息拆开；极大会话仍可能遇到单帧 >1MB。首屏 6 条消息
   为手机一屏左右的量，小会话（历史不足 6 条）行为不变。
