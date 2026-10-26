@@ -35,7 +35,7 @@ docs/                  # ADMIN-API.md / DEPLOY.md / POC-REPORT.md
 | 真实 DSH 内入口 & 配对弹窗（截图验证） | ✅ PASS（`../mockups/live-pairing.png`） |
 | B2 生产部署文档（域名/DNS-01/acme.sh/运维/安全红线） | ✅ `docs/DEPLOY.md` |
 | WebView mTLS | ✅ macOS WKWebView 已验证；⏳ iOS 真机需 Xcode |
-| 推送（自托管 APNs，会话摘要） | ✅ 主机直连 Apple（.p8 + device token；标题/正文取会话摘要）；旧 relay→Expo 通道可选 |
+| 推送（自托管 APNs，会话摘要 + 等待回答） | ✅ 主机直连 Apple（.p8 + device token；标题/正文取会话摘要；`ask_user_question` 等待作答时推送会话名 + 「正在等待你的回答」）；旧 relay→Expo 通道可选 |
 | 原生 CSR / Android 编译 | ⏳ 下一里程碑 |
 
 ## 开发与验收

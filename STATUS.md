@@ -7,6 +7,34 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-27 修复：应用内通知卡片停留时间 5s → 20s
+
+- **现象**：跨会话推送的应用内卡片只停留 5 秒，来不及点就自动消失。
+- **修复**：`App.tsx` 的自动消失常量改为 `20_000ms`（锁屏时仍立即清除避免内容泄露）；
+  系统通知不受影响。
+- **验证**：`tsc --noEmit` / `check:native` / `check:shell`；iOS Release **0.1.13 (build 15)**
+  构建并安装到真机；**待用户实测确认**后再提交。
+- **生效**：App 0.1.13（本机已安装）；Host 无需改动/重启。
+
+## 2026-10-26 新增：等待用户回答（ask_user_question）时推送
+
+- **需求**：Agent 调用 `ask_user_question` 等待用户作答时，也发推送提醒；标题用会话名，
+  正文固定为「正在等待你的回答」。
+- **实现**（host-plugin `lib/push.js`，只改 Host 半）：
+  - 在现有 `session/event` 监听里识别 `tool/call` 且 `data.name === 'ask_user_question'`；
+  - 标题复用会话摘要 tracker（最新 `session/title`，无则首条用户消息），正文固定
+    `正在等待你的回答`；payload 仍带 `sessionId`/`host`，点击通知可直接跳到对应会话；
+  - 与 `turn/end` 的 30s 冷却**相互独立**（问答常常紧接上一轮结束后发生，不能被吞掉）；
+  - 按 `callId` 去重：事件流重连/重放不会重复推送；子代理会话、关闭推送时跳过；
+  - 旧 `pushProvider=expo` 通道仍只能发 relay 通用文案（relay 侧无会话内容）。
+- **验证**：host `npm test` **159/159**（本机全量，含工作区其它未提交改动；本次新增
+  `ask_user_question` 推送用例：标题/正文、同 callId 去重、新 callId 再推、turn/end 冷却期
+  内仍推送、子代理/关闭推送跳过）；`validate:artifacts` 通过。**真机问答推送待验收**
+  （需重启 DSH 加载 Host 半）。
+- **生效**：host-plugin 重启 DSH 后生效；App 无需重新安装（通知跳转沿用现有 0.1.5+ 逻辑）。
+- **版本**：工作区已有其它会话的 host-plugin `0.1.14` 未提交改动，本次未再 bump 版本号，
+  合并时建议统一递增（如 0.1.15）。
+
 ## 2026-10-26 新增：App 隐藏「在主机本机打开」入口 + 远程「重启主机 DSH」（App 0.1.11 build 13 / host-plugin 0.1.10）
 
 - **需求**：① 手机 App 上「打开工作区 / 在文件夹中显示」实际是在**主机**的 Finder/本地应用打开，
