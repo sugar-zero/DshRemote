@@ -170,6 +170,20 @@ function describeRestartError(error: unknown): string {
   return '重启请求失败，请稍后重试。';
 }
 
+/** `/__dsh_remote/status` 的 `data.restart.enabled`：判断「重启主机」组件是否启用。
+ *  旧版 Host 的 status 里没有该字段（能力一直存在），此时按启用处理，保持原行为。 */
+function restartAvailabilityFromStatusBody(body: string): boolean | null {
+  try {
+    const parsed = JSON.parse(body) as { data?: { restart?: { enabled?: unknown } } };
+    const enabled = parsed.data?.restart?.enabled;
+    if (enabled === false) return false;
+    if (enabled === true) return true;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * 顶栏副标题只展示「主机 ID」：从 connection.host（<hostId>.<relayDomain>[:port]）
  * 里去掉端口和 relay 域名；直连 IP/自定义地址保留原值。
@@ -232,6 +246,13 @@ export function WebViewScreen({
   const restartInFlightRef = useRef(false);
   const restartSessionRef = useRef<{ cancelled: boolean } | null>(null);
 
+  // 「重启主机」组件是否启用（Host 设置 → 远程访问 → 组件，默认关闭）：
+  // null = 还不知道（先不显示按钮）；旧版 Host 没有该字段时按启用处理（保持原行为）。
+  const [restartAvailable, setRestartAvailable] = useState<boolean | null>(null);
+  const restartAvailabilitySeq = useRef(0);
+  // refreshRestartAvailability 在 reload/onLoadEnd/WS 桥消息之后才定义；用 ref 让这些早定义的
+  // 回调也能在「刷新 / 重连 / 页面加载完成」时触发组件状态刷新（不必等切后台再回来）。
+  const refreshRestartAvailabilityRef = useRef<() => void>(() => {});
   // 最近一次健康检查的序号 / 是否在途，避免 AppState + 可见性双触发时重复 reload。
   const healthCheckRef = useRef({ inFlight: false, lastStartedAt: 0 });
   const healthCheckSeq = useRef(0);
@@ -265,6 +286,8 @@ export function WebViewScreen({
   const useNativeMtlsView = NativeMtlsWebView !== null && Boolean(connection.certRef);
 
   const reload = useCallback(() => {
+    // 「刷新」也是重新读取 Host 组件开关的时机：改了设置后不用退出主机再进。
+    refreshRestartAvailabilityRef.current();
     // 重新加载期间旧文档即将被替换：打开会话的注入必须等新页面加载完成。
     loadedRef.current = false;
     loadingRef.current = true;
@@ -391,6 +414,8 @@ export function WebViewScreen({
     setStatus('online');
     setErrorMessage(null);
     flushOpenSession();
+    // 页面加载完成 = Host 可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
+    refreshRestartAvailabilityRef.current();
   }, [flushOpenSession]);
 
   const handleError = useCallback((description?: string) => {
@@ -434,6 +459,8 @@ export function WebViewScreen({
     setStatus('online');
     setErrorMessage(null);
     flushOpenSession();
+    // 页面加载完成 = Host 可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
+    refreshRestartAvailabilityRef.current();
   }, [flushOpenSession]);
 
   const handleNativeError = useCallback(
@@ -508,6 +535,8 @@ export function WebViewScreen({
     if (loadingRef.current) return;
     if (payload.type === 'dsh-ws-open') {
       setWsRecoveryPending(false);
+      // 实时连接恢复 = Host 可达：刷新组件状态，Host 侧刚改开关时无需重进主机。
+      refreshRestartAvailabilityRef.current();
       return;
     }
     if (payload.type === 'dsh-ws-close' && statusRef.current === 'online') {
@@ -541,6 +570,53 @@ export function WebViewScreen({
     }, 600);
     return () => clearTimeout(timer);
   }, [isVisible, wsRecoveryPending, reload]);
+
+  /**
+   * 读取「重启主机」组件状态（GET /__dsh_remote/status，设备 mTLS）。
+   *
+   * - Host 设置里关闭组件后返回 `data.restart.enabled=false` → 顶栏不显示 ⏻；
+   * - 旧版 Host 没有该字段 → 按启用处理（兼容）；
+   * - 请求失败 / 未就绪 → 先按启用处理（旧行为），避免网络抖动把按钮永久藏掉。
+   */
+  const refreshRestartAvailability = useCallback(async () => {
+    if (!useNativeMtlsView || !connection.certRef) {
+      setRestartAvailable(null);
+      return;
+    }
+    const seq = ++restartAvailabilitySeq.current;
+    try {
+      await setClientIdentity(connection.certRef);
+    } catch {
+      // 原生模块未链接时下面的请求会失败，交给 catch 兜底。
+    }
+    try {
+      const response = await withTimeout(
+        requestWithClientCert({ url: hostStatusUrl(connection.host), method: 'GET' }),
+        4000,
+        'restart-availability-timeout',
+      );
+      if (seq !== restartAvailabilitySeq.current) return;
+      // 401/403 等异常状态交给页面错误态处理；组件状态保持上一次已知值（避免误显示）。
+      if (response.status !== 200) return;
+      setRestartAvailable(restartAvailabilityFromStatusBody(response.body) ?? true);
+    } catch {
+      // 网络抖动/主机重启中：保持上一次已知状态；页面加载完成/WS 重连后会再刷新。
+    }
+  }, [connection.certRef, connection.host, useNativeMtlsView]);
+
+  refreshRestartAvailabilityRef.current = refreshRestartAvailability;
+  // 进入主机 / 回到前台时刷新组件状态：Host 侧刚关闭时，重新进入主机即可隐藏按钮。
+  useEffect(() => {
+    if (!isVisible) return;
+    void refreshRestartAvailability();
+  }, [isVisible, refreshRestartAvailability]);
+
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void refreshRestartAvailability();
+    });
+    return () => subscription.remove();
+  }, [refreshRestartAvailability]);
 
   /**
    * App 回到前台 / 再次进入主机时，用设备证书探活。
@@ -578,7 +654,11 @@ export function WebViewScreen({
         timeout,
       ]);
       if (seq !== healthCheckSeq.current) return;
-      if (response.status === 200) return;
+      if (response.status === 200) {
+        // 探活顺便刷新「重启主机」组件状态（Host 设置可能刚被改过）。
+        setRestartAvailable(restartAvailabilityFromStatusBody(response.body) ?? true);
+        return;
+      }
       if (response.status === 401 || response.status === 403) {
         setStatus('error');
         setErrorMessage(
@@ -761,10 +841,12 @@ export function WebViewScreen({
             <Text style={styles.iconGlyphSmall}>⚙︎</Text>
           </TouchableOpacity>
           {/*
-            * 重启主机 DSH：请求经 mTLS 隧道发给主机插件，主机重启客户端；App 等到
+            * 重启主机 DSH：只在该组件启用时显示（Host 设置 → 远程访问 → 组件，默认关闭）。
+            * 请求经 mTLS 隧道发给主机插件，主机重启客户端；App 等到
             * /__dsh_remote/status 恢复后自动 reload。进行中禁用按钮并显示 spinner，
             * 避免重复点出多轮轮询。
             */}
+          {restartAvailable === true ? (
           <TouchableOpacity
             accessibilityLabel="重启主机"
             accessibilityHint="向主机发送重启请求，主机恢复后自动重新加载页面"
@@ -779,6 +861,7 @@ export function WebViewScreen({
               <Text style={styles.iconGlyphSmall}>⏻</Text>
             )}
           </TouchableOpacity>
+          ) : null}
           <TouchableOpacity accessibilityLabel="刷新" onPress={reload} style={styles.iconButton}>
             <Text style={styles.iconGlyphSmall}>↻</Text>
           </TouchableOpacity>
