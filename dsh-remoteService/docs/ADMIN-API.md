@@ -198,7 +198,7 @@ Body：
 > 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
 > 删除设备记录目前只在**本机管理 API**（`POST /api/remote-access/devices/:id/delete`）开放，远程隧道不提供。
 
-### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.10+）
+### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.14+）
 远程触发**主机 DSH 客户端**重启（App「重启主机」入口，用于更新 Host/Client 半后不必回电脑
 手动重启）。请求无 body；主机先回 202，再在约 1s 后结束当前 DSH 进程并重新拉起：
 ```json
@@ -206,11 +206,10 @@ Body：
 ```
 `mode` 表示当前 Host 的重启方式：
 
-| mode | 场景 | 重新拉起方式 |
+| mode | 场景 | 重启目标与重新拉起方式 |
 |---|---|---|
-| `mac-app` | macOS Electron 桌面端 | `open -n <...app>`（从 `execPath` 截出 `.app` bundle） |
-| `win-app` | Windows Electron 桌面端 | `cmd.exe /c start "" "<exe>"`（best-effort） |
-| `node` | Node CLI（例如 `dsh web`） | 当前 `execPath` + 原 `argv.slice(1)` 原样重新拉起 |
+| `desktop-app` | DSH 桌面端（Electron shell + host 子进程） | 结束**整个 DSH 应用进程组**（shell 为组长）→ macOS `open -n <...app>` / Windows `start "" "<exe>"`（best-effort） |
+| `node` | Node CLI（例如 `dsh web`） | 结束当前进程 → `execPath` + 原 `argv.slice(1)` 原样重新拉起 |
 
 错误：
 - **405** `method-not-allowed`：非 POST；
@@ -224,8 +223,23 @@ Body：
   配对设备本来就能经隧道完整操作主机 DSH（Web UI/WS），远程重启**不是新的提权面**；
 - 只结束当前 DSH 进程：不碰 relay / 系统服务 / `~/.dsh` 数据；重新拉起的进程继承当前工作
   目录与环境变量，不做提权；
-- 重启 helper 是 detached shell：先等 ~1s 让 202 响应发完 → `SIGTERM` 当前 pid（~10s 未退出
-  则 `SIGKILL`）→ 再等 ~1s → 重新拉起；helper 用 `stdio: ignore` + `unref`，不阻塞进程退出；
+- 重启 helper 是 detached shell：先等 ~1s 让 202 响应发完 → 桌面端**直接 `SIGKILL` 浏览器主进程
+  （shell）**，再整组 `SIGKILL` 清理 renderer/utility/host（**不能先 SIGTERM**：Electron 的优雅
+  关闭会先杀 renderer，shell 的崩溃处理会弹「应用无法启动或已意外停止」对话框，0.1.10–0.1.12
+  的失败就是这个），CLI 模式只结束当前进程 → 确认旧实例退出后等 ~2.5s（让端口释放）→ 重新拉起；
+  helper 用 `stdio: ignore` + `unref`，自成进程组，不会被自己结束的 DSH 进程树带走；
+- 只在确认旧实例退出后才拉起新实例：两个 DSH 同时启动会互相抢端口（桌面端会直接崩）；
+- **硬杀会留下 Electron 单实例锁**（`SingletonLock/Cookie/Socket` 指向已死 pid）：不清理的话新实例
+  会在启动 ~100ms 内误判「已有实例」直接退出（表现就是「主机被关掉、没被拉起来」）。helper 会在
+  拉起前清理属主已死的陈旧锁（属主仍存活则不动），然后 `open -n` 拉起、并用 `ps` 校验应用真的在跑；
+  校验失败则兜底直接执行 `.app` 内可执行文件（清掉 `ELECTRON_RUN_AS_NODE`/IPC 环境变量）；
+- helper 日志（不含凭据）：`~/.dsh/remote-access/host-restart.log`，记录启动/杀进程/清理/拉起结果，
+  排查「关掉但没拉起来」时直接看这里；
+- 为什么桌面端不能只杀 host 子进程：插件运行在 Electron shell 派生的 host 子进程里，只杀它会
+  触发 shell 的「应用无法启动或已意外停止」崩溃对话框，等同失败；
+- 桌面端判定：Electron 运行时 + argv 里出现 `@deepseek-ai/dsh-desktop-host/lib/index.js` 入口
+  （或用 `DSH_DESKTOP_NODE_EXECUTABLE` 标记的启动器）+ POSIX 下父进程就是同一个 Electron
+  可执行文件；判不出来的环境返回 501（edition 0.1.10/0.1.11 的旧判定会一律 501，已修）；
 - 10s 内的重复请求去重（第二次直接回 202 + 上次 `mode`，不再调度第二次）；
 - 审计（`audit.jsonl`）：每次请求一条 `{ deviceId, action: "host-restart", result: "accepted" | "failed" }`，
   `hash` 标记实际 mode / `deduped` / 错误码，可在 `GET /__dsh_remote/audit` 查看；

@@ -210,23 +210,31 @@ volumes:
 > 内容），配置见 [`../relay/README.md`](../relay/README.md) §6.1；默认不启用。
 > 安全边界：`.p8` 与设备 token 都只在本机；relay 不参与自托管 APNs 通道，也看不到 token。
 
-### 手机 App 重启主机 DSH（0.1.10+）
+### 手机 App 重启主机 DSH（0.1.14+）
 
 主机插件更新（linked 包/新版本）后，需要重启一次 DSH 才会加载新的 Host/Client 半。以前
 得回到电脑上手动退出再打开；**0.1.10 起**，手机 App 的「重启主机」按钮可以远程触发：
 
 - 通道：App 经 mTLS 调 `POST /__dsh_remote/restart`（与 `/__dsh_remote/status` 同一个
-  TLS 监听），主机先回 **202**，再在约 1s 后结束当前 DSH 进程并在约 1~2s 内重新拉起；
-- 怎么拉起：按运行形态自适应 —— macOS Electron 桌面端 `open -n <...app>`；Windows
-  Electron 桌面端 `cmd.exe /c start "" "<exe>"`（best-effort）；Node CLI（`dsh web`）
-  用当前 `execPath` + 原参数重新拉起；
+  TLS 监听），主机先回 **202**，再在约 1s 后结束 DSH 并重新拉起；
+- 怎么拉起：按运行形态自适应 —— **DSH 桌面端**（Electron shell + host 子进程）先直接
+  `SIGKILL` 浏览器主进程、再整组清理（**不要先 SIGTERM**：Electron 优雅关闭会先杀 renderer，
+  shell 的崩溃处理会弹「应用无法启动或已意外停止」对话框），macOS 用 `open -n <...app>`、
+  Windows 用 `start "" "<exe>"`（best-effort）；**Node CLI**（`dsh web`）用当前 `execPath`
+  + 原参数重新拉起；
+- 桌面端判定：Electron + `@deepseek-ai/dsh-desktop-host/lib/index.js` 入口（或用
+  `DSH_DESKTOP_NODE_EXECUTABLE` 标记的启动器）+ 父进程校验（父进程必须是同一个 Electron
+  可执行文件）；判不出来返回 501，不会去杀无关进程；
 - 只重启**当前 DSH 进程**：不碰 relay / 系统服务 / `~/.dsh` 数据；重新拉起的进程继承当前
   工作目录与环境变量，不做提权；
 - 10s 内的重复点击只调度一次（第二次仍回 202，不会重复杀进程）；
+- 硬杀后 Electron 会留下指向死进程的单实例锁，helper 会先清理陈旧锁再拉起（否则新实例会秒退），
+  并用 `ps` 校验应用真的在跑，失败则兜底直接执行 `.app` 内可执行文件；
+  排查日志在 `~/.dsh/remote-access/host-restart.log`（不含凭据）；
 - 审计：`~/.dsh/remote-access/audit.jsonl` 记 `action: host-restart`、`result: accepted|failed`；
 - CI/测试可设 `DSH_REMOTE_DISABLE_HOST_RESTART=1`，端点会返回 501 拒绝执行。
 
-> **要重启一次 DSH 加载本插件新版本（≥0.1.10）后，App 里这个按钮才可用**（旧版 Host 半
+> **要重启一次 DSH 加载本插件新版本（≥0.1.14）后，App 里这个按钮才可用**（旧版 Host 半
 > 没有该端点，App 会收到 404/501）。首次升级仍建议在电脑上手动重启一次；之后即可远程重启。
 > 平台限制：Linux Electron 暂不支持（返回 501）；Windows 的 kill/拉起为 best-effort。
 > supervisor 注意：若 `dsh web` 由 launchd（`KeepAlive`，见 `deploy/launchd/`）或 systemd
