@@ -23,6 +23,8 @@ export const STATUS_PATH = `${TUNNEL_BASE}/status`;
 export const AUDIT_PATH = `${TUNNEL_BASE}/audit`;
 export const DEVICES_PATH = `${TUNNEL_BASE}/devices`;
 export const DEVICE_REVOKE_PATH_PREFIX = `${TUNNEL_BASE}/devices/`;
+/** 远程触发主机 DSH 客户端重启（App「重启主机」入口；仅 POST，成功 202）。 */
+export const RESTART_PATH = `${TUNNEL_BASE}/restart`;
 
 /** 配对二维码 URI scheme。 */
 export const PAIR_URI_SCHEME = 'dshremote';
