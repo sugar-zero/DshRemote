@@ -289,7 +289,7 @@ DSH Web 客户端采用引用计数式 retention：切换会话时旧会话实�
 
 ---
 
-## 4.3 手机端历史分片拉取（Client 半，0.1.8）
+## 4.3 手机端历史分片拉取（Client 半，0.1.8+）
 
 DSH 客户端打开会话时 `session/follow` 的窗口是硬编码的
 `{ maxMessages: 500, turnWindow: { minMessages: 50, minTurns: 2 } }`，大会话一帧可达数 MB
@@ -303,11 +303,16 @@ Host 侧 `paginate()` 返回 `cut..cursor` 的**全部事件**，所以窗口越
 | 场景 | 默认窗口（maxMessages / minMessages / minTurns） |
 |---|---|
 | 首屏 / 重连 tail | `6 / 3 / 1` |
-| 向上翻页 / 跳转 | `10 / 5 / 1` |
+| 向上翻页「加载更早」 | `10 / 5 / 1` |
+| 右侧 turn rail 跳转回填（`loadThrough`，0.1.9+） | `30 / 15 / 2` |
 
 这是**客户端自己发更小的请求**（不是代理改帧）：`address`/`beforeSeq`/`throughSeq`/返回值
 全部原样透传，Host 的窗口校验与客户端 `assertPageThrough` 都满足。桌面本机完全不安装；
 DSH 版本改了内部方法名时自动降级（只打一条 `console.warn`），不影响主 UI。
+
+右侧 turn rail 点未加载的 turn 时，DSH 用 `Session.loadThrough()` **从当前窗口往回连续回填**
+到目标 turn（不是随机定位）——总字节与手动上翻相同、受带宽限制；`jump` 窗口只是把这个
+回填过程的串行轮次降下来（10 条/页 → 30 条/页，实测远跳 63 轮 → 24 轮）。
 
 调试覆盖（刷新页面生效）：
 
@@ -315,6 +320,7 @@ DSH 版本改了内部方法名时自动降级（只打一条 `console.warn`）�
 globalThis.__DSH_REMOTE_MOBILE_HISTORY__ = {
   open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
   page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+  jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },
   enabled: false, // 关掉分片，恢复 DSH 默认窗口
 };
 ```
@@ -323,7 +329,7 @@ globalThis.__DSH_REMOTE_MOBILE_HISTORY__ = {
 `__DSH_REMOTE_MOBILE_HISTORY_STATS__ = true` 后 `__DSH_REMOTE_MOBILE_HISTORY_LOG__`
 记录最近 100 次分页请求/响应（窗口、`beforeSeq`、记录数、耗时），可在手机 Web Inspector 查。
 
-> 生效方式同 §4.2：Host 插件 ≥ 0.1.8 + 重启 DSH；App 无需重新构建。
+> 生效方式同 §4.2：Host 插件 ≥ 0.1.9 + 重启 DSH；App 无需重新构建。
 > 实测量化与限制见 [`docs/diagnostics/09-mobile-history-slicing.md`](../../../docs/diagnostics/09-mobile-history-slicing.md)。
 
 ---

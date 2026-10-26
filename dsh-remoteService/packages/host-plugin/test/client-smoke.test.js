@@ -1000,6 +1000,7 @@ test('手机端历史分片：首屏与翻页窗口压到手机预算（follow +
   assert.deepEqual(plain(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__), {
     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+    jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },
   }, '安装后应暴露生效窗口');
 
   const stream = new FakeStream();
@@ -1019,13 +1020,14 @@ test('手机端历史分片：首屏与翻页窗口压到手机预算（follow +
   }, 'session/page 翻页窗口应压到 10/5/1 且保留 beforeSeq');
   assert.equal(stream.pages[0].throughSeq, 500, 'throughSeq 必须原样传给原方法');
 
-  // 跳转（loadThrough，minMessages 200）：同样收紧，避免单帧数 MB
+  // 跳转（右侧 turn rail → loadThrough，JUMP_PAGE_OPTIONS minMessages 200）：
+  // 用单独的 jump 窗口（30/15/2），比普通翻页大以少发轮次，但仍小于原版 500/200/2。
   await stream.readPage({ beforeSeq: 900, maxMessages: 500, turnWindow: { minMessages: 200, minTurns: 2 } }, 950, undefined);
   assert.deepEqual(plain(stream.pages[1].request), {
     beforeSeq: 900,
-    maxMessages: 10,
-    turnWindow: { minMessages: 5, minTurns: 1 },
-  }, '跳转翻页窗口也应压到 10/5/1');
+    maxMessages: 30,
+    turnWindow: { minMessages: 15, minTurns: 2 },
+  }, '跳转请求应使用 jump 窗口 30/15/2');
 
   // message-aligned 模式（无 turnWindow）：只压 maxMessages，不凭空添加 turnWindow
   await stream.readPage({ beforeSeq: 3, maxMessages: 500 }, 10, undefined);
@@ -1044,6 +1046,7 @@ test('手机端历史分片：首屏与翻页窗口压到手机预算（follow +
   assert.ok(Array.isArray(log) && log.length >= 4, '开启统计后应记录分页请求');
   assert.equal(log[0].kind, 'follow');
   assert.ok(log.some((entry) => entry.kind === 'page' && entry.window.maxMessages === 10 && entry.beforeSeq === 420));
+  assert.ok(log.some((entry) => entry.kind === 'jump' && entry.window.maxMessages === 30 && entry.beforeSeq === 900), '跳转请求应标记 kind=jump');
   await flushAsync();
   assert.ok(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_LOG__.some((entry) => entry.kind === 'page-result' && entry.records === 1), '应记录翻页响应规模');
 
@@ -1106,6 +1109,7 @@ test('手机端历史分片：globalThis 覆盖窗口（调试用）', () => {
       __DSH_REMOTE_MOBILE_HISTORY__: {
         open: { maxMessages: 12 },
         page: { maxMessages: 20, minMessages: 8, minTurns: 2 },
+        jump: { maxMessages: 60, minMessages: 30, minTurns: 2 },
       },
     },
   });
@@ -1116,6 +1120,7 @@ test('手机端历史分片：globalThis 覆盖窗口（调试用）', () => {
   assert.deepEqual(plain(bundle.sandbox.__DSH_REMOTE_MOBILE_HISTORY_ACTIVE__), {
     open: { maxMessages: 12, minMessages: 3, minTurns: 1 },
     page: { maxMessages: 20, minMessages: 8, minTurns: 2 },
+    jump: { maxMessages: 60, minMessages: 30, minTurns: 2 },
   }, '覆盖值应与默认值合并');
   const stream = new FakeStream();
   assert.deepEqual(
@@ -1150,19 +1155,29 @@ test('手机端历史分片：重复安装幂等、配置解析兜底', () => {
   assert.deepEqual(plain(__test.resolveMobileHistoryWindows(undefined)), {
     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+    jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },
   }, '默认窗口');
   assert.equal(__test.resolveMobileHistoryWindows({ enabled: false }), null, 'enabled:false 返回 null');
   assert.deepEqual(plain(__test.resolveMobileHistoryWindows({ open: { maxMessages: 0, minMessages: -2, minTurns: 'x' } })), {
     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
     page: { maxMessages: 10, minMessages: 5, minTurns: 1 },
+    jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },
   }, '非法值应回退默认');
   assert.deepEqual(plain(__test.resolveMobileHistoryWindows({ page: { maxMessages: 3, minMessages: 9 } })), {
     open: { maxMessages: 6, minMessages: 3, minTurns: 1 },
     page: { maxMessages: 3, minMessages: 3, minTurns: 1 },
+    jump: { maxMessages: 30, minMessages: 15, minTurns: 2 },
   }, 'minMessages 应收敛到 ≤ maxMessages');
   assert.equal(__test.applyMobileHistoryWindow(undefined, __test.MOBILE_HISTORY_DEFAULTS.page), undefined, '非对象请求原样返回');
   assert.deepEqual(plain(__test.applyMobileHistoryWindow({ beforeSeq: 7 }, __test.MOBILE_HISTORY_DEFAULTS.page)), {
     beforeSeq: 7,
     maxMessages: 10,
   }, '无窗口字段的请求只补 maxMessages');
+
+  // 跳转识别：JUMP_PAGE_OPTIONS（minMessages 200）算跳转，普通翻页（50）/无 turnWindow 不算
+  assert.equal(__test.isMobileHistoryJumpRequest({ turnWindow: { minMessages: 200, minTurns: 2 } }), true, '200 应识别为跳转');
+  assert.equal(__test.isMobileHistoryJumpRequest({ turnWindow: { minMessages: 100, minTurns: 2 } }), true, '阈值 100 也算跳转');
+  assert.equal(__test.isMobileHistoryJumpRequest({ turnWindow: { minMessages: 50, minTurns: 2 } }), false, '普通翻页不算跳转');
+  assert.equal(__test.isMobileHistoryJumpRequest({ maxMessages: 500 }), false, '无 turnWindow 不算跳转');
+  assert.equal(__test.isMobileHistoryJumpRequest(undefined), false, '非对象不算跳转');
 });

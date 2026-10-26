@@ -14,7 +14,7 @@ import { createPushNotifier } from './push.js';
 import { createApnsClient } from './apns.js';
 import { checkTlsKeyPair } from './tls-check.js';
 
-const VERSION = '0.1.8';
+const VERSION = '0.1.9';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {

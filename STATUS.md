@@ -7,6 +7,24 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-26 补充：手机端历史分片支持右侧 turn rail 跳转（host-plugin 0.1.9）
+
+- **问题**：分片后 `session/page` 一律 10 条/页，右侧 turn rail 点「未加载的中间 turn」时
+  （DSH `Session.loadThrough` 会从当前窗口**连续回填**到目标）会拆成几十次串行请求；
+  需要确认「点进度条跳中间」是否还能用、并削掉这部分轮次。
+- **结论**：能点、能跳，但**不是 QQ 式随机定位**——客户端窗口必须连续，所以「点中间」=
+  把当前位置到目标之间的历史全部拉下来（总字节与手动上翻相同，远跳仍受带宽限制）。
+- **改动**：0.1.9 给跳转单独窗口 `jump: 30 / 15 / 2`（按 `JUMP_PAGE_OPTIONS.minMessages=200`
+  识别，普通翻页仍 `10 / 5 / 1`；可用 `__DSH_REMOTE_MOBILE_HISTORY__` 覆盖）。
+  实测同一次跳转总字节不变、轮次约为原来的 1/3：99MB 会话跳 turn 60 → **63 轮 → 24 轮**
+  （单帧 max 756KB → 2.2MB；原版 3 轮但单帧 14.4MB）；近距跳转仍 1–2 轮到达。
+- **验证**：`npm test` **128/128**（client-smoke 更新：跳转窗口/识别阈值/统计 kind=jump）；
+  `validate:artifacts` 通过；离线用真实会话日志按 Host `paginate` 规则复算轮次/字节（见 09 文档 §4.1）。
+- **生效**：Host 插件 **0.1.9**，重启 DSH 后生效；App 无需重新构建。
+- **限制**：远距离跳转的耗时以带宽为主（例：99MB 会话跳一半 ≈ 30MB 回填），要 QQ 式
+  「只拉中间那段」需要 DSH/Host 的随机窗口支持（T1.1/上游范围，本次未做）。
+- **相关**：[`docs/diagnostics/09-mobile-history-slicing.md`](docs/diagnostics/09-mobile-history-slicing.md) §4.1
+
 ## 2026-10-26 新增：手机端会话历史分片拉取（host-plugin 0.1.8，todo T1）
 
 - **目标**：手机 App（远程 WebView，`?dsh_mobile=1`）打开会话时只拉最近一小段历史，
