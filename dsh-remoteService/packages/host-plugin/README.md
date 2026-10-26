@@ -210,7 +210,7 @@ volumes:
 > 内容），配置见 [`../relay/README.md`](../relay/README.md) §6.1；默认不启用。
 > 安全边界：`.p8` 与设备 token 都只在本机；relay 不参与自托管 APNs 通道，也看不到 token。
 
-### 手机 App 重启主机 DSH（0.1.15+）
+### 手机 App 重启主机 DSH（0.1.16+，组件开关，默认关闭）
 
 主机插件更新（linked 包/新版本）后，需要重启一次 DSH 才会加载新的 Host/Client 半。以前
 得回到电脑上手动退出再打开；**0.1.10 起**，手机 App 的「重启主机」按钮可以远程触发：
@@ -228,13 +228,15 @@ volumes:
 - 只重启**当前 DSH 进程**：不碰 relay / 系统服务 / `~/.dsh` 数据；重新拉起的进程继承当前
   工作目录与环境变量，不做提权；
 - 10s 内的重复点击只调度一次（第二次仍回 202，不会重复杀进程）；
+- **开关**：`restartHostEnabled`（默认 `false`）；关闭时 App 不显示 ⏻、`POST /__dsh_remote/restart` 返回 501 `host-restart-disabled` 且不调度 helper（审计 `failed/disabled`）。
 - 硬杀后 Electron 会留下指向死进程的单实例锁，helper 会先清理陈旧锁再拉起（否则新实例会秒退），
   并用 `ps` 校验应用真的在跑，失败则兜底直接执行 `.app` 内可执行文件；
   排查日志在 `~/.dsh/remote-access/host-restart.log`（不含凭据）；
 - 审计：`~/.dsh/remote-access/audit.jsonl` 记 `action: host-restart`、`result: accepted|failed`；
 - CI/测试可设 `DSH_REMOTE_DISABLE_HOST_RESTART=1`，端点会返回 501 拒绝执行。
 
-> **要重启一次 DSH 加载本插件新版本（≥0.1.15）后，App 里这个按钮才可用**（旧版 Host 半
+> **组件默认关闭**：需在「设置 → 远程访问 → 组件」开启「允许手机重启主机 DSH」并保存，App 顶栏才会显示 ⏻（关闭状态下重启接口一律 501）。
+> **要重启一次 DSH 加载本插件新版本（≥0.1.16）后，该组件才可用**（旧版 Host 半
 > 没有该端点，App 会收到 404/501）。首次升级仍建议在电脑上手动重启一次；之后即可远程重启。
 > 平台限制：Linux Electron 暂不支持（返回 501）；Windows 的 kill/拉起为 best-effort。
 > supervisor 注意：若 `dsh web` 由 launchd（`KeepAlive`，见 `deploy/launchd/`）或 systemd

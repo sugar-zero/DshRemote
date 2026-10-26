@@ -170,7 +170,8 @@ Body：
 { "ok": true, "data": {
   "hostId": "h_xxx", "hostName": "Example Mac", "domain": "h_xxx.relay.example.com",
   "tls": { "subject": "CN=h_xxx.relay.example.com", "notAfter": "2026-..." , "dev": false, "valid": true },
-  "relayConnected": true, "version": "0.1.0",
+  "relayConnected": true, "version": "0.1.16",
+  "restart": { "enabled": false },
   "devices": { "total": 2, "active": 1 }
 } }
 ```
@@ -198,7 +199,7 @@ Body：
 > 说明：被撤销的设备无法再通过 mTLS 校验；当前请求仍会完成。设备列表/撤销也可在桌面 DSH 管理 API 操作。
 > 删除设备记录目前只在**本机管理 API**（`POST /api/remote-access/devices/:id/delete`）开放，远程隧道不提供。
 
-### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.15+）
+### POST `/__dsh_remote/restart`（要求 mTLS，host-plugin 0.1.16+；受 `restartHostEnabled` 组件开关控制，默认关闭）
 远程触发**主机 DSH 客户端**重启（App「重启主机」入口，用于更新 Host/Client 半后不必回电脑
 手动重启）。请求无 body；主机先回 202，再在约 1s 后结束当前 DSH 进程并重新拉起：
 ```json
@@ -215,7 +216,7 @@ Body：
 - **405** `method-not-allowed`：非 POST；
 - **501** `host-restart-unavailable`（旧监听/未注入）、`host-restart-unsupported`（环境不支持，
   如 Linux Electron、执行文件不在 `.app` 内；`message` 给可读原因）、`host-restart-disabled`
-  （`DSH_REMOTE_DISABLE_HOST_RESTART=1`，供测试/CI 防误重启）；
+  （组件开关关闭，或 `DSH_REMOTE_DISABLE_HOST_RESTART=1`，供测试/CI 防误重启）；
 - **500** `host-restart-spawn-failed`：无法启动重启 helper（调度失败）。
 
 安全说明：
@@ -228,6 +229,9 @@ Body：
   关闭会先杀 renderer，shell 的崩溃处理会弹「应用无法启动或已意外停止」对话框，0.1.10–0.1.12
   的失败就是这个），CLI 模式只结束当前进程 → 确认旧实例退出后等 ~2.5s（让端口释放）→ 重新拉起；
   helper 用 `stdio: ignore` + `unref`，自成进程组，不会被自己结束的 DSH 进程树带走；
+- **组件开关**：管理配置 `restartHostEnabled`（默认 `false`）。关闭时**一律 501 `host-restart-disabled`**，
+  不调度 helper、不杀进程（审计 `host-restart/failed/hash=disabled`）；App 通过设备
+  `GET /__dsh_remote/status` 的 `data.restart.enabled` 决定是否显示顶栏 ⏻（旧版 Host 无该字段时按启用处理）；
 - 只在确认旧实例退出后才拉起新实例：两个 DSH 同时启动会互相抢端口（桌面端会直接崩）；
 - **硬杀会留下 Electron 单实例锁**（`SingletonLock/Cookie/Socket` 指向已死 pid）：不清理的话新实例
   会在启动 ~100ms 内误判「已有实例」直接退出（表现就是「主机被关掉、没被拉起来」）。helper 会在

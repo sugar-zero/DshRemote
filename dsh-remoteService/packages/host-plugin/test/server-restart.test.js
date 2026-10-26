@@ -1,12 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { RESTART_PATH } from 'dsh-remote-protocol';
+import { RESTART_PATH, STATUS_PATH } from 'dsh-remote-protocol';
 import { makeCsr, makeRogueClientCert, tlsRequest, tlsRequestNoClientCert, withTempHome } from './helpers.js';
 
 const SERVER_NAME = 'h_test.relay.test';
 
 /** 起一个带 mTLS 的远程监听 + 一台已配对设备；restartHost 由测试注入 stub。 */
-async function startServer({ restartHost } = {}) {
+async function startServer({ restartHost, restartHostEnabled = true } = {}) {
   const home = withTempHome();
   const { loadOrCreateDeviceCa, loadOrCreateDevServerCert, signDeviceCertificate } = await import('../lib/identity.js');
   const { DeviceStore } = await import('../lib/devices.js');
@@ -15,7 +15,7 @@ async function startServer({ restartHost } = {}) {
   const ca = loadOrCreateDeviceCa();
   const devices = new DeviceStore();
   const devCert = loadOrCreateDevServerCert(SERVER_NAME);
-  const config = { hostId: 'h_test', relayDomain: 'relay.test', hostName: 'Test Host' };
+  const config = { hostId: 'h_test', relayDomain: 'relay.test', hostName: 'Test Host', restartHostEnabled };
   const auditEntries = [];
   const audit = {
     append: (entry) => { auditEntries.push(entry); return entry; },
@@ -188,5 +188,47 @@ test('隧道重启端点：未注入 restartHost 时 501（不强行为旧监听
   } finally {
     await env.remote.close();
     env.home.cleanup();
+  }
+});
+
+
+test('隧道重启端点：组件关闭（restartHostEnabled=false）时 501，不调度、审计 disabled', async () => {
+  const calls = [];
+  const env = await startServer({
+    restartHostEnabled: false,
+    restartHost: async (request) => { calls.push(request); return { mode: 'mac-app', deduped: false }; },
+  });
+  try {
+    const res = await env.request({
+      method: 'POST',
+      path: RESTART_PATH,
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    });
+    assert.equal(res.status, 501);
+    assert.equal(parseBody(res)?.error?.code, 'host-restart-disabled');
+    assert.match(parseBody(res)?.error?.message ?? '', /关闭/);
+    assert.equal(calls.length, 0, '关闭后不得进入重启调度');
+    const audit = env.auditEntries.filter((entry) => entry.action === 'host-restart').at(-1);
+    assert.equal(audit.deviceId, 'd_test01');
+    assert.equal(audit.result, 'failed');
+    assert.equal(audit.hash, 'disabled');
+  } finally {
+    await env.remote.close();
+    env.home.cleanup();
+  }
+});
+
+test('设备 /status 暴露「重启主机」组件状态（默认关闭 / 开启两态）', async () => {
+  for (const restartHostEnabled of [false, true]) {
+    const env = await startServer({ restartHostEnabled, restartHost: async () => ({ mode: 'mac-app', deduped: false }) });
+    try {
+      const res = await env.request({ method: 'GET', path: STATUS_PATH });
+      assert.equal(res.status, 200);
+      assert.deepEqual(parseBody(res)?.data?.restart, { enabled: restartHostEnabled });
+    } finally {
+      await env.remote.close();
+      env.home.cleanup();
+    }
   }
 });

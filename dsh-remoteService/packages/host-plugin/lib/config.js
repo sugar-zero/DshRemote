@@ -15,6 +15,7 @@ export const DEFAULT_CONFIG = Object.freeze({
   tlsCertFile: '',         // B2：主机侧 DNS-01 得到的 fullchain.pem；留空则生成 dev 自签
   tlsKeyFile: '',          // 对应私钥
   requireApproval: true,   // 桌面确认后设备才拿到证书
+  restartHostEnabled: false, // 「重启主机」组件：默认关闭；开启后 App 顶栏才显示 ⏻、重启接口才可用
   listenPort: 0,           // 0 = 随机 loopback 端口
   maxRequestBytes: 256 * 1024 * 1024, // 远程代理请求体上限（默认 256 MiB）
   denyPrefixes: ['/connect', '/oauth', '/open-in-app', '/api/remote-access', '/__dsh_remote'],
@@ -31,7 +32,7 @@ export const DEFAULT_CONFIG = Object.freeze({
 
 const ALLOWED_KEYS = new Set([
   'enabled', 'hostName', 'relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken',
-  'relayTlsInsecure', 'tlsCertFile', 'tlsKeyFile', 'requireApproval', 'listenPort', 'denyPrefixes',
+  'relayTlsInsecure', 'tlsCertFile', 'tlsKeyFile', 'requireApproval', 'restartHostEnabled', 'listenPort', 'denyPrefixes',
   'pushEnabled', 'pushCooldownSeconds', 'maxRequestBytes',
   'pushProvider',
   'apnsKeyFile', 'apnsKeyId', 'apnsTeamId', 'apnsTopic', 'apnsEnvironment',

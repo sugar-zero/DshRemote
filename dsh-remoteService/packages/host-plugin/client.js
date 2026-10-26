@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
 
       'section.status': '连接状态',
       'section.connection': '连接配置',
+      'section.components': '组件',
       'section.pairing': '设备配对',
       'section.devices': '已配对设备',
       'section.audit': '最近审计',
@@ -125,6 +126,8 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': '关闭后中继断开，手机将无法访问这台电脑。',
       'sw.requireApproval': '新设备配对需要本机确认',
       'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
+      'sw.restartHost': '允许手机重启主机 DSH',
+      'sw.restartHostNote': '开启后 App 顶栏显示 ⏻：装了插件/改完功能后可在手机上直接重启主机（会短暂断开连接，随后自动恢复）。关闭后 App 不显示该按钮，重启接口也会拒绝请求；仍可在本机手动重启。',
       'sw.pushEnabled': '推送提醒',
       'sw.pushEnabledNote': '一轮任务结束/出错时发提醒：标题取会话标题、正文取本轮助手回复摘要（截断）；默认由主机直连 APNs（不经 relay、不用 Expo 账号）。锁屏会显示摘要。',
       'sw.pushSelfHosted': '自托管直连 APNs',
@@ -258,6 +261,7 @@ window.__ModuleLoader__.load({
 
       'section.status': 'Connection status',
       'section.connection': 'Connection settings',
+      'section.components': 'Components',
       'section.pairing': 'Device pairing',
       'section.devices': 'Paired devices',
       'section.audit': 'Recent audit',
@@ -295,6 +299,8 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': 'Disabling disconnects the relay; the phone can no longer reach this computer.',
       'sw.requireApproval': 'Require confirmation on this computer for new pairings',
       'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
+      'sw.restartHost': 'Allow the phone to restart host DSH',
+      'sw.restartHostNote': 'When on, the app top bar shows ⏻ so you can restart the host from the phone after installing plugins or changing features (the connection briefly drops and recovers). When off, the button is hidden and restart requests are rejected; manual restarts on this computer still work.',
       'sw.pushEnabled': 'Push notifications',
       'sw.pushEnabledNote': 'Notify when a turn completes or fails: the title is the session title and the body is a truncated summary of the turn\'s final assistant reply. The host talks to APNs directly (no relay, no Expo account). Summaries may appear on the lock screen.',
       'sw.pushSelfHosted': 'Self-hosted direct APNs',
@@ -575,6 +581,11 @@ window.__ModuleLoader__.load({
         tlsCertFile: stringOrPrevious(certValue, prev.tlsCertFile || ''),
         tlsKeyFile: stringOrPrevious(firstDefined(config.tlsKeyFile, tls.keyFile), prev.tlsKeyFile || ''),
         requireApproval: pickRequireApproval(status),
+        restartHostEnabled: config.restartHostEnabled !== undefined
+          ? config.restartHostEnabled === true
+          : (status && status.restart && typeof status.restart.enabled === 'boolean'
+            ? status.restart.enabled
+            : (prev.restartHostEnabled === true)),
         pushEnabled: config.pushEnabled !== undefined ? config.pushEnabled !== false : (prev.pushEnabled !== undefined ? prev.pushEnabled : true),
         pushCooldownSeconds: stringOrPrevious(config.pushCooldownSeconds, prev.pushCooldownSeconds !== undefined ? String(prev.pushCooldownSeconds) : '30'),
         pushProvider: config.pushProvider === 'expo' ? 'expo' : (config.pushProvider === 'apns' ? 'apns' : (prev.pushProvider === 'expo' ? 'expo' : 'apns')),
@@ -1435,6 +1446,7 @@ window.__ModuleLoader__.load({
         const hostToken = draft.hostToken.trim();
         if (hostToken !== '') patch.hostToken = hostToken;
         if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
+        if (draft.restartHostEnabled !== baseline.restartHostEnabled) patch.restartHostEnabled = draft.restartHostEnabled === true;
         if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
         const pushProvider = draft.pushProvider === 'expo' ? 'expo' : 'apns';
         if (pushProvider !== baseline.pushProvider) patch.pushProvider = pushProvider;
@@ -1736,6 +1748,17 @@ window.__ModuleLoader__.load({
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
             busy === 'save' ? t('btn.saving') : t('btn.save'))));
 
+      const componentsSection = h(Section, { title: t('section.components') },
+        h(Row, { label: t('sw.restartHost'), note: t('sw.restartHostNote') },
+          h(Toggle, {
+            checked: draft.restartHostEnabled,
+            disabled,
+            label: t('sw.restartHost'),
+            onChange: (value) => setDraft({ ...draft, restartHostEnabled: value }),
+          })),
+        h('div', { 'data-ra-actions': '' },
+          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
+            busy === 'save' ? t('btn.saving') : t('btn.save'))));
       const pairingSection = h(Section, { title: t('section.pairing') },
         h(Row, {
           label: pairing ? (pairingPending ? t('pairing.pendingPill') : t('pairing.active')) : t('pairing.inactive'),
@@ -1818,6 +1841,7 @@ window.__ModuleLoader__.load({
         pairingOpen ? null : h(Toast, { flash, onDismiss: dismissFlash }),
         statusSection,
         connectionSection,
+        componentsSection,
         pairingSection,
         devicesSection,
         auditSection,

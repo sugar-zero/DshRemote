@@ -172,6 +172,7 @@ test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn�
       hostToken: 'tok',
       hostName: 'Restart Host',
       relayTlsInsecure: true,
+      restartHostEnabled: true,
     });
     const fakeCtx = {
       webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
@@ -186,6 +187,8 @@ test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn�
     const { readFileSync: readPkg } = await import('node:fs');
     const pkgVersion = JSON.parse(readPkg(new URL('../package.json', import.meta.url), 'utf8')).version;
     assert.equal(service.status().version, pkgVersion, '管理 API 展示的版本应与 package.json 一致');
+    assert.equal(service.status().restart.enabled, true, '组件开启时 status.restart.enabled 应为 true');
+    assert.equal(service.status().config.restartHostEnabled, true, '管理 UI 应能读到组件开关');
 
     // 签一台设备证书并加入注册表（相当于已完成配对）
     const { signDeviceCertificate } = await import('../lib/identity.js');
@@ -227,6 +230,64 @@ test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn�
     assert.equal(entries[0].result, 'accepted');
     assert.equal(entries[0].hash, 'deduped');
     assert.equal(entries[1].hash, 'node');
+  } finally {
+    await service?.dispose();
+    home.cleanup();
+  }
+});
+
+
+test('RemoteService: 「重启主机」组件关闭时接口 501，且不调度任何进程', async () => {
+  const home = withTempHome();
+  const spawnCalls = [];
+  const fakeSpawn = (command, args, options) => {
+    spawnCalls.push({ command, args, options });
+    return { pid: 1, unref: () => {} };
+  };
+  let service;
+  try {
+    const { saveConfig } = await import('../lib/config.js');
+    const { RemoteService } = await import('../lib/service.js');
+    const { paths } = await import('../lib/paths.js');
+    assert.equal((await import('../lib/config.js')).DEFAULT_CONFIG.restartHostEnabled, false, '组件默认关闭');
+    saveConfig({
+      enabled: true,
+      relayUrl: 'ws://127.0.0.1:1',
+      relayDomain: 'relay.test',
+      hostId: 'h_restart_off',
+      hostToken: 'tok',
+      relayTlsInsecure: true,
+    });
+    const fakeCtx = {
+      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
+      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
+      effect: (fn) => fn(),
+      on: () => () => {},
+    };
+    service = new RemoteService(fakeCtx, { spawnHostRestart: fakeSpawn, hostRestartEnv: {} });
+    await service.ready;
+    assert.equal(service.status().restart.enabled, false);
+    const { signDeviceCertificate } = await import('../lib/identity.js');
+    const deviceCsr = makeCsr('Restart iPhone');
+    const signed = signDeviceCertificate({ ca: service.ca, csrPem: deviceCsr.csrPem, deviceId: 'd_restart', commonName: 'Restart iPhone' });
+    service.devices.add({ id: 'd_restart', name: 'Restart iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
+    const devCertPem = readFileSync(paths.devTlsCert(), 'utf8');
+    const response = await tlsRequest({
+      port: service.listenPort,
+      servername: 'h_restart_off.relay.test',
+      caPem: devCertPem,
+      certPem: signed.certPem,
+      keyPem: deviceCsr.privateKeyPem,
+      method: 'POST',
+      path: RESTART_PATH,
+    });
+    assert.equal(response.status, 501);
+    assert.equal(JSON.parse(response.body).error.code, 'host-restart-disabled');
+    assert.equal(spawnCalls.length, 0, '组件关闭时绝不能调度重启 helper');
+    const audit = service.audit.tail(20).filter((entry) => entry.action === 'host-restart');
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].result, 'failed');
+    assert.equal(audit[0].hash, 'disabled');
   } finally {
     await service?.dispose();
     home.cleanup();
