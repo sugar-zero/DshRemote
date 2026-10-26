@@ -15,6 +15,9 @@
  *     余额的「查询用量 / 充值 / 更多账号信息」、账号菜单「意见反馈」）通过桥交给
  *     App 打开（默认在 App 内嵌浏览器打开，等价桌面 DSH 的内嵌平台页；内嵌页里可
  *     一键切系统浏览器）。原生 WebView 没有新窗口能力，不拦截的话点击无反应。
+ *  7. 隐藏「在主机本机打开」控件（`@deepseek-ai/dsh-client-ui-open-in-app`）：它让主机
+ *     的 Finder / 默认应用打开路径，手机上点击没有意义；只按稳定 data-* 属性隐藏控件
+ *     本身，不隐藏整个插槽（同槽位还有其它插件按钮）。
  *
  * 关键：脚本通过 WKUserScript `.atDocumentStart` 注入，执行时 document.body 还不存在，
  * 因此必须等 DOMContentLoaded / body 可用后再初始化（之前版本在这里静默失败）。
@@ -233,6 +236,23 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
       '  .' + SETTINGS_BAR_CLASS + '-button:active { background: var(--dsw-alias-interactive-bg-hover, rgba(255, 255, 255, 0.08)); }',
       '  .' + SETTINGS_BAR_CLASS + '-button svg { width: 22px; height: 22px; display: block; }',
       '}',
+      // ── 隐藏「在主机本机打开」控件（@deepseek-ai/dsh-client-ui-open-in-app） ──
+      // 该插件在会话 header utilities、右栏文件 tab 等位置渲染「打开 / 在文件夹中显示」
+      // 的 split 控件，点击会在**主机**的 Finder / 默认应用里打开——对 App 来说既无意义
+      // 又占位，还可能误触后长时间无反馈。规则**不放进窄屏 @media**：手机和 iPad 上这个
+      // 动作都发生在主机本机，所有 App WebView 宽度都应隐藏（桌面 DSH 浏览器不受影响，
+      // 因为本壳只注入 App 的 WebView）。
+      // 属性来自已安装 DSH（0.2.1-rc.3）OpenTargetButton.js 的稳定 data-* 契约：
+      //   [data-open-target="directory"|"file"]    split 控件根（带边框与菜单锚点）
+      //   [data-open-path-open] / [data-open-path-more] / [data-open-path-unpreviewable]
+      //                                           主按钮 / 下拉箭头
+      //   [data-open-target-skeleton]              加载骨架
+      // 只隐藏命中这些属性的元素，不隐藏整个 [data-slot]：同一槽位还挂着其它插件按钮。
+      '[data-open-target],',
+      '[data-open-path-open],',
+      '[data-open-path-more],',
+      '[data-open-path-unpreviewable],',
+      '[data-open-target-skeleton] { display: none !important; }',
     ].join('\n');
     document.head.appendChild(style);
 
