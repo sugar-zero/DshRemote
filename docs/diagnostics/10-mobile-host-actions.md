@@ -147,3 +147,5 @@ helper 用 `spawn(..., { detached: true, stdio: 'ignore' }).unref()`：父进程
   `src/lib/protocol.ts`、`src/screens/WebViewScreen.tsx`
 - 契约：[`dsh-remoteService/docs/ADMIN-API.md`](../../dsh-remoteService/docs/ADMIN-API.md) §2
 - 安全姿态：根目录 `AGENTS.md` 五（设备身份/mTLS/盲中继不变）
+- 后续迭代（0.1.12–0.1.14：识别修正 / 杀法修正 / 陈旧单实例锁导致「关掉但没拉起」）：
+  [`11-host-restart-relaunch.md`](11-host-restart-relaunch.md)
