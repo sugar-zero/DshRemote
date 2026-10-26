@@ -225,3 +225,81 @@ test('relay connector: registers push token and forwards push.send', async () =>
     await new Promise((resolve) => httpServer.close(resolve));
   }
 });
+
+test('push notifier (APNs): ask_user_question 等待回答时推送会话名 + 固定正文', async () => {
+  const sends = [];
+  let config = { pushEnabled: true, pushCooldownSeconds: 60, pushProvider: 'apns', relayDomain: 'relay.test', hostId: 'h_push' };
+  const client = {
+    isConfigured: () => true,
+    sendToTokens: async (entries, message) => {
+      sends.push({ entries, message });
+      return { delivered: entries.length, failed: 0, pruned: [], errors: [] };
+    },
+  };
+  const notifier = createPushNotifier({
+    getConfig: () => config,
+    getConnector: () => ({ isConnected: () => false, sendPush: () => false }),
+    getApnsClient: () => client,
+    getPushTokens: () => [{ deviceId: 'd_apns', provider: 'apns', token: 'a'.repeat(64), environment: 'development' }],
+    audit: { append() {} },
+    log: () => {},
+  });
+
+  const session = { id: 's_q', header: {} };
+  await notifier.onSessionEvent(session, { type: 'session/title', data: { title: '修复登录 bug' } });
+  const question = {
+    type: 'tool/call',
+    data: { turn: 0, step: 0, callId: 'call_1', name: 'ask_user_question', arguments: {} },
+  };
+  await notifier.onSessionEvent(session, question);
+  assert.equal(sends.length, 1);
+  assert.deepEqual(sends[0].message, {
+    kind: 'attention',
+    title: '修复登录 bug',
+    body: '正在等待你的回答',
+    sessionId: 's_q',
+    host: 'h_push.relay.test',
+  });
+
+  // 同一 callId 重放（事件流重连）不重复推送
+  await notifier.onSessionEvent(session, question);
+  assert.equal(sends.length, 1);
+
+  // 新的 callId（第二次提问）应再次推送
+  await notifier.onSessionEvent(session, {
+    ...question,
+    data: { ...question.data, callId: 'call_2' },
+  });
+  assert.equal(sends.length, 2);
+  assert.equal(sends[1].message.body, '正在等待你的回答');
+
+  // turn/end 的 30s/60s 冷却不影响同一会话的问答推送
+  const session2 = { id: 's_q2', header: {} };
+  await notifier.onSessionEvent(session2, { type: 'session/title', data: { title: '另一个会话' } });
+  await notifier.onSessionEvent(session2, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+  assert.equal(sends.length, 3, 'turn/end 先推送一次');
+  await notifier.onSessionEvent(session2, {
+    type: 'tool/call',
+    data: { turn: 1, step: 0, callId: 'call_3', name: 'ask_user_question', arguments: {} },
+  });
+  assert.equal(sends.length, 4, '冷却期内仍应推送问答等待');
+  assert.equal(sends[3].message.title, '另一个会话');
+  assert.equal(sends[3].message.body, '正在等待你的回答');
+
+  // 子代理与会话关闭时不推
+  await notifier.onSessionEvent(
+    { id: 's_sub', header: { origin: 'subagent' } },
+    { type: 'tool/call', data: { callId: 'call_sub', name: 'ask_user_question' } },
+  );
+  assert.equal(sends.length, 4);
+  config = { ...config, pushEnabled: false };
+  await notifier.onSessionEvent(
+    { id: 's_off', header: {} },
+    { type: 'session/title', data: { title: '关闭推送' } },
+  );
+  await notifier.onSessionEvent(
+    { id: 's_off', header: {} },
+    { type: 'tool/call', data: { callId: 'call_off', name: 'ask_user_question' } },
+  );
+  assert.equal(sends.length, 4);
+});
