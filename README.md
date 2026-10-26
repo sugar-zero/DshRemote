@@ -54,6 +54,7 @@
 | 看手机端「查询用量/充值/意见反馈点击没反应」的外链修复 | **[docs/diagnostics/07-mobile-external-links.md](docs/diagnostics/07-mobile-external-links.md)** |
 | 看 Windows 主机无 openssl 时 EC 设备配对失败的根因与修复 | **[docs/diagnostics/08-host-ec-csr-windows.md](docs/diagnostics/08-host-ec-csr-windows.md)** |
 | 看手机端「打开大会话要等几秒」的历史分片拉取（首屏小窗口 + 按需翻页） | **[docs/diagnostics/09-mobile-history-slicing.md](docs/diagnostics/09-mobile-history-slicing.md)** |
+| 看手机 App 隐藏「在主机本机打开」入口 + 远程「重启主机 DSH」的设计与安全说明 | **[docs/diagnostics/10-mobile-host-actions.md](docs/diagnostics/10-mobile-host-actions.md)** |
 
 ### 服务器如何配置（摘要）
 

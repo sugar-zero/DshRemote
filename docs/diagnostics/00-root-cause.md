@@ -136,3 +136,4 @@ DSH 写 4MB 帧后，后续 2s Ping 帧是**排在同一个发送队列的字节
 | [`07-mobile-external-links.md`](07-mobile-external-links.md) | 手机端外链交给系统浏览器打开 |
 | [`08-host-ec-csr-windows.md`](08-host-ec-csr-windows.md) | Windows 主机 EC 设备 CSR 配对失败（无 openssl）的修复 |
 | [`09-mobile-history-slicing.md`](09-mobile-history-slicing.md) | 手机端会话历史分片拉取（首屏小窗口 + 按需翻页），本文件「大快照」问题的客户端侧解法 |
+| [`10-mobile-host-actions.md`](10-mobile-host-actions.md) | App 隐藏「在主机本机打开」入口 + 远程「重启主机 DSH」（host-plugin 0.1.10 / App 0.1.11） |

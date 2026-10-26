@@ -7,6 +7,41 @@
 POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
 剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
 
+## 2026-10-26 新增：App 隐藏「在主机本机打开」入口 + 远程「重启主机 DSH」（App 0.1.11 build 13 / host-plugin 0.1.10）
+
+- **需求**：① 手机 App 上「打开工作区 / 在文件夹中显示」实际是在**主机**的 Finder/本地应用打开，
+  对 App 无作用，隐藏；② App 加「重启主机客户端」，装插件/改完功能后不必回电脑手动重启 DSH。
+- **需求 1 做法**：DSH 核心插件 `@deepseek-ai/dsh-client-ui-open-in-app` 在会话头/右栏用稳定
+  `data-*` 属性渲染「打开 / 显示文件位置」控件；App 注入手机壳 CSS（`mobileWebShell.ts`，只注入
+  App 的 WebView，桌面 DSH 不受影响）按这些属性 `display:none`。不整段隐藏 `[data-slot]`
+  （同槽位还有定时任务/session 导出等按钮）；规则与宽度无关（iPad 也隐藏）。
+- **需求 2 做法**：
+  - host-plugin 新增 `POST /__dsh_remote/restart`（设备 mTLS，与 `/status` 同一监听）：先回 202，
+    再由 detached helper 等 ~1s → `SIGTERM` 当前 DSH pid（~10s 未退则 `SIGKILL`）→ 重新拉起。
+    按运行形态自适应：macOS Electron `open -n <...app>`、Windows Electron `start "" <exe>`
+    （best-effort）、Node CLI `execPath + argv.slice(1)`；10s 内重复请求去重；每次请求写审计
+    `host-restart`；`DSH_REMOTE_DISABLE_HOST_RESTART=1` 可禁用（501）。
+  - App 顶栏新增 ⏻「重启主机」：二次确认 → mTLS POST → 202 后轮询 `/__dsh_remote/status`
+    （1.5s × 最多 30s）→ 恢复后自动 reload；405/501/403/超时均有可读提示，等待期间可退出取消。
+  - 详设与安全评审见 [`docs/diagnostics/10-mobile-host-actions.md`](docs/diagnostics/10-mobile-host-actions.md)、
+    契约见 [`dsh-remoteService/docs/ADMIN-API.md`](dsh-remoteService/docs/ADMIN-API.md) §2。
+- **安全**：身份仍只认设备 mTLS；配对设备本来就拥有完整 DSH 控制权（可让 Agent 执行命令），
+  重启不是新提权面；只杀当前 DSH 进程、不碰 relay/系统服务/`~/.dsh` 数据、不做提权；有审计与禁用开关。
+- **验证**：
+  - Host：`npm test` **153/153**（新增 25 项：重启 plan/shell quoting/pending helper/禁用开关/去重/
+    真实 mTLS 端点 202+405+403/审计）；`validate:artifacts` 通过。另用**自建 dummy 进程**实测了
+    kill + relaunch 脚本与「父进程被 SIGTERM 后 detached helper 仍存活」——没有真的重启本机 DSH。
+  - App：`tsc --noEmit` / `check:native` / `check:shell`（**57/57**，新增 5 项 open-in-app 隐藏断言，
+    宽屏/iPad 也验证）全绿。
+  - 真机：iOS Release **0.1.11 (build 13)** 已构建并使用设备描述文件安装到已配对
+    **iPhone 17 Pro Max / iOS 27.0**，`devicectl` 启动成功、截图确认 App 正常；WebView 内的
+    交互项（⏻ 按钮、隐藏效果）本环境无 UI 自动化，需人工确认（ACCEPTANCE #32/#33）。
+- **生效**：App 需重新安装 0.1.11（本机已装）；**host-plugin 0.1.10 仍需重启一次 DSH 才加载**——
+  因此 `⏻` 按钮在旧 Host 半上会返回 404/501（App 有可读提示）；首次升级在电脑上手动重启一次后，
+  之后即可用按钮远程重启（功能自举问题，已在文档注明）。
+- **限制**：Windows 重启路径 best-effort（无 Windows 本机验证）；Linux Electron 返回 501；
+  supervisor 托管的 `dsh web` 建议在 supervisor 层重启（已写入文档）。
+
 ## 2026-10-26 补充：手机端历史分片支持右侧 turn rail 跳转（host-plugin 0.1.9）
 
 - **问题**：分片后 `session/page` 一律 10 条/页，右侧 turn rail 点「未加载的中间 turn」时
