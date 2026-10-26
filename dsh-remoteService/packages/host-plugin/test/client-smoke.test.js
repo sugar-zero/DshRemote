@@ -1181,3 +1181,57 @@ test('手机端历史分片：重复安装幂等、配置解析兜底', () => {
   assert.equal(__test.isMobileHistoryJumpRequest({ maxMessages: 500 }), false, '无 turnWindow 不算跳转');
   assert.equal(__test.isMobileHistoryJumpRequest(undefined), false, '非对象不算跳转');
 });
+
+test('设置页：「重启主机」组件开关默认关闭，切换后保存会提交 restartHostEnabled', async () => {
+  const baseStatus = {
+    enabled: true,
+    relay: { url: 'wss://relay.example.com:8443', connected: true },
+    host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    config: {},
+    restart: { enabled: false },
+  };
+  let restartHostEnabled = false;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    const data = {
+      ...baseStatus,
+      config: { restartHostEnabled },
+      restart: { enabled: restartHostEnabled },
+    };
+    if (String(url).includes('/config') && options.method === 'POST') {
+      const patch = JSON.parse(String(options.body ?? '{}'));
+      if (patch.restartHostEnabled !== undefined) restartHostEnabled = patch.restartHostEnabled === true;
+      return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+    }
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  tree = renderer.render();
+
+  // 1) 组件开关存在且默认关闭（关 = 不显示 ⏻ 的那一侧）
+  const restartToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '').includes('重启主机'))[0];
+  assert.ok(restartToggle, '设置页应有「允许手机重启主机 DSH」开关');
+  assert.equal(restartToggle.props['aria-checked'], false, '组件默认关闭');
+
+  // 2) 打开开关后保存 → POST /config { restartHostEnabled: true }
+  restartToggle.props.onClick();
+  await flushAsync();
+  tree = renderer.render();
+  const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
+  assert.ok(saveButtons.length >= 1, '应有保存按钮');
+  saveButtons[saveButtons.length - 1].props.onClick();
+  await flushAsync();
+  const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
+  assert.ok(configCall, '保存应 POST /config');
+  assert.deepEqual(JSON.parse(String(configCall.options.body)), { restartHostEnabled: true });
+});

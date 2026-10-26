@@ -138,6 +138,8 @@ export function createRemoteServer({
           tls: status.tls ?? null,
           relayConnected: status.relayConnected ?? null,
           version: status.version ?? null,
+          // 「重启主机」组件：关闭时 App 不显示顶栏 ⏻，重启接口也会拒绝（501）
+          restart: { enabled: config?.restartHostEnabled === true },
           devices: {
             total: allDevices.length,
             active: allDevices.filter((device) => !device.revokedAt).length,
@@ -194,6 +196,11 @@ export function createRemoteServer({
 
     if (pathname === RESTART_PATH) {
       if (req.method !== 'POST') { sendError(res, 405, 'method-not-allowed', '仅支持 POST'); return; }
+      if (getConfig()?.restartHostEnabled !== true) {
+        audit.append({ deviceId: peer.device.id, action: 'host-restart', result: 'failed', hash: 'disabled' });
+        sendError(res, 501, 'host-restart-disabled', '远程重启已在「设置 → 远程访问 → 组件」中关闭');
+        return;
+      }
       if (typeof restartHost !== 'function') {
         audit.append({ deviceId: peer.device.id, action: 'host-restart', result: 'failed', hash: 'not-enabled' });
         sendError(res, 501, 'host-restart-unavailable', '当前主机未启用远程重启（插件版本或运行环境不支持）');

@@ -15,7 +15,7 @@ import { createApnsClient } from './apns.js';
 import { checkTlsKeyPair } from './tls-check.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.1.15';
+const VERSION = '0.1.16';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -244,6 +244,13 @@ export class RemoteService {
    */
   #restartHost(request = {}) {
     const deviceId = request?.device?.id ?? 'unknown';
+    if (this.config?.restartHostEnabled !== true) {
+      // 组件被用户关闭：即使绕过 UI 直接调用接口也必须拒绝（server.js 路由也会先拦一道）。
+      throw Object.assign(new Error('远程重启已在「设置 → 远程访问 → 组件」中关闭'), {
+        status: 501,
+        code: 'host-restart-disabled',
+      });
+    }
     try {
       const result = this.hostRestartScheduler.request();
       if (result.deduped) {
@@ -450,6 +457,8 @@ export class RemoteService {
         },
       },
       pairing: this.pairing?.publicSession() ?? { active: false },
+      // 「重启主机」组件状态（App 据此决定是否显示顶栏 ⏻；默认关闭）
+      restart: { enabled: Boolean(config.restartHostEnabled) },
       devices: this.devices?.list() ?? [],
       listenPort: this.listenPort || null,
       push: {
@@ -471,6 +480,7 @@ export class RemoteService {
         publicPort: Number(config.publicPort ?? 0),
         hostName: config.hostName ?? '',
         requireApproval: Boolean(config.requireApproval),
+        restartHostEnabled: Boolean(config.restartHostEnabled),
         pushEnabled: config.pushEnabled !== false,
         pushCooldownSeconds: Number(config.pushCooldownSeconds ?? 30),
         pushProvider: pushProviderOf(config),
