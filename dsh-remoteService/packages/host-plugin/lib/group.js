@@ -20,12 +20,19 @@ import {
   CONTROL_PATH,
   GROUP_REGISTER_PATH,
   GROUP_SESSION_COOKIE,
+  PAIR_PATH,
+  PAIR_STATUS_PATH,
+  PUSH_TOKEN_PATH,
+  RESTART_PATH,
+  STATUS_PATH,
+  TUNNEL_BASE,
   isGroupHostId,
   parseCookieHeader,
   verifyGroupSessionToken,
 } from 'dsh-remote-protocol';
 import { RelayConnector } from './connector.js';
 import { paths, readJson, writeJson } from './paths.js';
+import { pathnameOf, readJsonBody, sendError, sendJson } from './http-utils.js';
 
 /** group.json 版本。 */
 export const GROUP_REGISTRATION_VERSION = 1;
@@ -116,6 +123,8 @@ export class GroupHostRuntime {
     this.log = options.log ?? (() => {});
     this.registrationFile = options.registrationFile ?? paths.groupRegistration();
     this.getGroupDevices = options.getGroupDevices;
+    /** @type {import('./pairing.js').PairingManager | undefined} 群体版配对（把 P-256 公钥写成设备记录） */
+    this.pairing = options.pairing;
     this.now = options.now ?? (() => Date.now());
     this.insecure = options.config?.groupInsecure === true;
     this.registration = loadGroupRegistration(this.registrationFile);
@@ -282,6 +291,53 @@ export class GroupHostRuntime {
       this.#send(res, 421, { ok: false, error: 'misdirected_request' });
       return;
     }
+    const pathname = pathnameOf(req.url) ?? '/';
+
+    // —— 配对路径：无需会话 token（一次性 secret + 主机确认保护）——
+    if (pathname === PAIR_PATH || pathname === `${PAIR_PATH}/`) {
+      if (!this.pairing) {
+        sendError(res, 503, 'pairing-unavailable', '群体版配对未就绪');
+        return;
+      }
+      if (req.method !== 'POST') {
+        sendError(res, 405, 'method-not-allowed', '仅支持 POST');
+        return;
+      }
+      try {
+        const body = await readJsonBody(req, 128 * 1024);
+        const result = this.pairing.handlePairRequest({
+          secret: body.secret,
+          publicKey: body.publicKey,
+          deviceName: body.deviceName,
+          platform: body.platform,
+          remoteAddress: req.socket.remoteAddress,
+        });
+        this.audit?.append({ action: 'pair-request', result: result.status });
+        sendJson(res, 200, { ok: true, data: result });
+      } catch (error) {
+        if (!res.headersSent) sendError(res, error.status ?? 400, error.code ?? 'pairing-failed', error.message);
+        else res.destroy();
+      }
+      return;
+    }
+    if (pathname === PAIR_STATUS_PATH) {
+      if (!this.pairing) {
+        sendError(res, 503, 'pairing-unavailable', '群体版配对未就绪');
+        return;
+      }
+      if (req.method !== 'GET') {
+        sendError(res, 405, 'method-not-allowed', '仅支持 GET');
+        return;
+      }
+      const ticket = new URL(req.url, 'https://localhost').searchParams.get('ticket');
+      try {
+        sendJson(res, 200, { ok: true, data: this.pairing.statusFor(ticket) });
+      } catch (error) {
+        sendError(res, error.status ?? 404, error.code ?? 'no-such-pairing', error.message);
+      }
+      return;
+    }
+
     const cookies = parseCookieHeader(req.headers.cookie);
     const token = cookies[GROUP_SESSION_COOKIE];
     const payload = token
@@ -303,6 +359,36 @@ export class GroupHostRuntime {
       this.#send(res, 401, { ok: false, error: 'unknown_device' });
       return;
     }
+    // —— 已鉴权的内部远程接口（群体版暂只支持 status；push/restart 后续接入）——
+    if (pathname === STATUS_PATH) {
+      if (req.method !== 'GET') {
+        sendError(res, 405, 'method-not-allowed', '仅支持 GET');
+        return;
+      }
+      const devices = (typeof this.devices?.list === 'function' ? this.devices.list() : []);
+      sendJson(res, 200, {
+        ok: true,
+        data: {
+          hostId: this.registration.hostId,
+          hostName: this.registration.hostName || '',
+          domain: `${this.registration.hostId}.${this.registration.relayDomain}`,
+          auth: 'token',
+          relayConnected: Boolean(this.connector?.isConnected()),
+          restart: { enabled: false },
+          devices: { total: devices.length, active: devices.filter((device) => !device.revokedAt).length },
+        },
+      });
+      return;
+    }
+    if (pathname === PUSH_TOKEN_PATH || pathname === RESTART_PATH) {
+      sendError(res, 501, 'group-feature-unavailable', '群体模式暂未接入该接口');
+      return;
+    }
+    if (pathname.startsWith(`${TUNNEL_BASE}/`)) {
+      sendError(res, 404, 'not-found', '未知远程路径');
+      return;
+    }
+
     await this.proxy.handle(req, res, { id: payload.deviceId, deviceId: payload.deviceId, name: payload.deviceId });
   }
 

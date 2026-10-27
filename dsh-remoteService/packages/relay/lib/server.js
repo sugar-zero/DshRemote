@@ -24,6 +24,8 @@ import {
   GROUP_AUTH_TOKEN_PATH,
   GROUP_EDGE_STREAM_KIND,
   GROUP_REGISTER_PATH,
+  PAIR_PATH,
+  PAIR_STATUS_PATH,
   PROTOCOL_VERSION,
   RELAY_MSG,
   decodeFrame,
@@ -1115,9 +1117,12 @@ class Relay {
       return;
     }
 
+    // 配对路径：与 classic 一致，允许无会话（一次性 secret + 主机确认保护；主机侧还有限速）。
+    const isPairPath = pathname === PAIR_PATH || pathname === `${PAIR_PATH}/` || pathname === PAIR_STATUS_PATH;
+
     // 普通业务流量：校验 __Host- 会话 cookie（dev 允许跳过；生产必须通过）。
     let session;
-    if (!this.config.group.edge.allowUnauthenticated) {
+    if (!isPairPath && !this.config.group.edge.allowUnauthenticated) {
       session = this.groupAuth?.sessionFromHeaders(parsedHead.headers, hostId);
       if (!session) {
         this.logger.debug(`edge: rejecting unauthenticated ${parsedHead.method} ${pathname} from ${remote} for host "${hostId}"`);

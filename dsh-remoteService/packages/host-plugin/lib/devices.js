@@ -41,6 +41,10 @@ export class DeviceStore {
       platform: device.platform || 'unknown',
       serial: String(device.serial).toUpperCase(),
       publicKeyFingerprint: device.publicKeyFingerprint || '',
+      // 群体版设备：P-256 未压缩点公钥（base64url），用于同步给 relay / 本机逐请求鉴权
+      ...(typeof device.groupPublicKey === 'string' && device.groupPublicKey !== ''
+        ? { groupPublicKey: device.groupPublicKey }
+        : {}),
       createdAt: Date.now(),
       notAfter: device.notAfter ?? null,
       lastSeenAt: null,
