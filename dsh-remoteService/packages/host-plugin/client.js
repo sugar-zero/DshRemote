@@ -88,6 +88,28 @@ window.__ModuleLoader__.load({
 
       'section.status': '连接状态',
       'section.connection': '连接配置',
+      'section.group': '群体服务（实验）',
+      'group.note': '群体服务版（A 模式）：relay 终止手机 TLS，主机只做出站隧道；注册后无需本地证书/令牌/APNs 配置。',
+      'group.tlsNote': '此模式下「TLS 证书路径」与「自托管 APNs」不生效；推送由服务部署方统一提供。',
+      'sw.groupEnabled': '启用群体模式',
+      'sw.groupEnabledNote': '开启后主机不监听 TLS、不持有证书；改为向服务端注册并走隧道。',
+      'field.groupServiceUrl': '服务地址',
+      'field.groupServiceUrlHint': 'https://relay.example.com:8443',
+      'field.groupInviteCode': '邀请码',
+      'field.groupInviteCodeHint': '一次性邀请码（仅首次注册需要）',
+      'field.groupInviteCodeRegistered': '已注册，如需换服务请先「重置注册」',
+      'group.registered': '已注册',
+      'group.notRegistered': '未注册',
+      'group.hostId': '服务端分配的主机 ID',
+      'group.fqdn': '手机访问域名',
+      'group.connected': '隧道连接',
+      'group.lastError': '最近错误',
+      'action.registerGroup': '注册并连接',
+      'action.resetGroup': '重置注册',
+      'msg.groupRegistered': '群体服务已注册并连接',
+      'msg.groupRegisterFailed': '注册失败：{message}',
+      'msg.groupReset': '已清除本机注册',
+      'msg.groupMissing': '请填写服务地址与邀请码',
       'section.components': '组件',
       'section.pairing': '设备配对',
       'section.devices': '已配对设备',
@@ -261,6 +283,28 @@ window.__ModuleLoader__.load({
 
       'section.status': 'Connection status',
       'section.connection': 'Connection settings',
+      'section.group': 'Group service (experimental)',
+      'group.note': 'Group mode (A): the relay terminates mobile TLS and the host only makes outbound tunnels. No local certs, tokens or APNs config needed after registration.',
+      'group.tlsNote': 'TLS certificate paths and self-hosted APNs do not apply in group mode; push is provided by the service operator.',
+      'sw.groupEnabled': 'Enable group mode',
+      'sw.groupEnabledNote': 'The host stops listening on TLS and connects to the service relay via an outbound tunnel.',
+      'field.groupServiceUrl': 'Service URL',
+      'field.groupServiceUrlHint': 'https://relay.example.com:8443',
+      'field.groupInviteCode': 'Invite code',
+      'field.groupInviteCodeHint': 'One-time invite code (first registration only)',
+      'field.groupInviteCodeRegistered': 'Registered — reset before switching service',
+      'group.registered': 'Registered',
+      'group.notRegistered': 'Not registered',
+      'group.hostId': 'Server-assigned host ID',
+      'group.fqdn': 'Mobile access domain',
+      'group.connected': 'Tunnel',
+      'group.lastError': 'Last error',
+      'action.registerGroup': 'Register & connect',
+      'action.resetGroup': 'Reset registration',
+      'msg.groupRegistered': 'Group service registered and connected',
+      'msg.groupRegisterFailed': 'Registration failed: {message}',
+      'msg.groupReset': 'Local registration cleared',
+      'msg.groupMissing': 'Enter service URL and invite code',
       'section.components': 'Components',
       'section.pairing': 'Device pairing',
       'section.devices': 'Paired devices',
@@ -594,6 +638,11 @@ window.__ModuleLoader__.load({
         apnsTeamId: stringOrPrevious(config.apnsTeamId, prev.apnsTeamId || ''),
         apnsTopic: stringOrPrevious(config.apnsTopic, prev.apnsTopic || ''),
         apnsEnvironment: stringOrPrevious(config.apnsEnvironment, prev.apnsEnvironment || 'auto'),
+        groupEnabled: config.groupEnabled !== undefined ? config.groupEnabled === true : prev.groupEnabled === true,
+        groupServiceUrl: stringOrPrevious(config.groupServiceUrl, prev.groupServiceUrl || ''),
+        groupInviteCode: '',
+        groupPlainPort: stringOrPrevious(config.groupPlainPort, prev.groupPlainPort !== undefined ? String(prev.groupPlainPort) : '0'),
+        groupInsecure: config.groupInsecure !== undefined ? config.groupInsecure === true : prev.groupInsecure === true,
         tlsCertFileConfigured,
         tlsKeyFileConfigured,
         hostTokenConfigured,
@@ -1439,6 +1488,16 @@ window.__ModuleLoader__.load({
         }
         const hostName = draft.hostName.trim();
         if (hostName !== baseline.hostName) patch.hostName = hostName;
+        if (draft.groupEnabled !== baseline.groupEnabled) patch.groupEnabled = draft.groupEnabled === true;
+        const groupServiceUrl = draft.groupServiceUrl.trim();
+        if (groupServiceUrl !== baseline.groupServiceUrl) patch.groupServiceUrl = groupServiceUrl;
+        const groupPlainPortRaw = String(draft.groupPlainPort ?? '').trim();
+        const groupPlainPort = groupPlainPortRaw === '' ? 0 : Number.parseInt(groupPlainPortRaw, 10);
+        if (Number.isFinite(groupPlainPort) && groupPlainPort >= 0 && groupPlainPort <= 65535
+          && String(groupPlainPort) !== String(baseline.groupPlainPort)) {
+          patch.groupPlainPort = groupPlainPort;
+        }
+        if (draft.groupInsecure !== baseline.groupInsecure) patch.groupInsecure = draft.groupInsecure === true;
         const tlsCertFile = draft.tlsCertFile.trim();
         if (tlsCertFile !== baseline.tlsCertFile) patch.tlsCertFile = tlsCertFile;
         const tlsKeyFile = draft.tlsKeyFile.trim();
@@ -1479,6 +1538,54 @@ window.__ModuleLoader__.load({
           setDraft(fresh);
           setBaseline(fresh);
           showFlash('good', t('msg.saved'));
+        } catch (error) {
+          if (aliveRef.current) showFlash('warn', t('msg.saveFailed', { message: formatError(error) }));
+        } finally {
+          if (aliveRef.current) setBusy('');
+        }
+      };
+
+      const registerGroup = async () => {
+        if (busy === 'group') return;
+        const groupServiceUrl = draft.groupServiceUrl.trim();
+        const groupInviteCode = draft.groupInviteCode.trim();
+        if (groupServiceUrl === '' || groupInviteCode === '') {
+          showFlash('warn', t('msg.groupMissing'));
+          return;
+        }
+        setBusy('group');
+        try {
+          const response = await jpost('/group/register', {
+            serviceUrl: groupServiceUrl,
+            inviteCode: groupInviteCode,
+            ...(draft.hostName.trim() !== '' ? { hostName: draft.hostName.trim() } : {}),
+          });
+          if (!aliveRef.current) return;
+          const next = response && typeof response === 'object' ? response : status;
+          const fresh = draftFromStatus(next, draft);
+          setStatus(next);
+          setDraft(fresh);
+          setBaseline(fresh);
+          showFlash('good', t('msg.groupRegistered'));
+        } catch (error) {
+          if (aliveRef.current) showFlash('warn', t('msg.groupRegisterFailed', { message: formatError(error) }));
+        } finally {
+          if (aliveRef.current) setBusy('');
+        }
+      };
+
+      const resetGroup = async () => {
+        if (busy === 'group') return;
+        setBusy('group');
+        try {
+          const response = await jpost('/group/reset', {});
+          if (!aliveRef.current) return;
+          const next = response && typeof response === 'object' ? response : status;
+          const fresh = draftFromStatus(next, draft);
+          setStatus(next);
+          setDraft(fresh);
+          setBaseline(fresh);
+          showFlash('good', t('msg.groupReset'));
         } catch (error) {
           if (aliveRef.current) showFlash('warn', t('msg.saveFailed', { message: formatError(error) }));
         } finally {
@@ -1596,6 +1703,58 @@ window.__ModuleLoader__.load({
       const remaining = expiresAt > 0 ? Math.max(0, expiresAt - now) : 0;
       const fingerprint = host.fingerprint ? shortFingerprint(host.fingerprint) : '';
       const disabled = busy === 'save';
+
+      const group = status.group || {};
+      const groupRegistered = group.registered === true;
+      const groupSection = h(Section, { title: t('section.group') },
+        h(Row, {
+          label: t('sw.groupEnabled'),
+          note: t('sw.groupEnabledNote'),
+        }, h(Toggle, {
+          checked: draft.groupEnabled === true,
+          disabled,
+          label: t('sw.groupEnabled'),
+          onChange: (value) => setDraft({ ...draft, groupEnabled: value }),
+        })),
+        h('div', { 'data-ra-note': '' }, t('group.note')),
+        draft.groupEnabled
+          ? h('div', { 'data-ra-grid': '' },
+            h(Field, {
+              label: t('field.groupServiceUrl'),
+              value: draft.groupServiceUrl,
+              placeholder: t('field.groupServiceUrlHint'),
+              onChange: (value) => setDraft({ ...draft, groupServiceUrl: value }),
+            }),
+            h(Field, {
+              label: t('field.groupInviteCode'),
+              type: 'password',
+              value: draft.groupInviteCode,
+              placeholder: groupRegistered ? t('field.groupInviteCodeRegistered') : t('field.groupInviteCodeHint'),
+              autoComplete: 'new-password',
+              onChange: (value) => setDraft({ ...draft, groupInviteCode: value }),
+            }))
+          : null,
+        draft.groupEnabled
+          ? h('div', null,
+            h(InfoRow, { label: t('group.registered'), value: groupRegistered ? t('group.registered') : t('group.notRegistered') }),
+            h(InfoRow, { label: t('group.hostId'), value: group.hostId || '—' }),
+            h(InfoRow, { label: t('group.fqdn'), value: group.fqdn || '—' }),
+            h(InfoRow, {
+              label: t('group.connected'),
+              value: h('span', { 'data-ra-inline': '' },
+                h(Dot, { tone: group.connected ? 'good' : 'bad' }),
+                group.connected ? t('relay.connected') : t('relay.disconnected')),
+            }),
+            group.lastError
+              ? h(InfoRow, { label: t('group.lastError'), value: h('span', { style: { color: '#ef4444' } }, String(group.lastError)) })
+              : null)
+          : null,
+        draft.groupEnabled
+          ? h('div', { 'data-ra-actions': '' },
+            h(Btn, { onClick: () => { void registerGroup(); }, disabled: busy === 'group' || groupRegistered }, t('action.registerGroup')),
+            h(Btn, { onClick: () => { void resetGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.resetGroup')))
+          : null,
+        draft.groupEnabled ? h('div', { 'data-ra-note': '' }, t('group.tlsNote')) : null);
 
       const statusSection = h(Section, { title: t('section.status') },
         loadError !== '' ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('msg.loadFailed', { message: loadError })) : null,
@@ -1840,6 +1999,7 @@ window.__ModuleLoader__.load({
             h(StatusPill, { tone, label: t(toneKey(tone)) }))),
         pairingOpen ? null : h(Toast, { flash, onDismiss: dismissFlash }),
         statusSection,
+        groupSection,
         connectionSection,
         componentsSection,
         pairingSection,

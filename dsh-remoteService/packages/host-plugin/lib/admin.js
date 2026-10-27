@@ -32,6 +32,23 @@ export function createAdminHandler({ ctx, service, authDisabled = false }) {
         sendOk(res, service.status());
         return;
       }
+      if (sub === '/group/register' && method === 'POST') {
+        const body = await readJsonBody(req);
+        try {
+          sendOk(res, await service.registerGroup(body));
+        } catch (error) {
+          sendError(res, error.status ?? 400, error.code ?? 'group-register-failed', error.message);
+        }
+        return;
+      }
+      if (sub === '/group/reset' && method === 'POST') {
+        try {
+          sendOk(res, await service.resetGroup());
+        } catch (error) {
+          sendError(res, error.status ?? 500, error.code ?? 'group-reset-failed', error.message);
+        }
+        return;
+      }
       if (sub === '/pairing/start' && method === 'POST') {
         try {
           sendOk(res, service.pairing.createSession());
