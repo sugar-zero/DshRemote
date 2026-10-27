@@ -278,7 +278,17 @@ volumes:
 4. 设备增删/撤销后调用 `syncDevices()`（后续会接到配对/设备管理事件）→ `device.sync` 全量覆盖。
 
 状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/hostId/fqdn/mobilePort/connected/plainPort）。
-**P1 边界**：设置页群体模式字段、配对/设备事件自动同步、QR v2、App token 流程在后续切片接入。
+
+设置页（Client 半）：group 模式下新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
+注册/隧道状态、**注册并连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。
+管理 API（本机已认证浏览器）：
+
+- `POST /api/remote-access/group/register`（body `{serviceUrl, inviteCode, hostName?}`）→ 注册并连接；
+  邀请码一次性，注册成功后会从配置中清空；
+- `POST /api/remote-access/group/reset` → 停隧道、删除 `group.json`、关闭群体模式。
+
+设备配对/撤销会自动 `device.sync` 到 relay（`DeviceStore.onChange`）；主机重连时也会全量同步。
+**P1 边界**：QR v2（端口/认证模式）与 App token 流程在后续切片接入。
 
 ---
 

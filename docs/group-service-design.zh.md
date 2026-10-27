@@ -240,5 +240,9 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   deviceId 仍为有效设备）后交给既有 `DshProxy`；隧道 `device.sync` 同步设备公钥；`status().group` 暴露状态。
   端到端测试（真实 relay + 真 TLS 边缘 + 主机运行时）：注册/隧道/正向请求/Host 不一致 421/无 cookie 401/撤销后 401；
   `npm test` **181/181**。
-- **下一片**：设置页群体模式字段（Client 半）+ 管理 API 注册/重置 + 配对/设备事件自动 `syncDevices`、
-  QR v2（含端口）、App token 流程（原生设备密钥 → challenge 签名 → `__Host-` cookie）。
+- **2026-10-27：切片 5 已落地**——Client 半「群体服务（实验）」设置卡片（启用开关 / 服务地址 + 邀请码 /
+  注册·隧道状态 / 注册并连接 / 重置注册；group 模式下提示 TLS·APNs 不生效）；管理 API
+  `POST /group/register` 与 `POST /group/reset`；设备配对/撤销自动 `device.sync`（DeviceStore.onChange）；
+  邀请码一次性（注册成功后清空）。`npm test` **184/184**。
+- **下一片**：QR v2（服务端下发端口 + auth 模式）+ App token 流程（原生设备密钥 → challenge 签名 →
+  `__Host-` cookie，替代 mTLS）+ 手机端 settings/pairing 适配；随后把 §10 攻击用例表在真机链路复核。

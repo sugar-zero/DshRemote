@@ -1,4 +1,4 @@
-import { readFileSync, watchFile, unwatchFile } from 'node:fs';
+import { readFileSync, rmSync, watchFile, unwatchFile } from 'node:fs';
 import { hostname } from 'node:os';
 import { X509Certificate } from 'node:crypto';
 import { hostAddress, hostFqdn, loadConfig, pushProviderOf, saveConfig, validateConfig, validatePushConfig } from './config.js';
@@ -75,6 +75,10 @@ export class RemoteService {
     this.identity = loadOrCreateHostIdentity();
     this.ca = loadOrCreateDeviceCa();
     this.devices = new DeviceStore();
+    // 设备配对/撤销后：群体模式立即把设备公钥同步给 relay（classic 模式下无 groupRuntime，空转）。
+    this.devices.onChange = () => {
+      try { this.groupRuntime?.syncDevices(); } catch { /* ignore */ }
+    };
     this.audit = new AuditLog();
     const storedPush = readJson(paths.pushTokens(), { version: 1, tokens: [] });
     for (const entry of Array.isArray(storedPush.tokens) ? storedPush.tokens : []) {
@@ -464,6 +468,41 @@ export class RemoteService {
       this.log(`push: 已清理 ${removed} 个失效设备 token`);
     }
     return removed;
+  }
+
+  /**
+   * 群体服务版：用「服务地址 + 邀请码」注册并连接（管理 API 调用）。
+   * @param {{serviceUrl?: string, inviteCode?: string, hostName?: string}} input
+   */
+  async registerGroup(input = {}) {
+    const serviceUrl = String(input.serviceUrl ?? this.config?.groupServiceUrl ?? '').trim();
+    const inviteCode = String(input.inviteCode ?? '').trim();
+    if (serviceUrl === '') throw Object.assign(new Error('服务地址不能为空'), { status: 400, code: 'invalid-service-url' });
+    if (inviteCode === '') throw Object.assign(new Error('邀请码不能为空'), { status: 400, code: 'invalid-invite' });
+    this.config = saveConfig({
+      enabled: true,
+      groupEnabled: true,
+      groupServiceUrl: serviceUrl,
+      groupInviteCode: inviteCode,
+      ...(String(input.hostName ?? '').trim() !== '' ? { hostName: String(input.hostName).trim() } : {}),
+    });
+    await this.#apply();
+    if (!this.groupRuntime?.status().registered) {
+      throw Object.assign(new Error(this.lastError || '注册失败'), { status: 400, code: 'group-register-failed' });
+    }
+    // 邀请码一次性：注册成功后立即清空，避免留存在配置里。
+    this.config = saveConfig({ groupInviteCode: '' });
+    this.audit?.append({ action: 'group-register', result: 'ok', hostId: this.groupRuntime.status().hostId });
+    return this.status();
+  }
+
+  /** 群体服务版：停止并清除本机注册（换服务/重置邀请码时用）。 */
+  async resetGroup() {
+    try { rmSync(paths.groupRegistration(), { force: true }); } catch { /* ignore */ }
+    this.config = saveConfig({ groupEnabled: false, groupInviteCode: '' });
+    await this.#apply();
+    this.audit?.append({ action: 'group-reset', result: 'ok' });
+    return this.status();
   }
 
   /** 返回当前状态（管理 API）。 */

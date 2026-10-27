@@ -6,10 +6,17 @@ export class DeviceStore {
     this.file = file;
     this.state = readJson(file, { version: 1, devices: [] });
     if (!Array.isArray(this.state.devices)) this.state.devices = [];
+    /** 设备表变化回调（群体模式下用于把设备公钥同步给 relay）。 */
+    this.onChange = undefined;
   }
 
   save() {
     writeJson(this.file, this.state);
+    try {
+      this.onChange?.();
+    } catch {
+      /* 同步失败不影响本机配对/撤销 */
+    }
   }
 
   list() {
