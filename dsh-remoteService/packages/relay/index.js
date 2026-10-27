@@ -69,5 +69,12 @@ export {
   writeGroupStore,
 } from './lib/group.js';
 export { GroupAuthError, GroupAuthService } from './lib/group-auth.js';
+export {
+  GROUP_ADMIN_API_BASE,
+  GROUP_ADMIN_BASE,
+  createGroupAdminHandler,
+  ensureAdminToken,
+  renderAdminPage,
+} from './lib/group-admin.js';
 
 export default { createRelay, startRelay };

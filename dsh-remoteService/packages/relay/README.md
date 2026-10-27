@@ -426,6 +426,27 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 `maxAttemptsPerMinutePerIp`（默认 30）、`signingKeyFile`（默认 `<group.json 目录>/signing-key.pem`，
 Ed25519、0600、首次启动自动生成；**私钥只在 relay，主机只拿公钥**）。
 
-**P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」。
+### 部署方后台（`/__admin`，P1 切片 7）
+
+group 模式启动后，部署方在浏览器打开：
+
+```
+https://<relayDomain>:<controlPort>/__admin/
+```
+
+页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；明文只显示一次并可复制）；
+列邀请码并撤销；列主机（在线/离线/已撤销）并撤销主机。数据全部来自 `group.json`，页面每 10 秒自动刷新。
+
+**鉴权**：`Authorization: Bearer <admin token>` 请求头（不使用查询参数 token / 来源 IP 作为身份），
+失败限速（同 IP 5 分钟 10 次后 429）。token 来源优先级：
+
+1. `group.adminToken` 配置 / 环境变量 `RELAY_ADMIN_TOKEN`；
+2. token 文件 `group.adminTokenFile`（默认 `<group.json 目录>/admin-token`，0600；**首次启动自动生成**）；
+3. 本机查看：`node bin/relay.js admin-token --config /etc/dsh-relay/relay.json`（`--json` 可机器读）。
+
+安全说明：管理页 HTML 本身不返回任何数据（token 由部署方粘贴后存浏览器 localStorage，不落日志）；
+后台与注册/隧道共用控制面 TLS，请只在内网/可信网络访问 controlPort，或按 `server/README.md` 用防火墙限制来源。
+
+**P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」+「部署方后台」。
 **主机插件侧 group 接入（注册客户端 / 本地明文代理 / 逐请求复验 / 设置页）、QR v2、App token 流程**
 在下一片接入；在此之前 `group` 模式不能用于生产（`allowUnauthenticated` 仅测试）。

@@ -274,6 +274,14 @@ function normalizeGroup(raw, mode, dev = false) {
     ? undefined
     : String(authInput.signingKeyFile);
 
+  // 部署方后台（/__admin）：token 可显式配置，或首次启动自动生成到 group.json 同目录的 admin-token（0600）。
+  const adminToken = input.adminToken === undefined || input.adminToken === null || input.adminToken === ''
+    ? undefined
+    : String(input.adminToken);
+  const adminTokenFile = input.adminTokenFile === undefined || input.adminTokenFile === null || input.adminTokenFile === ''
+    ? undefined
+    : String(input.adminTokenFile);
+
   return {
     file,
     mobilePort,
@@ -296,6 +304,8 @@ function normalizeGroup(raw, mode, dev = false) {
       maxAttemptsPerMinutePerIp: maxAuthAttempts,
       signingKeyFile,
     },
+    adminToken,
+    adminTokenFile,
   };
 }
 

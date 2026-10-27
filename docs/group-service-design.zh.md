@@ -249,5 +249,9 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   主机确认后写入设备记录并自动 `device.sync`；relay 边缘对 pair 路径放行（一次性 secret + 主机确认 + 主机侧限速）。
   端到端测试覆盖：注册 → v2 QR 解析 → 边缘配对 → 设备同步 → challenge/token → 隧道访问 → Host 不一致 421 →
   无 cookie 401 → 撤销后 401；`npm test` **184/184**。
+- **2026-10-27：切片 7 已落地（部署方后台）**——relay 控制面提供 `/__admin/` 单页后台 + JSON API
+  （状态 / 邀请码创建·列出·撤销 / 主机列出·撤销 / 在线隧道数）；`Authorization: Bearer` admin token
+  （显式配置或首次启动生成 `<group.json 目录>/admin-token` 0600，`relay.js admin-token` 可查看）；
+  失败限速、页面无外部资源/无数据、CSP 收紧；`npm test` **188/188**。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。
