@@ -22,6 +22,7 @@ export const paths = {
   devTlsCert: () => join(remoteDir(), 'dev-tls', 'cert.pem'),
   devTlsKey: () => join(remoteDir(), 'dev-tls', 'key.pem'),
   pushTokens: () => join(remoteDir(), 'push-tokens.json'),
+  groupRegistration: () => join(remoteDir(), 'group.json'),
   log: () => join(remoteDir(), 'plugin.log'),
 };
 
