@@ -15,6 +15,10 @@
 #
 # 环境变量模板：cp .env.group.example .env.group（按部署修改端口/镜像/日志）
 #
+# 与宿主机 nginx 共存：group 模式由 relay 自己终止手机 TLS，nginx 不需要做 TLS 终止/证书；
+#   用 nginx/group-nginx-stream.conf 把 443/8443 L4 转发到容器映射端口，并把下面的
+#   RELAY_GROUP_EDGE_BIND / RELAY_GROUP_CONTROL_BIND 设为 127.0.0.1。
+#
 # 构建 + 启动：
 #   docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 #   # 本机 Apple Silicon、服务器 x86_64：
@@ -41,12 +45,13 @@ services:
     command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]
     restart: unless-stopped
     ports:
-      # 手机访问（relay 边缘终止 TLS）。生产可映射 443；有宿主机 nginx 时用 iptables 转发或直接映射。
-      - "${RELAY_GROUP_EDGE_PORT_HOST:-1443}:443"
-      # 控制面：主机隧道 + 自助注册 + /__admin 后台（建议只对可信网络/防火墙开放）
-      - "${RELAY_GROUP_CONTROL_PORT_HOST:-18443}:8443"
-      # 80：/healthz + 301（不承载业务）
-      - "${RELAY_GROUP_HTTP_PORT_HOST:-18080}:80"
+      # 手机访问（relay 边缘终止 TLS）。默认对公网；若宿主机 nginx 前置，把 BIND 设为 127.0.0.1。
+      - "${RELAY_GROUP_EDGE_BIND:-0.0.0.0}:${RELAY_GROUP_EDGE_PORT_HOST:-1443}:443"
+      # 控制面：主机隧道 + 自助注册 + /__admin 后台。主机需要从公网连这个端口；
+      # 有 nginx 前置时同样把 BIND 设为 127.0.0.1（由 nginx L4 转发 8443）。
+      - "${RELAY_GROUP_CONTROL_BIND:-0.0.0.0}:${RELAY_GROUP_CONTROL_PORT_HOST:-18443}:8443"
+      # 80：/healthz + 301（不承载业务）；默认只绑回环，健康检查/本机排障用
+      - "${RELAY_GROUP_HTTP_BIND:-127.0.0.1}:${RELAY_GROUP_HTTP_PORT_HOST:-18080}:80"
     environment:
       RELAY_MODE: group
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}

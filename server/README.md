@@ -32,7 +32,8 @@ server/
 ├── .env.group.example            # group：复制为 .env.group（配合 --env-file）
 ├── group/relay.group.example.json # group：复制为 data/config/relay.json
 ├── nginx/
-│   ├── host-nginx-stream.conf    # 已有宿主机 nginx：443/8443 L4 透传
+│   ├── host-nginx-stream.conf    # classic：已有宿主机 nginx 的 443/8443 L4 透传
+│   ├── group-nginx-stream.conf   # group：宿主机 nginx 的 443/8443 L4 转发（relay 自己终止 TLS）
 │   └── container-nginx.conf      # 专用服务器：compose 内 nginx
 ├── data/                         # git ignore：tokens、relay 配置、证书
 └── certs/                        # git ignore：可选挂载证书
@@ -598,8 +599,17 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
    ```
 
-   默认端口：宿主 `1443`（edge，手机访问）、`18443`（控制面：主机隧道+注册+后台）、`18080`（/healthz）。
-   建议控制面仅对可信网络开放（防火墙/安全组），edge 端口对公网。
+   默认端口：宿主 `1443`（edge，手机访问）、`18443`（控制面：主机隧道+注册+后台）、`18080`（/healthz，默认只绑回环）。
+   edge 和控制面需要公网可达（手机/主机从外网连）；控制面同时承载 `/__admin`，靠 admin token + 限速保护，
+   如条件允许可用防火墙/安全组限制来源，或按下一小节用 nginx 统一入口。
+
+   **与已有 nginx 共存**：group 模式不需要 nginx 做 TLS 终止/证书（relay 自己终止手机 TLS）。
+   若 443/8443 已被 nginx 占用，用 [`nginx/group-nginx-stream.conf`](nginx/group-nginx-stream.conf)
+   把 443/8443 按 L4 转发到容器映射端口（按 SNI 分流、不解密），并在 `.env.group` 里把
+   `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`。
+
+   **备份**：`data/` 里保存了 `group.json`（主机/邀请码）、`signing-key.pem`（设备会话 token 签名私钥）、
+   `admin-token`（后台令牌）和证书；迁移/升级前备份整个 `data/`，其中 `signing-key.pem` 和 `admin-token` 不要泄露。
 
 4. **后台**：浏览器打开 `https://<relayDomain>:18443/__admin/`，粘贴 admin token。
    token 首次启动自动生成在 `data/admin-token`（0600），也可显式设 `RELAY_ADMIN_TOKEN`：
