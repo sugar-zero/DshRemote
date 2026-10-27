@@ -192,3 +192,51 @@ export const ADMIN_ROUTES = Object.freeze({
   revokeDevice: `${ADMIN_BASE}/devices/:id/revoke`,
   audit: `${ADMIN_BASE}/audit`,
 });
+
+// ---------------------------------------------------------------------------
+// 群体服务版（A 模式，2026-10-27 起）
+// ---------------------------------------------------------------------------
+// 与 main 的 B2 协议并存：main 用配对 URI v1 + 设备 mTLS；群体版用服务端
+// 自助注册（邀请码 → 服务端分配 hostId/hostToken）+ 短时 token（QR v2）。
+// 常量由 relay / host plugin / App 共用；App 内部需保持等价实现。
+
+/** 群体服务版注册协议版本。 */
+export const GROUP_PROTOCOL_VERSION = 1;
+
+/** relay 控制面上的自助注册路径（POST JSON）。 */
+export const GROUP_REGISTER_PATH = '/__group/register';
+
+/** 群体版默认手机访问端口（部署方可配置；relay 边缘终止 TLS 后使用）。 */
+export const GROUP_DEFAULT_MOBILE_PORT = 11443;
+
+/** 注册请求体上限（字节）。 */
+export const GROUP_REGISTER_BODY_LIMIT_BYTES = 8 * 1024;
+
+/** 注册错误码（relay 返回 / host plugin 提示共用）。 */
+export const GROUP_REGISTER_ERROR = Object.freeze({
+  INVALID_REQUEST: 'invalid_request',
+  INVALID_INVITE: 'invalid_invite',
+  INVITE_EXPIRED: 'invite_expired',
+  INVITE_EXHAUSTED: 'invite_exhausted',
+  RATE_LIMITED: 'rate_limited',
+  REGISTRATION_DISABLED: 'registration_disabled',
+  HOST_LIMIT: 'host_limit',
+});
+
+const GROUP_HOST_ID_RE = /^h_[a-z0-9]{6,30}$/;
+
+/** 服务端管理的 hostId 生成（DNS 首标签安全、大小写/易混字符已排除）。 */
+export function generateGroupHostId() {
+  return `h_${base32Encode(randomBytes(6), 10).toLowerCase()}`;
+}
+
+/** 校验服务端分配的 hostId 形态。 */
+export function isGroupHostId(raw) {
+  return typeof raw === 'string' && GROUP_HOST_ID_RE.test(raw);
+}
+
+/** 友好名称规范化：去掉控制字符、trim、最长 64 字符；空串表示未命名。 */
+export function normalizeGroupHostName(raw) {
+  const value = String(raw ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
+  return value.slice(0, 64);
+}

@@ -14,12 +14,19 @@
 import { readFileSync } from 'node:fs';
 import { dirname, isAbsolute, resolve } from 'node:path';
 import process from 'node:process';
+import { GROUP_REGISTER_PATH } from 'dsh-remote-protocol';
 import {
   createConsoleLogger,
   createHostToken,
+  createInvite,
+  defaultGroupFile,
   defaultTokensFile,
+  listHosts,
   listHostTokens,
+  listInvites,
+  revokeHost,
   revokeHostToken,
+  revokeInvite,
   startRelay,
 } from '../index.js';
 
@@ -34,52 +41,71 @@ const FLAGS_WITH_VALUE = new Set([
   'cert-file',
   'key-file',
   'log-level',
+  // 群体服务版（A 模式）
+  'mode',
+  'group-file',
+  'note',
+  'max-uses',
+  'expires-in',
 ]);
 
-const HELP = `dsh-remote-relay — 自托管盲中继 (DSH remote access, 方案 B2)
+const HELP = `dsh-remote-relay — 自托管中继 (DSH remote access)
 
 用法:
-  node bin/relay.js [options]                   启动 relay（443 透传 / 80 跳转 / 8443 控制面）
-  node bin/relay.js token create <hostId>       为 hostId 签发 token（轮换同一 hostId 会覆盖旧 token）
-  node bin/relay.js token list                  列出已签发 host（token 掩码显示）
-  node bin/relay.js token revoke <hostId>       吊销 token
+  node bin/relay.js [options]                   启动 relay（classic：443 透传 / 80 跳转 / 8443 控制面）
+  node bin/relay.js --mode group [options]      启动 relay（group 群体服务版：控制面 + 自助注册）
+  node bin/relay.js token create <hostId>       classic：为 hostId 签发 token（轮换会覆盖旧 token）
+  node bin/relay.js token list                   classic：列出已签发 host（token 掩码）
+  node bin/relay.js token revoke <hostId>        classic：吊销 token
+  node bin/relay.js invite create [options]     group：生成自助注册邀请码（只打印一次）
+  node bin/relay.js invite list                 group：列出邀请（不含明文 code）
+  node bin/relay.js invite revoke <id|code>     group：撤销邀请
+  node bin/relay.js host list                   group：列出已注册主机
+  node bin/relay.js host revoke <hostId>        group：撤销主机（吊销其 token）
   node bin/relay.js --help                      显示本帮助
 
 启动参数:
-  --config <path>        JSON 配置文件（tokensFile/certFile 等相对路径基于该文件目录解析）
+  --config <path>        JSON 配置文件（tokensFile/group.file/certFile 等相对路径基于该文件目录解析）
   --dev                  开发/测试模式：无 TLS 时允许 ws:// 控制面（绝不能用于公网）
+  --mode <mode>          classic（默认，B2 盲中继）| group（群体服务版 A 模式）
   --domain <domain>      根域名，如 relay.example.com（必填；<hostId>.<domain> 走 DNS 泛解析）
-  --data-port <port>     TLS 透传端口（默认 443）
-  --control-port <port>  控制面端口（默认 8443）
+  --data-port <port>     TLS 透传端口（默认 443；group 模式后续由边缘 TLS 接管）
+  --control-port <port>  控制面端口（默认 8443；group 注册接口也在此端口）
   --http-port <port>     HTTP 301 端口（默认 80）
   --data-host <addr>     监听地址（默认 0.0.0.0）
-  --tokens-file <path>   host token 文件（默认 <config 目录>/tokens.json）
+  --tokens-file <path>   classic：host token 文件（默认 <config 目录>/tokens.json）
+  --group-file <path>    group：注册状态文件（默认 <config 目录>/group.json）
   --cert-file <path>     控制面 TLS 证书链（生产必填，除非 --dev）
   --key-file <path>      控制面 TLS 私钥（生产必填，除非 --dev）
   --log-level <level>    debug | info | warn | error | silent（默认 info）
-  --json                 token create/list 输出 JSON（便于脚本解析）
+  --json                 token/invite/host 命令输出 JSON（便于脚本解析）
   -h, --help             显示帮助
 
+邀请码参数（invite create）:
+  --note <text>          备注（最长 120 字符）
+  --max-uses <n>         可用次数（默认 1，最大 1000）
+  --expires-in <dur>     有效期，如 30m / 24h / 7d / 0（0 = 永不过期；默认 7d）
+
 环境变量（覆盖 config 文件，被命令行参数覆盖）:
-  RELAY_DOMAIN RELAY_DEV RELAY_DATA_PORT RELAY_CONTROL_PORT RELAY_HTTP_PORT
-  RELAY_DATA_HOST RELAY_TOKENS_FILE RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
+  RELAY_DOMAIN RELAY_MODE RELAY_DEV RELAY_DATA_PORT RELAY_CONTROL_PORT RELAY_HTTP_PORT
+  RELAY_DATA_HOST RELAY_TOKENS_FILE RELAY_GROUP_FILE RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
   RELAY_PUSH_ENDPOINT RELAY_PUSH_ACCESS_TOKEN RELAY_PUSH_TITLE RELAY_PUSH_BODY
 
 示例:
-  # 生产（控制面用 relay.example.com 的 Let's Encrypt 证书，端口 80 留给 301）
+  # classic 生产（控制面用 relay.example.com 的 Let's Encrypt 证书，端口 80 留给 301）
   node bin/relay.js --config /etc/dsh-relay/relay.json
 
-  # 本地开发（ws:// 控制面 + 临时端口 0）
-  node bin/relay.js --dev --domain relay.test --data-port 0 --control-port 0 --http-port 0
+  # group 本地开发（ws:// 控制面 + 临时端口 0）
+  node bin/relay.js --mode group --dev --domain relay.test --control-port 0 --group-file ./group.json
 
-  # 签发主机 token（只打印一次；请写入主机插件配置，勿进日志/仓库）
-  HOST_ID=h_ab12cd34
-  node bin/relay.js token create "$HOST_ID" --config /etc/dsh-relay/relay.json
+  # group：发邀请码（只打印一次；只给要加入的群成员）
+  node bin/relay.js invite create --note "朋友A" --expires-in 7d --config /etc/dsh-relay/relay.json
 
 安全说明:
-  - 中继不终止 TLS、不持有主机子域证书私钥，看不到明文；日志不记录内容/凭据。
-  - token create 只在 stdout 打印一次明文 token；tokens.json 权限 0600。
-  - 已连接的主机不会因 CLI revoke 立即断开；吊销在其下次重连时生效。
+  - classic：中继不终止 TLS、不持有主机子域证书私钥，看不到明文；日志不记录内容/凭据。
+  - group：A 模式下 relay 终止 TLS（部署方可见明文，风险与责任由部署方承担）；
+    注册接口只接受有效邀请码，group.json 只存 invite/token 的 SHA-256（0600）。
+  - token create / invite create 只在 stdout 打印一次明文，请立即交给主机/群成员。
 `;
 
 /**
@@ -160,6 +186,9 @@ function readConfigFile(path) {
   /** @type {Record<string, any>} */
   const config = { ...parsed };
   if (config.tokensFile) config.tokensFile = resolveFromConfigDir(config.tokensFile);
+  if (config.group && typeof config.group === 'object' && typeof config.group.file === 'string' && config.group.file !== '') {
+    config.group = { ...config.group, file: resolveFromConfigDir(config.group.file) };
+  }
   if (config.tls && typeof config.tls === 'object') {
     config.tls = { ...config.tls };
     if (config.tls.certFile) config.tls.certFile = resolveFromConfigDir(config.tls.certFile);
@@ -178,6 +207,11 @@ function applyEnv(config) {
   if (env.RELAY_HTTP_PORT) config.httpPort = env.RELAY_HTTP_PORT;
   if (env.RELAY_DATA_HOST) config.dataHost = env.RELAY_DATA_HOST;
   if (env.RELAY_TOKENS_FILE) config.tokensFile = env.RELAY_TOKENS_FILE;
+  if (env.RELAY_GROUP_FILE) {
+    config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
+    config.group.file = env.RELAY_GROUP_FILE;
+  }
+  if (env.RELAY_MODE) config.mode = env.RELAY_MODE;
   if (env.RELAY_LOG_LEVEL) config.logLevel = env.RELAY_LOG_LEVEL;
   if (env.RELAY_PUSH_ENDPOINT || env.RELAY_PUSH_ACCESS_TOKEN || env.RELAY_PUSH_TITLE || env.RELAY_PUSH_BODY) {
     config.push = { ...(config.push && typeof config.push === 'object' ? config.push : {}) };
@@ -202,6 +236,11 @@ function applyFlags(config, flags) {
   if (flags['http-port'] !== undefined) config.httpPort = flags['http-port'];
   if (flags['data-host'] !== undefined) config.dataHost = flags['data-host'];
   if (flags['tokens-file'] !== undefined) config.tokensFile = flags['tokens-file'];
+  if (flags['group-file'] !== undefined) {
+    config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
+    config.group.file = flags['group-file'];
+  }
+  if (flags.mode !== undefined) config.mode = flags.mode;
   if (flags['log-level'] !== undefined) config.logLevel = flags['log-level'];
   if (flags['cert-file'] !== undefined || flags['key-file'] !== undefined) {
     config.tls = { ...(config.tls ?? {}) };
@@ -229,6 +268,9 @@ function buildConfig(flags) {
 
   if (!config.tokensFile) config.tokensFile = defaultTokensFile(configPath);
   config.tokensFile = resolve(process.cwd(), config.tokensFile);
+  if (!config.group || typeof config.group !== 'object' || Array.isArray(config.group)) config.group = {};
+  if (!config.group.file) config.group.file = defaultGroupFile(configPath);
+  config.group.file = resolve(process.cwd(), config.group.file);
   if (config.tls && typeof config.tls === 'object' && config.tls.cert === undefined) {
     if (config.tls.certFile) config.tls.certFile = resolve(process.cwd(), config.tls.certFile);
     if (config.tls.keyFile) config.tls.keyFile = resolve(process.cwd(), config.tls.keyFile);
@@ -301,6 +343,137 @@ async function runTokenCommand(flags, positionals) {
   }
 }
 
+/**
+ * 解析时长（30m / 24h / 7d / 0）；返回毫秒，0 = 永不过期。
+ * @param {unknown} raw
+ */
+function parseDurationMs(raw) {
+  const value = String(raw ?? '').trim().toLowerCase();
+  if (value === '') throw new Error('--expires-in 需要时长，如 7d / 24h / 0');
+  if (value === '0') return 0;
+  const match = /^(\d+)([mhd])$/.exec(value);
+  if (!match) throw new Error(`无法解析时长 ${JSON.stringify(String(raw))}（示例：30m / 24h / 7d / 0）`);
+  const amount = Number(match[1]);
+  const unit = match[2];
+  const factor = unit === 'm' ? 60_000 : unit === 'h' ? 3_600_000 : 86_400_000;
+  return amount * factor;
+}
+
+/** @param {Record<string, any>} flags */
+function resolveGroupFileFromFlags(flags) {
+  const { config } = buildConfig(flags);
+  return config.group.file;
+}
+
+/** @param {Record<string, any>} flags @param {string[]} positionals */
+async function runInviteCommand(flags, positionals) {
+  const action = positionals[1];
+  const json = flags.json === true;
+  const file = resolveGroupFileFromFlags(flags);
+
+  if (!['create', 'list', 'revoke'].includes(action)) {
+    throw new Error(`unknown invite command ${JSON.stringify(action ?? '')}; expected "invite create|list|revoke"`);
+  }
+
+  if (action === 'create') {
+    const note = typeof flags.note === 'string' ? flags.note : '';
+    const maxUses = flags['max-uses'] === undefined ? undefined : Number(flags['max-uses']);
+    const expiresInMs = flags['expires-in'] === undefined ? undefined : parseDurationMs(flags['expires-in']);
+    const invite = createInvite(file, { note, maxUses, expiresInMs });
+    if (json) {
+      console.log(JSON.stringify({ ...invite, groupFile: file }));
+      return;
+    }
+    console.log(`Invite ID  : ${invite.inviteId}`);
+    console.log(`Invite code: ${invite.code}`);
+    if (invite.note) console.log(`Note       : ${invite.note}`);
+    console.log(`Max uses   : ${invite.maxUses}`);
+    console.log(`Expires    : ${invite.expiresAt ? new Date(invite.expiresAt).toISOString() : 'never'}`);
+    console.log('');
+    console.log('把这个邀请码交给要加入的群成员（只显示一次；不要发到公开渠道）。');
+    console.log(`Group file : ${file} (0600)`);
+    return;
+  }
+
+  if (action === 'list') {
+    const invites = listInvites(file);
+    if (json) {
+      console.log(JSON.stringify({ groupFile: file, invites }, null, 2));
+      return;
+    }
+    if (invites.length === 0) {
+      console.log(`No invites in ${file}`);
+      return;
+    }
+    console.log('inviteId              used  max  expires                note');
+    for (const invite of invites) {
+      const expires = invite.expiresAt ? new Date(invite.expiresAt).toISOString() : 'never';
+      const status = invite.revoked ? 'REVOKED' : invite.expired ? 'EXPIRED' : '';
+      console.log(
+        `${invite.inviteId.padEnd(21)} ${String(invite.used).padEnd(5)} ${String(invite.maxUses).padEnd(4)} ${expires.padEnd(22)} ${invite.note}${status ? ` [${status}]` : ''}`,
+      );
+    }
+    return;
+  }
+
+  const key = positionals[2];
+  if (key === undefined || key === '') throw new Error('invite revoke requires <inviteId|code>');
+  const revoked = revokeInvite(file, key);
+  if (json) {
+    console.log(JSON.stringify({ revoked, inviteIdOrCode: key, groupFile: file }));
+    if (!revoked) process.exitCode = 1;
+  } else if (revoked) {
+    console.log(`Revoked invite ${key}.`);
+  } else {
+    console.error(`No invite found for ${JSON.stringify(key)} in ${file}`);
+    process.exitCode = 1;
+  }
+}
+
+/** @param {Record<string, any>} flags @param {string[]} positionals */
+async function runHostCommand(flags, positionals) {
+  const action = positionals[1];
+  const json = flags.json === true;
+  const file = resolveGroupFileFromFlags(flags);
+
+  if (!['list', 'revoke'].includes(action)) {
+    throw new Error(`unknown host command ${JSON.stringify(action ?? '')}; expected "host list|revoke <hostId>"`);
+  }
+
+  if (action === 'list') {
+    const hosts = listHosts(file);
+    if (json) {
+      console.log(JSON.stringify({ groupFile: file, hosts }, null, 2));
+      return;
+    }
+    if (hosts.length === 0) {
+      console.log(`No hosts in ${file}`);
+      return;
+    }
+    console.log('hostId                  name                     port    created              status');
+    for (const host of hosts) {
+      const created = host.createdAt ? new Date(host.createdAt).toISOString() : '-';
+      const status = host.revoked ? 'REVOKED' : 'active';
+      console.log(`${host.hostId.padEnd(24)} ${String(host.hostName || '-').padEnd(24)} ${String(host.mobilePort).padEnd(7)} ${created.padEnd(20)} ${status}`);
+    }
+    return;
+  }
+
+  const hostId = positionals[2];
+  if (hostId === undefined || hostId === '') throw new Error('host revoke requires <hostId>');
+  const revoked = revokeHost(file, hostId);
+  if (json) {
+    console.log(JSON.stringify({ hostId: String(hostId).trim().toLowerCase(), revoked, groupFile: file }));
+    if (!revoked) process.exitCode = 1;
+  } else if (revoked) {
+    console.log(`Revoked host "${String(hostId).trim().toLowerCase()}".`);
+    console.log('已建立/后续连接在该主机 token 失效后拒绝（隧道接入后即时断链；P1 切片暂无隧道）。');
+  } else {
+    console.error(`No host found for ${JSON.stringify(hostId)} in ${file}`);
+    process.exitCode = 1;
+  }
+}
+
 /** @param {Record<string, any>} flags @param {string[]} positionals */
 async function runRelay(flags) {
   const { config } = buildConfig(flags);
@@ -312,6 +485,10 @@ async function runRelay(flags) {
   }
   logger.info(`health check: http://127.0.0.1:${relay.httpPort}/healthz`);
   logger.info(`tokens file: ${config.tokensFile}`);
+  if (config.mode === 'group') {
+    logger.info(`group mode: POST ${GROUP_REGISTER_PATH} on control plane :${relay.controlPort}; group file: ${config.group.file}`);
+    if (config.group.mobilePort) logger.info(`group mode: mobile port (下发到主机二维码) = ${config.group.mobilePort}`);
+  }
 
   let shuttingDown = false;
   const shutdown = async (signal) => {
@@ -341,6 +518,14 @@ async function main(argv) {
   }
   if (positionals[0] === 'token') {
     await runTokenCommand(flags, positionals);
+    return;
+  }
+  if (positionals[0] === 'invite') {
+    await runInviteCommand(flags, positionals);
+    return;
+  }
+  if (positionals[0] === 'host') {
+    await runHostCommand(flags, positionals);
     return;
   }
   if (positionals.length > 0) {
