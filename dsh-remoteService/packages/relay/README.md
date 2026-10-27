@@ -403,6 +403,26 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 - 已验证（`test/group-tunnel.test.js`）：通配证书握手、SNI→hostId 路由、8MB 大帧回显逐字节一致、
   传输期间心跳不断（主机不被踢）、主机断线后边缘流清理。
 
-**P1 切片边界**：已落「注册/开通」+「边缘 TLS 终止 + 出站隧道骨架」。**设备鉴权（短时 token +
-relay 签名断言）、主机插件侧 group 接入（本地明文代理 + 设置页）、QR v2** 在下一片接入；
-在此之前 `group` 模式的手机数据面不能用于生产。
+### 设备会话鉴权（P1 切片 3）
+
+生产默认（`allowUnauthenticated:false`）下，边缘连接必须先拿到会话：
+
+1. **主机同步设备**：主机配对设备后经控制面发 `device.sync {devices:[{deviceId, publicKey}]}`
+   （P-256 未压缩点 base64url；主机重连后全量重同步），`device.revoke {deviceId}` 撤销单台。
+2. **设备换 token**（都走 `<hostId>.<domain>` 边缘 HTTPS）：
+   - `POST /__group/auth/challenge {deviceId}` → `{nonce, expiresAt}`（一次性、默认 2 分钟）；
+   - 设备私钥对 `hostId\ndeviceId\nnonce` 做 ECDSA-SHA256 签名 →
+     `POST /__group/auth/token {deviceId, nonce, signature}` → `{token, expiresAt}` +
+     `Set-Cookie: __Host-dsh_session=…; Path=/; Secure; HttpOnly; SameSite=Strict`（默认 15 分钟）。
+3. **边缘校验**：业务请求带 cookie；relay 校验 token（Ed25519 签名 / 过期 / hostId / 设备未撤销）后才开隧道，
+   未通过直接 401。
+4. **主机逐请求复验**：注册响应里的 `tokenPublicKey`（PEM）可离线校验 token（协议库
+   `verifyGroupSessionToken`），主机无需回连 relay；设备撤销以 host 设备表为权威源。
+
+`group.auth` 配置：`tokenTtlMs`（5s–2h，默认 15min）、`challengeTtlMs`（10s–10min，默认 2min）、
+`maxAttemptsPerMinutePerIp`（默认 30）、`signingKeyFile`（默认 `<group.json 目录>/signing-key.pem`，
+Ed25519、0600、首次启动自动生成；**私钥只在 relay，主机只拿公钥**）。
+
+**P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」。
+**主机插件侧 group 接入（注册客户端 / 本地明文代理 / 逐请求复验 / 设置页）、QR v2、App token 流程**
+在下一片接入；在此之前 `group` 模式不能用于生产（`allowUnauthenticated` 仅测试）。

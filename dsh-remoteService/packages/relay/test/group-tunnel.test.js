@@ -174,6 +174,13 @@ function edgeEcho({ port, servername, ca, payload, timeoutMs = 15_000 }) {
   });
 }
 
+/** 构造一段带合法 HTTP 请求头的探测 payload（relay 边缘会先解析头，再原样转发给主机）。 */
+function httpProbe(body) {
+  const payload = Buffer.isBuffer(body) ? body : Buffer.from(String(body), 'utf8');
+  const head = Buffer.from('GET /probe HTTP/1.1\r\nHost: relay.test\r\nConnection: close\r\n\r\n', 'utf8');
+  return Buffer.concat([head, payload]);
+}
+
 /** 边缘 TLS 客户端：读一段 HTTP 响应文本（用于错误路径断言）。 */
 function edgeHttp(port, servername, ca) {
   return new Promise((resolve, reject) => {
@@ -230,26 +237,27 @@ test('edge TLS → 隧道：小消息 + 8MB 大帧回显，期间心跳不断（
     host.id = registration.hostId;
     fakeHost = await startEchoHost(context.relay, registration.hostId, registration.hostToken);
 
-    // 小消息往返
-    const small = await edgeEcho({
+    // 小消息往返（HTTP 头 + 业务字节，主机原样回显）
+    const small = httpProbe('hello-edge');
+    const smallEcho = await edgeEcho({
       port: context.relay.edgePort,
       servername: `${registration.hostId}.relay.test`,
       ca: context.cert.cert,
-      payload: Buffer.from('hello-edge', 'utf8'),
+      payload: small,
     });
-    assert.equal(small.toString('utf8'), 'hello-edge');
+    assert.equal(Buffer.compare(smallEcho, small), 0, 'edge must forward the request head and body unchanged');
 
     // 大帧回显（模拟会话历史快照级别）：8MB 随机字节，逐字节校验。
-    const big = randomBytes(8 * 1024 * 1024);
+    const bigPayload = httpProbe(randomBytes(8 * 1024 * 1024));
     const echoed = await edgeEcho({
       port: context.relay.edgePort,
       servername: `${registration.hostId}.relay.test`,
       ca: context.cert.cert,
-      payload: big,
+      payload: bigPayload,
       timeoutMs: 30_000,
     });
-    assert.equal(echoed.length, big.length, 'all bytes must round-trip');
-    assert.equal(Buffer.compare(echoed, big), 0, 'echo payload must be byte-identical');
+    assert.equal(echoed.length, bigPayload.length, 'all bytes must round-trip');
+    assert.equal(Buffer.compare(echoed, bigPayload), 0, 'echo payload must be byte-identical');
 
     // 心跳未断：主机仍在在线列表里（若大帧阻塞控制面，host 会被 heartbeat timeout 踢掉）。
     assert.deepEqual(context.relay.onlineHostIds(), [registration.hostId]);
@@ -261,7 +269,7 @@ test('edge TLS → 隧道：小消息 + 8MB 大帧回显，期间心跳不断（
   }
 });
 
-test('edge 错误路径：未知 SNI 421、离线主机 502、未认证模式 503', async () => {
+test('edge 错误路径：未知 SNI 421、离线主机 502、未认证请求 401', async () => {
   const context = await startEdgeRelay();
   try {
     // 非 <hostId>.<domain> 的 SNI → 421（没有可路由的 hostId）
@@ -277,12 +285,17 @@ test('edge 错误路径：未知 SNI 421、离线主机 502、未认证模式 50
     await context.cleanup();
   }
 
-  // dev 但未认证被禁用（生产默认）：明确 503，而不是放行
+  // 生产默认（未认证关闭）：主机在线但请求没有会话 cookie → 401，而不是放行
   const strict = await startEdgeRelay({ group: { edge: { allowUnauthenticated: false } } });
+  let strictHost;
   try {
-    const rejected = await edgeHttp(strict.relay.edgePort, 'h_offline1234.relay.test', strict.cert.cert);
-    assert.match(rejected, /^HTTP\/1\.1 503 /);
+    const invite = createInvite(strict.file, {});
+    const registration = registerHost({ file: strict.file, inviteCode: invite.code, hostName: 'Strict Host' });
+    strictHost = await startEchoHost(strict.relay, registration.hostId, registration.hostToken);
+    const rejected = await edgeHttp(strict.relay.edgePort, `${registration.hostId}.relay.test`, strict.cert.cert);
+    assert.match(rejected, /^HTTP\/1\.1 401 /);
   } finally {
+    strictHost?.stop();
     await strict.cleanup();
   }
 });
@@ -293,13 +306,14 @@ test('主机断线后边缘连接被清理，新连接得到 502', async () => {
     const invite = createInvite(context.file, {});
     const registration = registerHost({ file: context.file, inviteCode: invite.code, hostName: 'Tunnel Host' });
     const fakeHost = await startEchoHost(context.relay, registration.hostId, registration.hostToken);
+    const probe = httpProbe('before-disconnect');
     const ok = await edgeEcho({
       port: context.relay.edgePort,
       servername: `${registration.hostId}.relay.test`,
       ca: context.cert.cert,
-      payload: Buffer.from('before-disconnect'),
+      payload: probe,
     });
-    assert.equal(ok.toString('utf8'), 'before-disconnect');
+    assert.equal(Buffer.compare(ok, probe), 0);
 
     fakeHost.stop();
     // 等 relay 把 host 标记离线（control close 立即生效）

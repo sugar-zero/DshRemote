@@ -20,6 +20,8 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   CONTROL_PATH,
   FRAME_TYPE,
+  GROUP_AUTH_CHALLENGE_PATH,
+  GROUP_AUTH_TOKEN_PATH,
   GROUP_EDGE_STREAM_KIND,
   GROUP_REGISTER_PATH,
   PROTOCOL_VERSION,
@@ -34,6 +36,8 @@ import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
 import { createPushService } from './push.js';
 import { GroupRegistrationService, verifyHostToken } from './group.js';
+import { GroupAuthError, GroupAuthService } from './group-auth.js';
+import { parseHttpHead, readHttpHead, readHttpJsonBody, writeHttpResponse } from './edge-http.js';
 
 /** 控制面单帧上限（流帧由主机侧切成合理大小；给 32 MiB 余量）。 */
 const MAX_CONTROL_PAYLOAD = 32 * 1024 * 1024;
@@ -108,8 +112,23 @@ class Relay {
      * 群体服务版（A 模式）注册/开通服务；classic 模式下为 null（main 行为不变）。
      * @type {GroupRegistrationService | null}
      */
+    /**
+     * 群体版设备会话鉴权（仅 group + edge 时启用）：短时 token、challenge、设备注册表。
+     * @type {GroupAuthService | null}
+     */
+    this.groupAuth = config.mode === 'group' && config.group.edge.enabled
+      ? new GroupAuthService({
+        groupFile: config.group.file,
+        ...config.group.auth,
+        logger: config.logger,
+      })
+      : null;
     this.groupService = config.mode === 'group'
-      ? new GroupRegistrationService({ ...config.group, logger: config.logger })
+      ? new GroupRegistrationService({
+        ...config.group,
+        logger: config.logger,
+        tokenPublicKey: this.groupAuth?.publicKey,
+      })
       : null;
 
     /** @type {Map<string, any>} hostId → host */
@@ -418,6 +437,12 @@ class Relay {
     switch (msg.t) {
       case RELAY_MSG.HOST_HEARTBEAT:
         return; // lastSeenAt 已刷新
+      case RELAY_MSG.DEVICE_SYNC:
+        this.handleDeviceSync(conn.host, msg);
+        return;
+      case RELAY_MSG.DEVICE_REVOKE:
+        this.handleDeviceRevoke(conn.host, msg);
+        return;
       case RELAY_MSG.HOST_OPENED:
         this.handleHostOpened(conn.host, msg);
         return;
@@ -904,6 +929,7 @@ class Relay {
   /** @param {any} host @param {string} reason */
   removeHost(host, reason) {
     if (this.hosts.get(host.hostId) === host) this.hosts.delete(host.hostId);
+    this.groupAuth?.clearHost(host.hostId);
     for (const stream of [...host.streams.values()]) {
       stream.finished = true;
       if (stream.openTimer) clearTimeout(stream.openTimer);
@@ -992,7 +1018,10 @@ class Relay {
     });
     socket.on('error', (err) => this.logger.debug(`edge: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
     const sni = typeof socket.servername === 'string' && socket.servername !== '' ? socket.servername : null;
-    this.routeEdgeConnection(socket, sni);
+    void this.handleEdgeSession(socket, sni).catch((err) => {
+      this.logger.debug(`edge: session error from ${formatPeer(socket)}: ${err && err.message ? err.message : String(err)}`);
+      if (!socket.destroyed) socket.destroy();
+    });
   }
 
   /**
@@ -1017,11 +1046,11 @@ class Relay {
   }
 
   /**
-   * 边缘 TLS 连接 → 控制面隧道 stream。
+   * 边缘会话：读 HTTP 头 → 鉴权接口 /（cookie 校验后）开隧道到主机。
    * @param {import('node:tls').TLSSocket} socket
    * @param {string | null} sni
    */
-  routeEdgeConnection(socket, sni) {
+  async handleEdgeSession(socket, sni) {
     if (socket.destroyed) return;
     const remote = formatPeer(socket);
     const hostId = this.resolveHostIdFromSni(sni);
@@ -1030,31 +1059,105 @@ class Relay {
       this.rejectEdgeHttp(socket, 421, 'no_route');
       return;
     }
-    if (!this.config.group.edge.allowUnauthenticated) {
-      // 设备鉴权尚未接入（下一片）：明确拒绝而不是放行，避免生产误用。
-      this.logger.warn(`edge: rejecting ${remote}: device authentication not implemented yet (dev-only allowUnauthenticated)`);
-      this.rejectEdgeHttp(socket, 503, 'edge_authentication_unavailable');
-      return;
-    }
     const host = this.hosts.get(hostId);
     if (!host || !isWsOpen(host.ws)) {
       this.logger.debug(`edge: dropping ${remote}: host "${hostId}" is offline (SNI ${JSON.stringify(sni)})`);
       this.rejectEdgeHttp(socket, 502, 'host_offline');
       return;
     }
-    socket.pause();
+
+    let rawHead;
+    let rest;
+    let parsedHead;
+    try {
+      ({ head: rawHead, rest } = await readHttpHead(socket, { timeoutMs: this.config.timings.openTimeoutMs }));
+      parsedHead = parseHttpHead(rawHead);
+    } catch (err) {
+      this.logger.debug(`edge: bad HTTP request from ${remote}: ${err && err.message ? err.message : String(err)}`);
+      this.rejectEdgeHttp(socket, 400, 'bad_request');
+      return;
+    }
+    if (this.closed || socket.destroyed) return;
+    if (!this.hosts.has(hostId)) {
+      this.rejectEdgeHttp(socket, 502, 'host_offline');
+      return;
+    }
+
+    const pathname = parsedHead.path.split('?')[0];
+    if (pathname === GROUP_AUTH_CHALLENGE_PATH || pathname === GROUP_AUTH_TOKEN_PATH) {
+      let body;
+      try {
+        body = await readHttpJsonBody(socket, parsedHead.headers, rest);
+      } catch (err) {
+        writeHttpResponse(socket, {
+          status: err && err.statusCode ? err.statusCode : 400,
+          body: JSON.stringify({ ok: false, error: { code: 'invalid_request' } }),
+        });
+        return;
+      }
+      if (!this.groupAuth) {
+        writeHttpResponse(socket, { status: 503, body: JSON.stringify({ ok: false, error: { code: 'group_auth_unavailable' } }) });
+        return;
+      }
+      const result = this.groupAuth.handleAuthRequest({
+        hostId,
+        method: parsedHead.method,
+        path: pathname,
+        body,
+        clientKey: socket.remoteAddress ?? 'unknown',
+      });
+      writeHttpResponse(socket, {
+        status: result.status,
+        headers: result.headers,
+        body: JSON.stringify(result.body),
+      });
+      return;
+    }
+
+    // 普通业务流量：校验 __Host- 会话 cookie（dev 允许跳过；生产必须通过）。
+    let session;
+    if (!this.config.group.edge.allowUnauthenticated) {
+      session = this.groupAuth?.sessionFromHeaders(parsedHead.headers, hostId);
+      if (!session) {
+        this.logger.debug(`edge: rejecting unauthenticated ${parsedHead.method} ${pathname} from ${remote} for host "${hostId}"`);
+        writeHttpResponse(socket, {
+          status: 401,
+          headers: { 'www-authenticate': 'Session' },
+          body: JSON.stringify({ ok: false, error: { code: 'unauthorized', message: 'missing or invalid session' } }),
+        });
+        return;
+      }
+    }
+
+    this.openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId: session?.deviceId, remote });
+  }
+
+  /**
+   * 把（已鉴权的）边缘连接转成控制面隧道 stream；已读的 HTTP 头/剩余字节作为首包原样转发。
+   * 主机侧仍是真正的 HTTP/WS 代理（逐请求鉴权也在主机侧用 relay 公钥复验 token）。
+   * @param {{socket: import('node:tls').TLSSocket, hostId: string, host: any, sni: string | null,
+   *          rawHead: Buffer, rest: Buffer, deviceId?: string, remote: string}} input
+   */
+  openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId, remote }) {
+    if (socket.destroyed || !isWsOpen(host.ws)) {
+      this.rejectEdgeHttp(socket, 502, 'host_offline');
+      return;
+    }
     const streamId = this.allocateStreamId(host);
     if (streamId === null) {
       this.logger.warn(`edge: dropping ${remote}: stream table for host "${hostId}" is full`);
       this.rejectEdgeHttp(socket, 503, 'stream_limit');
       return;
     }
+    socket.pause();
+    /** @type {Buffer[]} */
+    const pending = [rawHead];
+    if (rest && rest.length > 0) pending.push(rest);
     const stream = {
       id: streamId,
       host,
       socket,
-      /** @type {Buffer[]} */
-      pending: [],
+      pending,
       opened: false,
       finished: false,
       hostClosed: false,
@@ -1071,8 +1174,51 @@ class Relay {
       this.finishStream(stream, 'open_timeout');
     }, this.config.timings.openTimeoutMs);
     stream.openTimer.unref?.();
-    this.logger.debug(`edge: stream ${streamId} → host "${hostId}" (SNI ${JSON.stringify(sni)}) from ${remote}`);
-    this.sendJson(host.ws, { t: RELAY_MSG.HOST_OPEN, streamId, sni, kind: GROUP_EDGE_STREAM_KIND });
+    this.logger.debug(`edge: stream ${streamId} → host "${hostId}" (SNI ${JSON.stringify(sni)}${deviceId ? `, device ${deviceId}` : ''}) from ${remote}`);
+    this.sendJson(host.ws, {
+      t: RELAY_MSG.HOST_OPEN,
+      streamId,
+      sni,
+      kind: GROUP_EDGE_STREAM_KIND,
+      ...(deviceId ? { deviceId } : {}),
+    });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 群体版设备注册同步（host 控制面 → relay）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * 主机全量同步设备列表（设备 ID + P-256 公钥）；覆写该主机的设备注册表。
+   * @param {any} host
+   * @param {Record<string, any>} msg
+   */
+  handleDeviceSync(host, msg) {
+    if (!this.groupAuth) {
+      this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_SYNCED, ok: false, code: 'group_auth_unavailable' });
+      return;
+    }
+    try {
+      const count = this.groupAuth.syncDevices(host.hostId, msg.devices);
+      this.logger.info(`group auth: host "${host.hostId}" synced ${count} device(s)`);
+      this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_SYNCED, ok: true, count });
+    } catch (err) {
+      const code = err instanceof GroupAuthError ? err.code : 'invalid_devices';
+      this.logger.warn(`group auth: host "${host.hostId}" device.sync failed: ${err && err.message ? err.message : String(err)}`);
+      this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_SYNCED, ok: false, code, message: err && err.message ? err.message : String(err) });
+    }
+  }
+
+  /**
+   * 撤销单台设备（旧 token 立即失效：session 校验会再查注册表）。
+   * @param {any} host
+   * @param {Record<string, any>} msg
+   */
+  handleDeviceRevoke(host, msg) {
+    const deviceId = String(msg.deviceId ?? '');
+    const revoked = this.groupAuth ? this.groupAuth.revokeDevice(host.hostId, deviceId) : false;
+    if (revoked) this.logger.info(`group auth: host "${host.hostId}" revoked device ${deviceId}`);
+    this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_REVOKED, ok: revoked, deviceId });
   }
 
   // ---------------------------------------------------------------------------

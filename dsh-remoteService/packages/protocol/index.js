@@ -4,7 +4,7 @@
  * 本文件保持零外部依赖（仅 node:crypto），可同时被 relay、host plugin 与 POC 脚本使用。
  * App（React Native）内部有一份等价实现：packages 不跨运行时共享代码，但语义/常量必须一致。
  */
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from 'node:crypto';
 
 /** 协议版本；relay 与 host plugin 握手时校验。 */
 export const PROTOCOL_VERSION = 1;
@@ -147,6 +147,10 @@ export const RELAY_MSG = Object.freeze({
   PUSH_SEND: 'push.send',
   PUSH_RESULT: 'push.result',
   HOST_STATUS: 'host.status',
+  DEVICE_SYNC: 'device.sync',
+  DEVICE_SYNCED: 'device.synced',
+  DEVICE_REVOKE: 'device.revoke',
+  DEVICE_REVOKED: 'device.revoked',
   ERROR: 'error',
 });
 
@@ -243,3 +247,140 @@ export function normalizeGroupHostName(raw) {
 
 /** host.open 的 kind：群体版边缘 TLS 终止后的隧道流（relay 终止 TLS，主机侧接本地明文代理）。 */
 export const GROUP_EDGE_STREAM_KIND = 'group-edge';
+
+
+// ---------------------------------------------------------------------------
+// 群体服务版：设备会话鉴权（P1 切片 3）
+// ---------------------------------------------------------------------------
+// 设备密钥 = P-256（Secure Enclave / Keystore）；配对时把公钥（未压缩点 65B，
+// base64url）注册给主机，主机同步到 relay；设备用私钥签 nonce 换短时 token；
+// token 由 relay 的 Ed25519 私钥签名，主机用 relay 公钥逐请求校验（无需信任握手来源）。
+
+/** relay 边缘上的设备鉴权接口（TLS 已由 relay 终止）。 */
+export const GROUP_AUTH_CHALLENGE_PATH = '/__group/auth/challenge';
+export const GROUP_AUTH_TOKEN_PATH = '/__group/auth/token';
+
+/** 会话 cookie 名（必须 __Host- 前缀 + host-only + Secure）。 */
+export const GROUP_SESSION_COOKIE = '__Host-dsh_session';
+
+/** 会话 token 版本与前缀。 */
+export const GROUP_SESSION_TOKEN_VERSION = 1;
+/** 默认 token 有效期（15 分钟；配置允许 1–120 分钟）。 */
+export const GROUP_SESSION_DEFAULT_TTL_MS = 15 * 60 * 1000;
+/** 默认 challenge 有效期（2 分钟）。 */
+export const GROUP_CHALLENGE_DEFAULT_TTL_MS = 2 * 60 * 1000;
+
+const GROUP_DEVICE_ID_RE = /^d_[a-z0-9]{6,40}$/;
+
+/** 生成设备 ID（服务端/主机生成均可；DNS 无关，仅作稳定标识）。 */
+export function newGroupDeviceId() {
+  return `d_${randomBytes(8).toString('hex')}`;
+}
+
+/** 校验设备 ID 形态。 */
+export function isValidGroupDeviceId(raw) {
+  return typeof raw === 'string' && GROUP_DEVICE_ID_RE.test(raw);
+}
+
+/** 设备 challenge 签名的消息（绑定 host + device + nonce，防跨主机重放）。 */
+export function groupDeviceChallengeMessage(hostId, deviceId, nonce) {
+  return Buffer.from(`${hostId}\n${deviceId}\n${nonce}`, 'utf8');
+}
+
+/** base64url 未压缩 P-256 公钥点（0x04 || X || Y）→ KeyObject。 */
+export function groupDevicePublicKeyObject(publicKeyB64Url) {
+  const raw = Buffer.from(String(publicKeyB64Url ?? ''), 'base64url');
+  if (raw.length !== 65 || raw[0] !== 0x04) {
+    throw new Error('group device public key must be an uncompressed P-256 point (65 bytes, base64url)');
+  }
+  const x = raw.subarray(1, 33).toString('base64url');
+  const y = raw.subarray(33, 65).toString('base64url');
+  try {
+    return createPublicKey({ key: { kty: 'EC', crv: 'P-256', x, y }, format: 'jwk' });
+  } catch {
+    throw new Error('group device public key is not a valid P-256 point');
+  }
+}
+
+/** 校验设备对消息的 ECDSA-SHA256 签名（DER，base64url）。 */
+export function verifyGroupDeviceSignature({ publicKey, message, signature }) {
+  try {
+    const key = groupDevicePublicKeyObject(publicKey);
+    return verify('sha256', Buffer.isBuffer(message) ? message : Buffer.from(String(message), 'utf8'), key, Buffer.from(String(signature ?? ''), 'base64url'));
+  } catch {
+    return false;
+  }
+}
+
+/** 新 challenge nonce（32B base64url）。 */
+export function newGroupChallenge() {
+  return randomBytes(32).toString('base64url');
+}
+
+/**
+ * 签发短时会话 token（Ed25519）。
+ * @param {{privateKey: import('node:crypto').KeyObject | string, hostId: string, deviceId: string, iat?: number, ttlMs?: number}} options
+ * @returns {{token: string, payload: {v:number, hostId:string, deviceId:string, iat:number, exp:number}}}
+ */
+export function signGroupSessionToken({ privateKey, hostId, deviceId, iat = Date.now(), ttlMs = GROUP_SESSION_DEFAULT_TTL_MS }) {
+  const key = typeof privateKey === 'string' ? createPrivateKey(privateKey) : privateKey;
+  const payload = {
+    v: GROUP_SESSION_TOKEN_VERSION,
+    hostId: String(hostId),
+    deviceId: String(deviceId),
+    iat: Math.floor(iat / 1000),
+    exp: Math.floor((iat + ttlMs) / 1000),
+  };
+  const version = `v${GROUP_SESSION_TOKEN_VERSION}`;
+  const body = `${version}.${Buffer.from(JSON.stringify(payload), 'utf8').toString('base64url')}`;
+  const signature = sign(null, Buffer.from(body, 'utf8'), key).toString('base64url');
+  return { token: `${body}.${signature}`, payload };
+}
+
+/**
+ * 校验会话 token（Ed25519 公钥 PEM/KeyObject；校验版本/签名/过期/可选 hostId）。
+ * @param {{token: string, publicKey: import('node:crypto').KeyObject | string, now?: number, hostId?: string}} options
+ * @returns {{v:number, hostId:string, deviceId:string, iat:number, exp:number} | undefined}
+ */
+export function verifyGroupSessionToken({ token, publicKey, now = Date.now(), hostId }) {
+  const parts = String(token ?? '').split('.');
+  if (parts.length !== 3 || parts[0] !== `v${GROUP_SESSION_TOKEN_VERSION}`) return undefined;
+  const [version, body, signature] = parts;
+  let payload;
+  try {
+    payload = JSON.parse(Buffer.from(body, 'base64url').toString('utf8'));
+  } catch {
+    return undefined;
+  }
+  if (!payload || payload.v !== GROUP_SESSION_TOKEN_VERSION) return undefined;
+  let key;
+  try {
+    key = typeof publicKey === 'string' ? createPublicKey(publicKey) : publicKey;
+  } catch {
+    return undefined;
+  }
+  let ok = false;
+  try {
+    ok = verify(null, Buffer.from(`${version}.${body}`, 'utf8'), key, Buffer.from(signature, 'base64url'));
+  } catch {
+    ok = false;
+  }
+  if (!ok) return undefined;
+  if (hostId !== undefined && payload.hostId !== String(hostId)) return undefined;
+  if (typeof payload.exp !== 'number' || payload.exp * 1000 <= now) return undefined;
+  return payload;
+}
+
+/** 解析 Cookie 头为对象（同名取第一个）。 */
+export function parseCookieHeader(headerValue) {
+  /** @type {Record<string, string>} */
+  const out = {};
+  for (const part of String(headerValue ?? '').split(';')) {
+    const eq = part.indexOf('=');
+    if (eq <= 0) continue;
+    const name = part.slice(0, eq).trim();
+    if (!name || Object.hasOwn(out, name)) continue;
+    out[name] = part.slice(eq + 1).trim();
+  }
+  return out;
+}

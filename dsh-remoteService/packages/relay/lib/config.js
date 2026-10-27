@@ -8,7 +8,12 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { GROUP_DEFAULT_MOBILE_PORT, GROUP_REGISTER_BODY_LIMIT_BYTES } from 'dsh-remote-protocol';
+import {
+  GROUP_CHALLENGE_DEFAULT_TTL_MS,
+  GROUP_DEFAULT_MOBILE_PORT,
+  GROUP_REGISTER_BODY_LIMIT_BYTES,
+  GROUP_SESSION_DEFAULT_TTL_MS,
+} from 'dsh-remote-protocol';
 
 /** 公开配置默认值。 */
 export const RELAY_PUSH_DEFAULTS = Object.freeze({
@@ -41,6 +46,11 @@ export const RELAY_GROUP_DEFAULTS = Object.freeze({
     maxAttemptsPerMinutePerIp: 10,
     maxAttemptsPerMinute: 120,
     bodyLimitBytes: GROUP_REGISTER_BODY_LIMIT_BYTES,
+  }),
+  auth: Object.freeze({
+    tokenTtlMs: GROUP_SESSION_DEFAULT_TTL_MS,
+    challengeTtlMs: GROUP_CHALLENGE_DEFAULT_TTL_MS,
+    maxAttemptsPerMinutePerIp: 30,
   }),
 });
 
@@ -241,6 +251,29 @@ function normalizeGroup(raw, mode, dev = false) {
     throw new Error('group.edge.allowUnauthenticated is dev-only (未认证边缘隧道不得用于生产)');
   }
 
+  // 设备会话鉴权（短时 token / 签名密钥）。默认 15 分钟 token、2 分钟 challenge。
+  const authInput = input.auth && typeof input.auth === 'object' && !Array.isArray(input.auth)
+    ? /** @type {Record<string, any>} */ (input.auth)
+    : {};
+  const authDefaults = RELAY_GROUP_DEFAULTS.auth;
+  const tokenTtlMs = authInput.tokenTtlMs === undefined ? authDefaults.tokenTtlMs : Number(authInput.tokenTtlMs);
+  if (!Number.isSafeInteger(tokenTtlMs) || tokenTtlMs < 5_000 || tokenTtlMs > 2 * 60 * 60 * 1000) {
+    throw new Error('group.auth.tokenTtlMs 必须是 5000..7200000 的整数（5 秒–2 小时；默认 15 分钟）');
+  }
+  const challengeTtlMs = authInput.challengeTtlMs === undefined ? authDefaults.challengeTtlMs : Number(authInput.challengeTtlMs);
+  if (!Number.isSafeInteger(challengeTtlMs) || challengeTtlMs < 10_000 || challengeTtlMs > 10 * 60 * 1000) {
+    throw new Error('group.auth.challengeTtlMs 必须是 10000..600000 的整数（10 秒–10 分钟）');
+  }
+  const maxAuthAttempts = authInput.maxAttemptsPerMinutePerIp === undefined
+    ? authDefaults.maxAttemptsPerMinutePerIp
+    : Number(authInput.maxAttemptsPerMinutePerIp);
+  if (!Number.isSafeInteger(maxAuthAttempts) || maxAuthAttempts < 1) {
+    throw new Error('group.auth.maxAttemptsPerMinutePerIp 必须是正整数');
+  }
+  const signingKeyFile = authInput.signingKeyFile === undefined || authInput.signingKeyFile === null || authInput.signingKeyFile === ''
+    ? undefined
+    : String(authInput.signingKeyFile);
+
   return {
     file,
     mobilePort,
@@ -256,6 +289,12 @@ function normalizeGroup(raw, mode, dev = false) {
       port: edgePort,
       tls: edgeTls,
       allowUnauthenticated,
+    },
+    auth: {
+      tokenTtlMs,
+      challengeTtlMs,
+      maxAttemptsPerMinutePerIp: maxAuthAttempts,
+      signingKeyFile,
     },
   };
 }

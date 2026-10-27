@@ -230,5 +230,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   （复用控制面多路复用 stream：`host.open {kind:"group-edge"}` + DATA/CLOSE 帧；分帧/背压/心跳独立）；
   错误语义 421/502/503；未认证模式 dev-only（生产默认拒绝）。
   已验证：8MB 大帧回显逐字节一致、传输期间心跳不断（主机不被踢）、断线清理；`npm test` **174/174**。
-- **下一片**：设备鉴权（短时 token + relay 签名断言 + 主机逐请求鉴权，替换 dev-only
-  `allowUnauthenticated`）、主机插件侧 group 接入（本地明文代理 + 设置页群体模式）、QR v2。
+- **2026-10-27：切片 3 已落地**——设备会话鉴权：`device.sync`/`device.revoke`（主机同步设备公钥）、
+  challenge → token（P-256 设备签名换 Ed25519 短时 token，默认 15 分钟）、`__Host-dsh_session` cookie、
+  边缘校验（签名/过期/hostId/设备撤销）；注册响应下发 `tokenPublicKey`，主机可离线逐请求复验；
+  生产默认拒绝未认证连接（dev-only `allowUnauthenticated` 仅测试用）。`npm test` **179/179**。
+- **下一片**：主机插件侧 group 接入（注册客户端 + 本地明文代理 + 逐请求复验 + 设置页群体模式）、QR v2、App token 流程。
