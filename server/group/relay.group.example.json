@@ -14,7 +14,7 @@
 
   "group": {
     "file": "/data/group.json",
-    "mobilePort": 1443,
+    "mobilePort": 443,
     "maxHosts": 200,
     "registration": {
       "enabled": true,

@@ -57,6 +57,10 @@ services:
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
       # 可选：显式指定 admin token（否则首次启动自动生成到 /data/admin-token）
       RELAY_ADMIN_TOKEN: ${RELAY_ADMIN_TOKEN:-}
+      # 手机实际访问的公网端口（写进配对二维码）；必须 = 公网入口端口：
+      #   直连（无 nginx）时 = RELAY_GROUP_EDGE_PORT_HOST（默认 1443）
+      #   有 nginx 前置时 = nginx 监听端口（通常 443），不是容器宿主映射的 1443
+      RELAY_GROUP_MOBILE_PORT: ${RELAY_GROUP_MOBILE_PORT:-443}
     volumes:
       - ./data:/data
     sysctls:

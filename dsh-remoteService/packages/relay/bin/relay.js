@@ -97,7 +97,8 @@ const HELP = `dsh-remote-relay — 自托管中继 (DSH remote access)
 
 环境变量（覆盖 config 文件，被命令行参数覆盖）:
   RELAY_DOMAIN RELAY_MODE RELAY_DEV RELAY_DATA_PORT RELAY_CONTROL_PORT RELAY_HTTP_PORT
-  RELAY_DATA_HOST RELAY_TOKENS_FILE RELAY_GROUP_FILE RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
+  RELAY_DATA_HOST RELAY_TOKENS_FILE RELAY_GROUP_FILE RELAY_GROUP_MOBILE_PORT
+  RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
   RELAY_PUSH_ENDPOINT RELAY_PUSH_ACCESS_TOKEN RELAY_PUSH_TITLE RELAY_PUSH_BODY
 
 示例:
@@ -229,6 +230,10 @@ function applyEnv(config) {
   if (env.RELAY_GROUP_FILE) {
     config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
     config.group.file = env.RELAY_GROUP_FILE;
+  }
+  if (env.RELAY_GROUP_MOBILE_PORT) {
+    config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
+    config.group.mobilePort = env.RELAY_GROUP_MOBILE_PORT;
   }
   if (env.RELAY_MODE) config.mode = env.RELAY_MODE;
   if (env.RELAY_ADMIN_TOKEN || env.RELAY_ADMIN_TOKEN_FILE) {
