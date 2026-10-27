@@ -38,6 +38,8 @@ import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
 import { createPushService } from './push.js';
 import { GroupRegistrationService, verifyHostToken } from './group.js';
+import { GROUP_ADMIN_BASE, createGroupAdminHandler, ensureAdminToken } from './group-admin.js';
+import { dirname, join } from 'node:path';
 import { GroupAuthError, GroupAuthService } from './group-auth.js';
 import { parseHttpHead, readHttpHead, readHttpJsonBody, writeHttpResponse } from './edge-http.js';
 
@@ -133,6 +135,22 @@ class Relay {
         tokenPublicKey: this.groupAuth?.publicKey,
       })
       : null;
+    /** 群体版部署方后台（/__admin）：默认自动生成 admin-token 文件（0600）。 */
+    this.groupAdmin = null;
+    this.groupAdminTokenInfo = null;
+    if (config.mode === 'group') {
+      const adminTokenFile = config.group.adminTokenFile ?? join(dirname(config.group.file), 'admin-token');
+      const admin = ensureAdminToken({ token: config.group.adminToken, tokenFile: adminTokenFile });
+      this.groupAdminTokenInfo = admin;
+      this.groupAdmin = createGroupAdminHandler({
+        groupFile: config.group.file,
+        domain: config.domain,
+        mobilePort: config.group.mobilePort,
+        adminToken: admin.token,
+        onlineHostIds: () => [...this.hosts.keys()],
+        logger: config.logger,
+      });
+    }
 
     /** @type {Map<string, any>} hostId → host */
     this.hosts = new Map();
@@ -241,6 +259,12 @@ class Relay {
       `relay listening on ${this.config.dataHost} — data :${this.dataPort} (tls passthrough), `
       + `control :${this.controlPort} (${tlsMaterial ? 'wss' : 'ws/dev'}), http :${this.httpPort}; domain ${this.config.domain}`,
     );
+    if (this.groupAdmin) {
+      const scheme = tlsMaterial ? 'https' : 'http';
+      const info = this.groupAdminTokenInfo;
+      const tokenHint = info?.file ? `${info.file}${info.generated ? ' (generated)' : ''}` : 'configured via group.adminToken';
+      this.logger.info(`admin UI: ${scheme}://${this.config.domain}:${this.controlPort}${GROUP_ADMIN_BASE}/ — token: ${tokenHint}`);
+    }
     return this.api();
   }
 
@@ -369,17 +393,19 @@ class Relay {
    *   - 其它 → 404（控制面只接受 WS upgrade）。
    */
   handleControlHttpRequest(req, res) {
-    if (this.groupService) {
-      let pathname = '/';
-      try {
-        pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
-      } catch {
-        pathname = req.url ?? '/';
-      }
-      if (pathname === GROUP_REGISTER_PATH) {
-        void this.groupService.handleHttp(req, res);
-        return;
-      }
+    let pathname = '/';
+    try {
+      pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
+    } catch {
+      pathname = req.url ?? '/';
+    }
+    if (this.groupAdmin && (pathname === GROUP_ADMIN_BASE || pathname.startsWith(`${GROUP_ADMIN_BASE}/`))) {
+      void this.groupAdmin(req, res);
+      return;
+    }
+    if (this.groupService && pathname === GROUP_REGISTER_PATH) {
+      void this.groupService.handleHttp(req, res);
+      return;
     }
     const body = JSON.stringify({ ok: false, error: { code: 'not_found', message: 'control plane only accepts WebSocket upgrades on /control' } });
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });

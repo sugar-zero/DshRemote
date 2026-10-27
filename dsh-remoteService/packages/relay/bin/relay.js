@@ -12,13 +12,14 @@
  */
 
 import { readFileSync } from 'node:fs';
-import { dirname, isAbsolute, resolve } from 'node:path';
+import { dirname, isAbsolute, join, resolve } from 'node:path';
 import process from 'node:process';
 import { GROUP_REGISTER_PATH } from 'dsh-remote-protocol';
 import {
   createConsoleLogger,
   createHostToken,
   createInvite,
+  ensureAdminToken,
   defaultGroupFile,
   defaultTokensFile,
   listHosts,
@@ -47,6 +48,8 @@ const FLAGS_WITH_VALUE = new Set([
   'note',
   'max-uses',
   'expires-in',
+  'admin-token',
+  'admin-token-file',
 ]);
 
 const HELP = `dsh-remote-relay — 自托管中继 (DSH remote access)
@@ -62,7 +65,13 @@ const HELP = `dsh-remote-relay — 自托管中继 (DSH remote access)
   node bin/relay.js invite revoke <id|code>     group：撤销邀请
   node bin/relay.js host list                   group：列出已注册主机
   node bin/relay.js host revoke <hostId>        group：撤销主机（吊销其 token）
+  node bin/relay.js admin-token                 group：打印部署方后台 admin token（--json 可机器读）
   node bin/relay.js --help                      显示本帮助
+
+群体版部署方后台:
+  启动 group 模式后在浏览器打开 https://<domain>:<controlPort>/__admin ，
+  粘贴 admin token 即可管理邀请码/主机。token 未配置时首次启动自动生成到
+  <group.json 目录>/admin-token（0600），也可用 --admin-token / RELAY_ADMIN_TOKEN 显式指定。
 
 启动参数:
   --config <path>        JSON 配置文件（tokensFile/group.file/certFile 等相对路径基于该文件目录解析）
@@ -189,6 +198,9 @@ function readConfigFile(path) {
   if (config.group && typeof config.group === 'object' && typeof config.group.file === 'string' && config.group.file !== '') {
     config.group = { ...config.group, file: resolveFromConfigDir(config.group.file) };
   }
+  if (config.group && typeof config.group === 'object' && typeof config.group.adminTokenFile === 'string' && config.group.adminTokenFile !== '') {
+    config.group = { ...config.group, adminTokenFile: resolveFromConfigDir(config.group.adminTokenFile) };
+  }
   if (config.group && typeof config.group === 'object' && config.group.auth && typeof config.group.auth === 'object'
     && typeof config.group.auth.signingKeyFile === 'string' && config.group.auth.signingKeyFile !== '') {
     config.group = {
@@ -219,6 +231,11 @@ function applyEnv(config) {
     config.group.file = env.RELAY_GROUP_FILE;
   }
   if (env.RELAY_MODE) config.mode = env.RELAY_MODE;
+  if (env.RELAY_ADMIN_TOKEN || env.RELAY_ADMIN_TOKEN_FILE) {
+    config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
+    if (env.RELAY_ADMIN_TOKEN) config.group.adminToken = env.RELAY_ADMIN_TOKEN;
+    if (env.RELAY_ADMIN_TOKEN_FILE) config.group.adminTokenFile = env.RELAY_ADMIN_TOKEN_FILE;
+  }
   if (env.RELAY_LOG_LEVEL) config.logLevel = env.RELAY_LOG_LEVEL;
   if (env.RELAY_PUSH_ENDPOINT || env.RELAY_PUSH_ACCESS_TOKEN || env.RELAY_PUSH_TITLE || env.RELAY_PUSH_BODY) {
     config.push = { ...(config.push && typeof config.push === 'object' ? config.push : {}) };
@@ -248,6 +265,11 @@ function applyFlags(config, flags) {
     config.group.file = flags['group-file'];
   }
   if (flags.mode !== undefined) config.mode = flags.mode;
+  if (flags['admin-token'] !== undefined || flags['admin-token-file'] !== undefined) {
+    config.group = { ...(config.group && typeof config.group === 'object' ? config.group : {}) };
+    if (flags['admin-token'] !== undefined) config.group.adminToken = flags['admin-token'];
+    if (flags['admin-token-file'] !== undefined) config.group.adminTokenFile = flags['admin-token-file'];
+  }
   if (flags['log-level'] !== undefined) config.logLevel = flags['log-level'];
   if (flags['cert-file'] !== undefined || flags['key-file'] !== undefined) {
     config.tls = { ...(config.tls ?? {}) };
@@ -481,6 +503,21 @@ async function runHostCommand(flags, positionals) {
   }
 }
 
+/** @param {Record<string, any>} flags */
+function runAdminTokenCommand(flags) {
+  const { config } = buildConfig(flags);
+  const group = config.group && typeof config.group === 'object' ? config.group : {};
+  const tokenFile = group.adminTokenFile ?? (typeof group.file === 'string' && group.file !== '' ? join(dirname(group.file), 'admin-token') : undefined);
+  const info = ensureAdminToken({ token: group.adminToken, tokenFile });
+  if (flags.json === true) {
+    console.log(JSON.stringify({ token: info.token, source: info.generated ? 'generated' : (info.file ? 'file' : 'config'), tokenFile: info.file ?? null }));
+    return;
+  }
+  console.log(`Admin token: ${info.token}`);
+  if (info.file) console.log(`Token file : ${info.file} (0600)`);
+  console.log('打开后台：https://<relayDomain>:<controlPort>/__admin/ 并粘贴上面的 token');
+}
+
 /** @param {Record<string, any>} flags @param {string[]} positionals */
 async function runRelay(flags) {
   const { config } = buildConfig(flags);
@@ -533,6 +570,10 @@ async function main(argv) {
   }
   if (positionals[0] === 'host') {
     await runHostCommand(flags, positionals);
+    return;
+  }
+  if (positionals[0] === 'admin-token') {
+    runAdminTokenCommand(flags);
     return;
   }
   if (positionals.length > 0) {
