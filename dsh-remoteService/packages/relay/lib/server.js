@@ -126,6 +126,7 @@ class Relay {
     this.groupService = config.mode === 'group'
       ? new GroupRegistrationService({
         ...config.group,
+        relayDomain: config.domain,
         logger: config.logger,
         tokenPublicKey: this.groupAuth?.publicKey,
       })

@@ -362,7 +362,9 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 ```json
 { "inviteCode": "<one-time invite code>", "hostName": "Living Room Mac" }
 → 200 { "ok": true, "protocolVersion": 1, "hostId": "h_ab12cd34xy",
-        "hostToken": "<shown once>", "hostName": "Living Room Mac", "mobilePort": 11443 }
+        "hostToken": "<shown once>", "hostName": "Living Room Mac",
+        "relayDomain": "relay.example.com", "mobilePort": 11443,
+        "tokenPublicKey": "-----BEGIN PUBLIC KEY-----..." }
 ```
 
 错误码：`invalid_request`(400) / `invalid_invite|invite_expired|invite_exhausted|registration_disabled`(403)

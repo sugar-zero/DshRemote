@@ -246,6 +246,42 @@ volumes:
 
 ---
 
+## 2.5 群体服务版（`group` 模式，P1 实验）
+
+> 仅 `feat/group-service` 分支；设计见 [docs/group-service-design.zh.md](../../../docs/group-service-design.zh.md)。
+
+群体版（A 模式）下主机**不持有 TLS / APNs 配置**：relay 边缘终止手机 TLS，主机只做出站隧道；
+主机侧在 **loopback 明文 HTTP 代理**上逐请求鉴权。启用方式：`enabled: true` + `groupEnabled: true`。
+
+配置（`~/.dsh/remote-access/config.json`，管理 API 可改）：
+
+| 字段 | 说明 |
+|---|---|
+| `groupEnabled` | 开启群体版（与 classic 的 relayUrl/hostId/token/证书字段互斥） |
+| `groupServiceUrl` | 部署方 relay 服务地址，如 `https://relay.example.com:8443`（POC 允许 `http://`，需 `groupInsecure`） |
+| `groupInviteCode` | 一次性邀请码；注册成功后应清空（只用于首次开通） |
+| `groupPlainPort` | loopback 明文代理端口（默认 0 = 随机；只被本机隧道客户端连接） |
+| `groupInsecure` | 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss） |
+
+流程：
+
+1. 填「服务地址 + 邀请码」→ 主机 `POST /__group/register` 自助注册 → 落盘
+   `~/.dsh/remote-access/group.json`（0600）：hostId / hostToken / relayDomain / mobilePort /
+   relay token 公钥 / serviceUrl / hostName；
+2. 启动后：loopback 明文代理（`127.0.0.1:<groupPlainPort>`）+ 主动连 relay 控制面隧道；
+   隧道就绪后自动把本机设备列表（deviceId + P-256 公钥）`device.sync` 给 relay；
+3. relay 边缘终止 TLS 后把明文流经隧道交给主机，主机代理逐请求检查：
+   - `Host` 必须等于 `<hostId>.<relayDomain>`（否则 421）；
+   - cookie `__Host-dsh_session` 必须是通过 relay 公钥离线验签、未过期、hostId 匹配的 token；
+   - token 里的 deviceId 必须仍是本机有效设备（撤销设备即失效）；
+   通过后才交给 `DshProxy` 反代到 127.0.0.1 DSH（cookie 注入 / deny list / WS 全部复用）。
+4. 设备增删/撤销后调用 `syncDevices()`（后续会接到配对/设备管理事件）→ `device.sync` 全量覆盖。
+
+状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/hostId/fqdn/mobilePort/connected/plainPort）。
+**P1 边界**：设置页群体模式字段、配对/设备事件自动同步、QR v2、App token 流程在后续切片接入。
+
+---
+
 ## 3. 本机接口
 
 Host 半注册在 DSH 本机 webServer：

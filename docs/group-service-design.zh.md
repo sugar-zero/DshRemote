@@ -234,4 +234,11 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   challenge → token（P-256 设备签名换 Ed25519 短时 token，默认 15 分钟）、`__Host-dsh_session` cookie、
   边缘校验（签名/过期/hostId/设备撤销）；注册响应下发 `tokenPublicKey`，主机可离线逐请求复验；
   生产默认拒绝未认证连接（dev-only `allowUnauthenticated` 仅测试用）。`npm test` **179/179**。
-- **下一片**：主机插件侧 group 接入（注册客户端 + 本地明文代理 + 逐请求复验 + 设置页群体模式）、QR v2、App token 流程。
+- **2026-10-27：切片 4 已落地**——主机插件 group 接入：邀请码自助注册（`POST /__group/register`）→
+  `group.json`（0600：hostId/hostToken/relayDomain/mobilePort/tokenPublicKey）；loopback 明文代理
+  逐请求鉴权（Host==`<hostId>.<relayDomain>`、`__Host-dsh_session` token 用 relay 公钥离线验签、
+  deviceId 仍为有效设备）后交给既有 `DshProxy`；隧道 `device.sync` 同步设备公钥；`status().group` 暴露状态。
+  端到端测试（真实 relay + 真 TLS 边缘 + 主机运行时）：注册/隧道/正向请求/Host 不一致 421/无 cookie 401/撤销后 401；
+  `npm test` **181/181**。
+- **下一片**：设置页群体模式字段（Client 半）+ 管理 API 注册/重置 + 配对/设备事件自动 `syncDevices`、
+  QR v2（含端口）、App token 流程（原生设备密钥 → challenge 签名 → `__Host-` cookie）。

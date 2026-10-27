@@ -18,7 +18,7 @@ const SEND_LOW_WATER_BYTES = 512 * 1024;
  * - 二进制 frame 走数据面（encodeFrame/decodeFrame）
  */
 export class RelayConnector {
-  constructor({ relayUrl, hostId, hostToken, hostName, getLocalPort, relayTlsInsecure = false, audit, log = () => {} }) {
+  constructor({ relayUrl, hostId, hostToken, hostName, getLocalPort, relayTlsInsecure = false, audit, log = () => {}, onReady }) {
     this.relayUrl = relayUrl;
     this.hostId = hostId;
     this.hostToken = hostToken;
@@ -27,6 +27,7 @@ export class RelayConnector {
     this.relayTlsInsecure = relayTlsInsecure;
     this.audit = audit;
     this.log = log;
+    this.onReady = typeof onReady === 'function' ? onReady : undefined;
     this.ws = undefined;
     this.connected = false;
     this.lastError = null;
@@ -92,6 +93,17 @@ export class RelayConnector {
   sendPush({ kind = 'attention' } = {}) {
     if (!this.connected) return false;
     this.#send({ t: RELAY_MSG.PUSH_SEND, kind: String(kind).slice(0, 32) });
+    return true;
+  }
+
+  /**
+   * 群体版：把本机设备列表（deviceId + P-256 公钥）全量同步给 relay。
+   * 仅在已连接时发送；连接建立时由 onReady 回调触发。
+   * @param {Array<{deviceId: string, publicKey: string}>} devices
+   */
+  syncGroupDevices(devices) {
+    if (!this.connected) return false;
+    this.#send({ t: RELAY_MSG.DEVICE_SYNC, devices: Array.isArray(devices) ? devices : [] });
     return true;
   }
 
@@ -162,6 +174,11 @@ export class RelayConnector {
       this.heartbeatTimer = setInterval(() => this.#send({ t: RELAY_MSG.HOST_HEARTBEAT }), 10_000);
       for (const entry of this.pushTokens.values()) {
         this.#send({ t: RELAY_MSG.PUSH_REGISTER, ...entry });
+      }
+      try {
+        this.onReady?.();
+      } catch (error) {
+        this.log(`onReady failed: ${error && error.message ? error.message : String(error)}`);
       }
       return;
     }

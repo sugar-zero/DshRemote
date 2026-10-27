@@ -14,8 +14,9 @@ import { createPushNotifier } from './push.js';
 import { createApnsClient } from './apns.js';
 import { checkTlsKeyPair } from './tls-check.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
+import { GroupHostRuntime } from './group.js';
 
-const VERSION = '0.1.16';
+const VERSION = '0.1.17';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -106,6 +107,33 @@ export class RemoteService {
     await this.#apply();
   }
 
+  /**
+   * 群体服务版（A 模式）：注册到部署方 relay + loopback 明文代理 + 隧道连接。
+   * 不启动主机 TLS 监听（relay 边缘终止 TLS），也不要求本地证书/APNs 配置。
+   * @param {Record<string, any>} config
+   */
+  async #applyGroupMode(config) {
+    this.groupRuntime = new GroupHostRuntime({
+      config,
+      devices: this.devices,
+      proxy: this.proxy,
+      audit: this.audit,
+      log: this.log,
+    });
+    try {
+      await this.groupRuntime.start();
+      const status = this.groupRuntime.status();
+      this.lastError = status.lastError;
+      this.log(
+        `group mode: ${status.registered ? `registered as ${status.hostId}` : 'not registered'}`
+        + ` service=${status.serviceUrl || '-'} plain=127.0.0.1:${status.plainPort || '-'}`,
+      );
+    } catch (error) {
+      this.lastError = `群体服务启动失败: ${error.message}`;
+      this.log(this.lastError);
+    }
+  }
+
   #upstream() {
     const server = this.ctx.webServer;
     return {
@@ -128,6 +156,10 @@ export class RemoteService {
     const errors = validateConfig(config);
     if (errors.length > 0) {
       this.lastError = errors.join('; ');
+      return;
+    }
+    if (config.groupEnabled) {
+      await this.#applyGroupMode(config);
       return;
     }
     let certPem;
@@ -343,6 +375,11 @@ export class RemoteService {
 
   async #stopRuntime() {
     this.#unwatchCertFiles();
+    const groupRuntime = this.groupRuntime;
+    this.groupRuntime = undefined;
+    if (groupRuntime) {
+      try { await groupRuntime.stop(); } catch { /* ignore */ }
+    }
     this.connector?.stop();
     this.connector = undefined;
     const listener = this.listener;
@@ -461,6 +498,16 @@ export class RemoteService {
       restart: { enabled: Boolean(config.restartHostEnabled) },
       devices: this.devices?.list() ?? [],
       listenPort: this.listenPort || null,
+      // 群体服务版（A 模式）状态；classic 模式下 registered=false
+      group: this.groupRuntime?.status() ?? {
+        registered: false,
+        serviceUrl: config.groupServiceUrl ?? '',
+        hostId: '',
+        relayDomain: '',
+        mobilePort: 0,
+        connected: false,
+        plainPort: 0,
+      },
       push: {
         provider: pushProviderOf(config),
         enabled: config.pushEnabled !== false,
@@ -491,6 +538,10 @@ export class RemoteService {
         apnsEnvironment: config.apnsEnvironment ?? 'auto',
         maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         relayTlsInsecure: Boolean(config.relayTlsInsecure),
+        groupEnabled: Boolean(config.groupEnabled),
+        groupServiceUrl: config.groupServiceUrl ?? '',
+        groupPlainPort: Number(config.groupPlainPort ?? 0),
+        groupInsecure: Boolean(config.groupInsecure),
         listenPort: config.listenPort ?? 0,
         tlsCertFile: config.tlsCertFile ? 'configured' : '',
         tlsKeyFileConfigured: Boolean(config.tlsKeyFile),

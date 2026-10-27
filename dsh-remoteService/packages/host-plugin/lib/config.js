@@ -28,6 +28,12 @@ export const DEFAULT_CONFIG = Object.freeze({
   apnsTopic: '',           // App bundle ID，例如 com.example.app
   apnsEnvironment: 'auto', // auto = 按设备注册时上报的 aps-environment；也可固定 development/production
   upstream: { protocol: 'http', host: '127.0.0.1' },
+  // 群体服务版（A 模式）：注册到部署方的 relay，主机不持有 TLS/APNs 配置。
+  groupEnabled: false,
+  groupServiceUrl: '',     // 例如 https://relay.example.com:8443（部署方 relay 控制面）
+  groupInviteCode: '',     // 一次性邀请码；注册成功后应清空
+  groupPlainPort: 0,       // loopback 明文代理端口（0 = 随机；仅隧道可达）
+  groupInsecure: false,    // 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss）
 });
 
 const ALLOWED_KEYS = new Set([
@@ -36,6 +42,7 @@ const ALLOWED_KEYS = new Set([
   'pushEnabled', 'pushCooldownSeconds', 'maxRequestBytes',
   'pushProvider',
   'apnsKeyFile', 'apnsKeyId', 'apnsTeamId', 'apnsTopic', 'apnsEnvironment',
+  'groupEnabled', 'groupServiceUrl', 'groupInviteCode', 'groupPlainPort', 'groupInsecure',
 ]);
 
 /** 加载配置（不存在时返回默认值）。 */
@@ -68,6 +75,26 @@ export function saveConfig(patch) {
 /** 校验进程序列化前的关键字段，返回可读错误列表。 */
 export function validateConfig(config) {
   const errors = [];
+  if (config.enabled && config.groupEnabled) {
+    // 群体服务版：只需要「服务地址」；hostId/token/证书由注册自动获得。
+    const raw = String(config.groupServiceUrl ?? '').trim();
+    if (raw === '') {
+      errors.push('groupServiceUrl（服务地址）未配置');
+    } else {
+      try {
+        const url = new URL(raw);
+        const allowed = config.groupInsecure ? ['https:', 'wss:', 'http:', 'ws:'] : ['https:', 'wss:'];
+        if (!allowed.includes(url.protocol)) errors.push('groupServiceUrl 协议必须是 https:// 或 wss://');
+      } catch {
+        errors.push('groupServiceUrl 不是合法 URL');
+      }
+    }
+    const plainPort = Number(config.groupPlainPort ?? 0);
+    if (!Number.isInteger(plainPort) || plainPort < 0 || plainPort > 65535) {
+      errors.push('groupPlainPort 必须是 0-65535 的整数（0 = 随机端口）');
+    }
+    return errors;
+  }
   if (config.enabled) {
     if (!config.relayUrl) errors.push('relayUrl 未配置');
     else {

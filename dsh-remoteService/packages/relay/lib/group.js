@@ -469,6 +469,7 @@ export class GroupRegistrationService {
    */
   constructor(options) {
     this.file = options.file;
+    this.relayDomain = typeof options.relayDomain === 'string' ? options.relayDomain : '';
     this.mobilePort = options.mobilePort ?? GROUP_DEFAULT_MOBILE_PORT;
     this.maxHosts = options.maxHosts ?? 200;
     const registration = options.registration ?? {};
@@ -525,6 +526,7 @@ export class GroupRegistrationService {
         hostId: result.hostId,
         hostToken: result.hostToken,
         hostName: result.hostName,
+        relayDomain: this.relayDomain,
         mobilePort: result.mobilePort,
         ...(this.tokenPublicKey ? { tokenPublicKey: this.tokenPublicKey } : {}),
       });
