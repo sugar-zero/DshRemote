@@ -555,7 +555,62 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 
 ---
 
-## 10. 相关文档
+## 10. 群体服务版（group 模式）部署（分支 `feat/group-service`）
+
+> 与 main 的 classic（B2 盲中继）不同：group 模式由 relay **终止手机 TLS**（边缘通配证书），主机只做出站隧道、
+> 用邀请码自助注册；relay 侧提供邀请码/主机管理后台 `/__admin`。设计见
+> [`docs/group-service-design.zh.md`](../docs/group-service-design.zh.md)。**部署方可见明文，责任由部署方承担。**
+
+镜像：`dsh-remote-relay:0.2.0-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.0-group-linux-amd64.tar`）。
+
+1. **准备数据目录与证书**：
+
+   ```bash
+   cd server
+   mkdir -p data/config data/certs/relay.example.com data/certs/wildcard
+   cp group/relay.group.example.json data/config/relay.json    # 改域名/端口
+   # 控制面证书（relay.example.com）→ data/certs/relay.example.com/{fullchain.pem,privkey.pem}
+   # 边缘通配证书（*.relay.example.com）→ data/certs/wildcard/{fullchain.pem,privkey.pem}
+   chown -R 100:101 data      # 镜像内 relay 用户 UID/GID
+   ```
+
+   `data/config/relay.json` 里 `group.mobilePort` 要和手机实际访问端口一致（默认宿主 1443 → 配置 1443；
+   生产若把 443 映射给边缘，就改成 443）。
+
+2. **启动**（二选一）：
+
+   ```bash
+   # A. 本机构建并启动
+   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.group.yml up -d --build
+
+   # B. 服务器离线镜像
+   docker load -i dsh-relay-0.2.0-group-linux-amd64.tar
+   docker compose -f docker-compose.group.yml up -d
+   ```
+
+   默认端口：宿主 `1443`（edge，手机访问）、`18443`（控制面：主机隧道+注册+后台）、`18080`（/healthz）。
+   建议控制面仅对可信网络开放（防火墙/安全组），edge 端口对公网。
+
+3. **后台**：浏览器打开 `https://<relayDomain>:18443/__admin/`，粘贴 admin token。
+   token 首次启动自动生成在 `data/admin-token`（0600），也可显式设 `RELAY_ADMIN_TOKEN`：
+
+   ```bash
+   docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
+   ```
+
+4. **邀请码**：后台「生成邀请码」，或 CLI：
+
+   ```bash
+   docker exec dsh-relay-group node packages/relay/bin/relay.js invite create --note "friend A" --config /data/config/relay.json
+   ```
+
+5. **主机**：装分支 host-plugin **0.1.17**，DSH「设置 → 远程访问 → 群体服务（实验）」填
+   `https://<relayDomain>:18443` + 邀请码 → 注册并连接 → 生成 v2 配对二维码；手机 App 0.1.0 扫码配对。
+
+> 安全提醒：group 模式下 relay 可见会话明文；admin token / `group.json` / `signing-key.pem` / `admin-token`
+> 都在 `data/`（勿入库）；控制面不要直接暴露给群成员，只暴露 edge 端口。
+
+## 11. 相关文档
 
 - [完整部署指南](../dsh-remoteService/docs/DEPLOY.md)
 - [管理 API 契约](../dsh-remoteService/docs/ADMIN-API.md)

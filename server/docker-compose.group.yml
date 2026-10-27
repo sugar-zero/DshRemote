@@ -1,0 +1,67 @@
+# ============================================================================
+# 群体服务版（A 模式）relay 部署模板
+#
+# 与 docker-compose.build.yml（classic 盲中继）的区别：
+#   - relay 终止手机 TLS（边缘通配证书），主机只做出站隧道、自助注册；
+#   - 控制面同时提供：主机隧道、自助注册（邀请码）、部署方后台 /__admin；
+#   - 不使用 RELAY_HOST_ID / tokens.json（主机由邀请码自助注册）。
+#
+# 准备：
+#   mkdir -p data/config data/certs
+#   cp ../server/group/relay.group.example.json data/config/relay.json   # 按部署修改域名/端口/证书路径
+#   # 控制面证书：data/certs/relay.example.com/{fullchain.pem,privkey.pem}
+#   # 边缘通配证书：data/certs/wildcard/{fullchain.pem,privkey.pem}
+#   chown -R 100:101 data
+#
+# 构建 + 启动：
+#   docker compose -f docker-compose.group.yml up -d --build
+#   # 本机 Apple Silicon、服务器 x86_64：
+#   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.group.yml up -d --build
+#
+# 后台：浏览器打开 https://<relayDomain>:18443/__admin/
+#   admin token：首次启动自动生成到 data/admin-token（0600）；也可设 RELAY_ADMIN_TOKEN。
+#   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
+#
+# 导出离线镜像：
+#   docker save -o dsh-relay-0.2.0-group-linux-amd64.tar dsh-remote-relay:0.2.0-group
+# ============================================================================
+
+name: dsh-remote-group
+
+services:
+  relay:
+    build:
+      context: ../dsh-remoteService
+      dockerfile: packages/relay/Dockerfile
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.0-group}
+    container_name: dsh-relay-group
+    user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
+    command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]
+    restart: unless-stopped
+    ports:
+      # 手机访问（relay 边缘终止 TLS）。生产可映射 443；有宿主机 nginx 时用 iptables 转发或直接映射。
+      - "${RELAY_GROUP_EDGE_PORT_HOST:-1443}:443"
+      # 控制面：主机隧道 + 自助注册 + /__admin 后台（建议只对可信网络/防火墙开放）
+      - "${RELAY_GROUP_CONTROL_PORT_HOST:-18443}:8443"
+      # 80：/healthz + 301（不承载业务）
+      - "${RELAY_GROUP_HTTP_PORT_HOST:-18080}:80"
+    environment:
+      RELAY_MODE: group
+      RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
+      # 可选：显式指定 admin token（否则首次启动自动生成到 /data/admin-token）
+      RELAY_ADMIN_TOKEN: ${RELAY_ADMIN_TOKEN:-}
+    volumes:
+      - ./data:/data
+    sysctls:
+      net.ipv4.ip_unprivileged_port_start: "0"
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:80/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

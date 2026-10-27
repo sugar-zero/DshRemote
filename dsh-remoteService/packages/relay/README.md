@@ -447,6 +447,10 @@ https://<relayDomain>:<controlPort>/__admin/
 安全说明：管理页 HTML 本身不返回任何数据（token 由部署方粘贴后存浏览器 localStorage，不落日志）；
 后台与注册/隧道共用控制面 TLS，请只在内网/可信网络访问 controlPort，或按 `server/README.md` 用防火墙限制来源。
 
+**容器镜像**：`dsh-remote-relay:0.2.0-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
+[`server/README.md` §10](../../../server/README.md)。
+
 **P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」+「部署方后台」。
 **主机插件侧 group 接入（注册客户端 / 本地明文代理 / 逐请求复验 / 设置页）、QR v2、App token 流程**
 在下一片接入；在此之前 `group` 模式不能用于生产（`allowUnauthenticated` 仅测试）。

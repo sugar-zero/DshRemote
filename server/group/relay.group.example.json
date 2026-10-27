@@ -1,0 +1,42 @@
+{
+  "domain": "relay.example.com",
+  "mode": "group",
+  "dataPort": 443,
+  "controlPort": 8443,
+  "httpPort": 80,
+  "dataHost": "0.0.0.0",
+  "tls": {
+    "certFile": "/data/certs/relay.example.com/fullchain.pem",
+    "keyFile": "/data/certs/relay.example.com/privkey.pem"
+  },
+  "tokensFile": "/data/tokens.json",
+  "logLevel": "info",
+
+  "group": {
+    "file": "/data/group.json",
+    "mobilePort": 1443,
+    "maxHosts": 200,
+    "registration": {
+      "enabled": true,
+      "maxAttemptsPerMinutePerIp": 10,
+      "maxAttemptsPerMinute": 120,
+      "bodyLimitBytes": 8192
+    },
+    "edge": {
+      "enabled": true,
+      "port": 443,
+      "tls": {
+        "certFile": "/data/certs/wildcard/fullchain.pem",
+        "keyFile": "/data/certs/wildcard/privkey.pem"
+      },
+      "allowUnauthenticated": false
+    },
+    "auth": {
+      "tokenTtlMs": 900000,
+      "challengeTtlMs": 120000,
+      "maxAttemptsPerMinutePerIp": 30,
+      "signingKeyFile": "/data/signing-key.pem"
+    },
+    "adminTokenFile": "/data/admin-token"
+  }
+}
