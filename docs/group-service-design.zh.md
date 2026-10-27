@@ -218,3 +218,13 @@ P1 验收：一台主机 + 一台手机 + 一个自部署 relay 跑通「打开�
 本文与配套文档、截图、日志统一使用占位符：`relay.example.com`、`h_ab12cd34`、
 `<BUNDLE_ID>`、`<VPS_IP>`、`<HOST_TOKEN>`、`<PAIRING_SECRET>`。真实域名 / IP / hostId /
 UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
+
+## 15. P1 进度
+
+- **2026-10-27：切片 1 已落地**——relay `group` 模式 + 邀请码自助注册
+  （`POST /__group/register`，服务端分配 hostId/hostToken/mobilePort，`mobilePort` 随注册下发）+
+  CLI（`invite create|list|revoke`、`host list|revoke`）+ `group.json`（0600、只存 SHA-256、原子写）+
+  每 IP/全局限速、邀请过期/次数/撤销、`maxHosts` 上限；`npm test` **170/170**、
+  `validate:artifacts` 通过；文档见 `dsh-remoteService/packages/relay/README.md` §10。
+- **下一片**：边缘 TLS 终止（通配证书）+ 出站隧道（HTTP/WS 多路复用、大帧背压、心跳独立）、
+  短时 token + relay 签名断言 + 主机逐请求鉴权、主机设置页群体模式、QR v2。

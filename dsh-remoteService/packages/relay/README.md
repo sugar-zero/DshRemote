@@ -322,3 +322,60 @@ node bin/relay.js token list --config /etc/dsh-relay/relay.json
 | 80 端口 301 正常但 https 打不开 | 控制面证书/端口问题 ≠ 443 透传问题；443 依赖主机在线与子域证书 |
 
 协议细节（控制消息、二进制帧格式）见 `packages/protocol/index.js`；管理 API 契约见 `docs/ADMIN-API.md`。
+
+---
+
+## 10. 群体服务版（`group` 模式，P1 切片）
+
+> 仅 `feat/group-service` 分支；`main` 的 classic 行为不变。设计见
+> [docs/group-service-design.zh.md](../../../docs/group-service-design.zh.md)。
+
+`group` 模式 = 群体服务版 A 模式：**服务端终止 TLS + 主机自助注册 + 服务端推送**。
+P1 切片先实现「邀请码 → 主机自助注册」；边缘 TLS 终止与出站隧道在后续切片接入。
+启用：`--mode group` 且配置 `group.file`（默认 `<config 目录>/group.json`）。
+
+```json
+{
+  "domain": "relay.example.com",
+  "mode": "group",
+  "group": {
+    "file": "/data/group.json",
+    "mobilePort": 11443,
+    "maxHosts": 200,
+    "registration": { "enabled": true, "maxAttemptsPerMinutePerIp": 10, "maxAttemptsPerMinute": 120 }
+  }
+}
+```
+
+开邀请码（明文只打印一次；发给要加入的群成员）：
+
+```bash
+node bin/relay.js invite create --note "friend A" --max-uses 1 --expires-in 7d --config /etc/dsh-relay/relay.json
+node bin/relay.js invite list --config /etc/dsh-relay/relay.json
+node bin/relay.js invite revoke <inviteId|code> --config /etc/dsh-relay/relay.json
+node bin/relay.js host list --config /etc/dsh-relay/relay.json
+node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
+```
+
+注册接口（主机插件自动调用；控制面 `POST /__group/register`，生产为 HTTPS）：
+
+```json
+{ "inviteCode": "<one-time invite code>", "hostName": "Living Room Mac" }
+→ 200 { "ok": true, "protocolVersion": 1, "hostId": "h_ab12cd34xy",
+        "hostToken": "<shown once>", "hostName": "Living Room Mac", "mobilePort": 11443 }
+```
+
+错误码：`invalid_request`(400) / `invalid_invite|invite_expired|invite_exhausted|registration_disabled`(403)
+/ `host_limit`(409) / `rate_limited`(429，带 `Retry-After`)。
+
+安全约定：
+
+- **邀请制**：没有有效邀请码一律拒绝；`registration.enabled=false` 可整体关闭。
+- `group.json` 只存 invite code / host token 的 **SHA-256**，明文只在创建/注册响应出现一次；
+  文件 `0600`、原子写；relay 每次注册请求重读，CLI 改动无需重启。
+- hostId 由服务端分配（DNS label 安全、不可自定义）；友好名称仅展示用。
+- `mobilePort` 随注册下发，主机写进配对二维码（QR v2）。
+- `host revoke` 撤销主机后 token 失效；隧道接入后即时断链（当前切片尚无数据面）。
+
+**P1 切片边界**：本切片只落注册/开通；**边缘 TLS 终止、出站隧道、短时 token 鉴权**在下一阶段接入
+（见设计文档 §12）。因此 `group` 模式当前仍保留 classic 的 443 透传端口，手机数据面尚不能走 group 链路。

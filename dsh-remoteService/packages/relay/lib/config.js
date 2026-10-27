@@ -8,6 +8,7 @@
  */
 
 import { readFileSync } from 'node:fs';
+import { GROUP_DEFAULT_MOBILE_PORT, GROUP_REGISTER_BODY_LIMIT_BYTES } from 'dsh-remote-protocol';
 
 /** 公开配置默认值。 */
 export const RELAY_PUSH_DEFAULTS = Object.freeze({
@@ -26,6 +27,21 @@ export const RELAY_DEFAULTS = Object.freeze({
   controlPort: 8443,
   httpPort: 80,
   dataHost: '0.0.0.0',
+});
+
+/** 运行模式：classic = main 的 B2 盲中继；group = 群体服务版（A 模式）。 */
+export const RELAY_MODES = Object.freeze(['classic', 'group']);
+
+/** 群体服务版配置默认值（P1 切片：注册/开通；边缘 TLS 与隧道在后续切片接管）。 */
+export const RELAY_GROUP_DEFAULTS = Object.freeze({
+  mobilePort: GROUP_DEFAULT_MOBILE_PORT,
+  maxHosts: 200,
+  registration: Object.freeze({
+    enabled: true,
+    maxAttemptsPerMinutePerIp: 10,
+    maxAttemptsPerMinute: 120,
+    bodyLimitBytes: GROUP_REGISTER_BODY_LIMIT_BYTES,
+  }),
 });
 
 /** 内部定时器默认值（不作为公开契约；测试可覆盖以缩短等待）。 */
@@ -168,6 +184,56 @@ export function createConsoleLogger(level = 'info', scope = 'relay') {
   };
 }
 
+/** @param {unknown} raw @returns {'classic'|'group'} */
+function normalizeMode(raw) {
+  if (raw === undefined || raw === null || raw === '') return 'classic';
+  const mode = String(raw).trim().toLowerCase();
+  if (!RELAY_MODES.includes(mode)) throw new Error(`invalid mode ${JSON.stringify(raw)}: expected classic|group`);
+  return mode;
+}
+
+/**
+ * 规范化 group 配置（mode=group 时必须有 store 文件路径；classic 下忽略）。
+ * @param {unknown} raw
+ * @param {'classic'|'group'} mode
+ */
+function normalizeGroup(raw, mode) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const file = input.file === undefined || input.file === null || input.file === '' ? undefined : String(input.file);
+  if (mode === 'group' && !file) {
+    throw new Error('group mode requires group.file (group.json path; CLI default: <config dir>/group.json)');
+  }
+  const mobilePort = input.mobilePort === undefined ? RELAY_GROUP_DEFAULTS.mobilePort : Number(input.mobilePort);
+  if (!Number.isInteger(mobilePort) || mobilePort < 1 || mobilePort > 65535) {
+    throw new Error(`invalid group.mobilePort ${JSON.stringify(input.mobilePort)}: expected 1..65535`);
+  }
+  const maxHosts = input.maxHosts === undefined ? RELAY_GROUP_DEFAULTS.maxHosts : Number(input.maxHosts);
+  if (!Number.isSafeInteger(maxHosts) || maxHosts < 1) throw new Error('group.maxHosts 必须是正整数');
+
+  const regInput = input.registration && typeof input.registration === 'object' && !Array.isArray(input.registration)
+    ? /** @type {Record<string, any>} */ (input.registration)
+    : {};
+  const defaults = RELAY_GROUP_DEFAULTS.registration;
+  const perIp = regInput.maxAttemptsPerMinutePerIp === undefined ? defaults.maxAttemptsPerMinutePerIp : Number(regInput.maxAttemptsPerMinutePerIp);
+  const global = regInput.maxAttemptsPerMinute === undefined ? defaults.maxAttemptsPerMinute : Number(regInput.maxAttemptsPerMinute);
+  const bodyLimit = regInput.bodyLimitBytes === undefined ? defaults.bodyLimitBytes : Number(regInput.bodyLimitBytes);
+  if (!Number.isSafeInteger(perIp) || perIp < 1) throw new Error('group.registration.maxAttemptsPerMinutePerIp 必须是正整数');
+  if (!Number.isSafeInteger(global) || global < 1) throw new Error('group.registration.maxAttemptsPerMinute 必须是正整数');
+  if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1024) throw new Error('group.registration.bodyLimitBytes 必须 >= 1024');
+
+  return {
+    file,
+    mobilePort,
+    maxHosts,
+    registration: {
+      enabled: regInput.enabled !== false,
+      maxAttemptsPerMinutePerIp: perIp,
+      maxAttemptsPerMinute: global,
+      bodyLimitBytes: bodyLimit,
+    },
+  };
+}
+
 /**
  * @param {unknown} raw
  * @returns {object} 规范化后的配置
@@ -179,6 +245,8 @@ export function normalizeConfig(raw = {}) {
   const input = /** @type {Record<string, any>} */ (raw);
 
   const dev = Boolean(input.dev);
+  const mode = normalizeMode(input.mode);
+  const group = normalizeGroup(input.group, mode);
   const tls = normalizeTls(input.tls);
   if (!tls && !dev) {
     throw new Error(
@@ -201,6 +269,8 @@ export function normalizeConfig(raw = {}) {
 
   return {
     domain: normalizeDomain(input.domain),
+    mode,
+    group,
     push: normalizePush(input.push),
     limits: normalizeLimits(input.limits),
     dataPort: normalizePort(input.dataPort, 'dataPort', RELAY_DEFAULTS.dataPort),

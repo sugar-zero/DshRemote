@@ -38,11 +38,35 @@ export {
 } from './lib/tokens.js';
 export {
   RELAY_DEFAULTS,
+  RELAY_GROUP_DEFAULTS,
+  RELAY_MODES,
   RELAY_TIMINGS,
   createConsoleLogger,
   normalizeConfig,
   normalizeDomain,
   readTlsMaterial,
 } from './lib/config.js';
+export {
+  GROUP_INVITE_DEFAULT_MAX_USES,
+  GROUP_INVITE_DEFAULT_TTL_MS,
+  GROUP_STORE_DIR_MODE,
+  GROUP_STORE_FILE_MODE,
+  GROUP_STORE_FILE_NAME,
+  GroupRegistrationError,
+  GroupRegistrationService,
+  createInvite,
+  defaultGroupFile,
+  getHostRecord,
+  groupErrorStatus,
+  listHosts,
+  listInvites,
+  readGroupStore,
+  registerHost,
+  resolveGroupFile,
+  revokeHost,
+  revokeInvite,
+  verifyHostToken,
+  writeGroupStore,
+} from './lib/group.js';
 
 export default { createRelay, startRelay };

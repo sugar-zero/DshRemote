@@ -19,6 +19,7 @@ import { WebSocket, WebSocketServer } from 'ws';
 import {
   CONTROL_PATH,
   FRAME_TYPE,
+  GROUP_REGISTER_PATH,
   PROTOCOL_VERSION,
   RELAY_MSG,
   decodeFrame,
@@ -30,6 +31,7 @@ import { MAX_CLIENT_HELLO_BYTES, parseClientHello } from './sni.js';
 import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
 import { createPushService } from './push.js';
+import { GroupRegistrationService } from './group.js';
 
 /** 控制面单帧上限（流帧由主机侧切成合理大小；给 32 MiB 余量）。 */
 const MAX_CONTROL_PAYLOAD = 32 * 1024 * 1024;
@@ -100,6 +102,13 @@ class Relay {
       logger: config.logger,
     });
     this.pushService = createPushService({ ...config.push, logger: config.logger });
+    /**
+     * 群体服务版（A 模式）注册/开通服务；classic 模式下为 null（main 行为不变）。
+     * @type {GroupRegistrationService | null}
+     */
+    this.groupService = config.mode === 'group'
+      ? new GroupRegistrationService({ ...config.group, logger: config.logger })
+      : null;
 
     /** @type {Map<string, any>} hostId → host */
     this.hosts = new Map();
@@ -209,6 +218,7 @@ class Relay {
       controlPort: this.controlPort,
       httpPort: this.httpPort,
       domain: this.config.domain,
+      mode: this.config.mode,
       dev: this.config.dev,
       close: () => this.close(),
       health: () => this.health(),
@@ -294,8 +304,24 @@ class Relay {
     this.wss.handleUpgrade(req, socket, head, (ws) => this.wss.emit('connection', ws, req));
   }
 
-  /** 控制端口上的普通 HTTP 请求 → 404（控制面只接受 WS upgrade）。 */
+  /**
+   * 控制端口上的普通 HTTP 请求：
+   *   - POST /__group/register → 群体版自助注册（仅 group 模式）；
+   *   - 其它 → 404（控制面只接受 WS upgrade）。
+   */
   handleControlHttpRequest(req, res) {
+    if (this.groupService) {
+      let pathname = '/';
+      try {
+        pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
+      } catch {
+        pathname = req.url ?? '/';
+      }
+      if (pathname === GROUP_REGISTER_PATH) {
+        void this.groupService.handleHttp(req, res);
+        return;
+      }
+    }
     const body = JSON.stringify({ ok: false, error: { code: 'not_found', message: 'control plane only accepts WebSocket upgrades on /control' } });
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
