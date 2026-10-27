@@ -10,6 +10,15 @@ set -eu
 
 cd /app
 
+# 群体服务版（A 模式）：主机通过邀请码自助注册，不再需要预置 RELAY_HOST_ID/token。
+if [ "${RELAY_MODE:-}" = "group" ] || [ -n "${RELAY_GROUP_FILE:-}" ]; then
+  echo "relay-entrypoint: group 模式（主机自助注册，跳过 host token 预置）"
+  if [ "$#" -gt 0 ]; then
+    exec "$@"
+  fi
+  exec node packages/relay/bin/relay.js
+fi
+
 if [ -z "${RELAY_HOST_ID:-}" ]; then
   echo "relay-entrypoint: RELAY_HOST_ID 未设置，请在 .env 中配置" >&2
   exit 1

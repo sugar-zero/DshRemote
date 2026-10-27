@@ -205,8 +205,11 @@ class Relay {
     this.httpServer = http.createServer((req, res) => this.handleHttpRequest(req, res));
     this.httpServer.on('error', (err) => this.logger.error(`http plane server error: ${err.code ?? ''} ${err.message}`));
 
-    this.dataServer = net.createServer((socket) => this.handleDataConnection(socket));
-    this.dataServer.on('error', (err) => this.logger.error(`data plane server error: ${err.code ?? ''} ${err.message}`));
+    // group 模式由边缘 TLS 终结手机流量，不再启动 classic 的 L4 透传端口（避免占用 443）。
+    if (this.config.mode !== 'group') {
+      this.dataServer = net.createServer((socket) => this.handleDataConnection(socket));
+      this.dataServer.on('error', (err) => this.logger.error(`data plane server error: ${err.code ?? ''} ${err.message}`));
+    }
 
     if (this.config.mode === 'group' && this.config.group.edge.enabled) {
       const edgeTls = readTlsMaterial(this.config.group.edge.tls);
@@ -222,7 +225,7 @@ class Relay {
 
     try {
       await Promise.all([
-        this.listen(this.dataServer, this.config.dataPort, 'data'),
+        this.dataServer ? this.listen(this.dataServer, this.config.dataPort, 'data') : Promise.resolve(),
         this.listen(this.controlServer, this.config.controlPort, 'control'),
         this.listen(this.httpServer, this.config.httpPort, 'http'),
         this.edgeServer ? this.listen(this.edgeServer, this.config.group.edge.port, 'edge') : Promise.resolve(),
@@ -233,10 +236,9 @@ class Relay {
       throw err;
     }
 
-    const dataAddr = /** @type {net.AddressInfo} */ (this.dataServer.address());
     const controlAddr = /** @type {net.AddressInfo} */ (this.controlServer.address());
     const httpAddr = /** @type {net.AddressInfo} */ (this.httpServer.address());
-    this.dataPort = dataAddr.port;
+    if (this.dataServer) this.dataPort = /** @type {net.AddressInfo} */ (this.dataServer.address()).port;
     this.controlPort = controlAddr.port;
     this.httpPort = httpAddr.port;
     if (this.edgeServer) {
@@ -247,7 +249,7 @@ class Relay {
           + 'do not expose this to the internet',
         );
       } else {
-        this.logger.info(`group edge listening on :${this.edgePort} (device auth not implemented yet; connections will be rejected)`);
+        this.logger.info(`group edge listening on :${this.edgePort} (device session token auth enabled)`);
       }
     }
 
@@ -256,7 +258,8 @@ class Relay {
     this.heartbeatTimer.unref?.();
 
     this.logger.info(
-      `relay listening on ${this.config.dataHost} — data :${this.dataPort} (tls passthrough), `
+      `relay listening on ${this.config.dataHost} — `
+      + (this.dataServer ? `data :${this.dataPort} (tls passthrough), ` : '')
       + `control :${this.controlPort} (${tlsMaterial ? 'wss' : 'ws/dev'}), http :${this.httpPort}; domain ${this.config.domain}`,
     );
     if (this.groupAdmin) {
