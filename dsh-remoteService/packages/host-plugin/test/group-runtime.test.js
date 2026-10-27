@@ -152,6 +152,9 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
       group: {
         file: groupFile,
         mobilePort: 11443,
+        // P1 切片 9：注册 API / 后台独立监听，控制面只做 WSS
+        apiPort: 0,
+        adminPort: 0,
         edge: { enabled: true, port: 0, tls: { cert: cert.cert, key: cert.key }, allowUnauthenticated: false },
         auth: { tokenTtlMs: 15 * 60 * 1000, challengeTtlMs: 2 * 60 * 1000, maxAttemptsPerMinutePerIp: 100 },
         registration: { enabled: true, maxAttemptsPerMinutePerIp: 50, maxAttemptsPerMinute: 200, bodyLimitBytes: 8192 },
@@ -177,7 +180,8 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
 
     runtime = new GroupHostRuntime({
       config: {
-        groupServiceUrl: `http://127.0.0.1:${relay.controlPort}`,
+        // 注册走独立的注册 API 面；隧道地址由注册响应 controlUrl 下发
+        groupServiceUrl: `http://127.0.0.1:${relay.groupApiPort}`,
         groupInviteCode: invite.code,
         groupInsecure: true,
         groupPlainPort: 0,
@@ -202,6 +206,9 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
     assert.equal(registration.relayDomain, 'relay.test');
     assert.equal(registration.mobilePort, 11443);
     assert.match(registration.tokenPublicKey, /BEGIN PUBLIC KEY/);
+    // 控制面地址来自服务端下发，且是 WSS 端口（≠ 注册 API 端口）
+    assert.equal(registration.controlUrl, `ws://127.0.0.1:${relay.controlPort}`);
+    assert.notEqual(String(relay.controlPort), String(relay.groupApiPort));
     groupInfo = { hostId: registration.hostId, relayDomain: registration.relayDomain, mobilePort: registration.mobilePort };
     devices.onChange = () => runtime.syncDevices();
     const registrationFile = paths.groupRegistration();

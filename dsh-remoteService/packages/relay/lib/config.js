@@ -282,6 +282,23 @@ function normalizeGroup(raw, mode, dev = false) {
     ? undefined
     : String(input.adminTokenFile);
 
+  // 职责分离（P1 切片 9）：控制面只做 WSS 隧道；注册 API 与部署方后台各自独立监听。
+  // 不配置时保留旧的「都挂在控制面」行为（向后兼容 / 测试）。
+  const optionalPort = (value, label) => {
+    if (value === undefined || value === null || value === '') return undefined;
+    const port = Number(value);
+    if (!Number.isInteger(port) || port < 0 || port > 65535) {
+      throw new Error(`invalid group.${label} ${JSON.stringify(value)}: expected 0..65535 (0 = ephemeral)`);
+    }
+    return port;
+  };
+  const apiPort = optionalPort(input.apiPort, 'apiPort');
+  const adminPort = optionalPort(input.adminPort, 'adminPort');
+  const publicControlPort = optionalPort(input.publicControlPort, 'publicControlPort');
+  const optionalBind = (value) => (value === undefined || value === null || value === '' ? undefined : String(value));
+  const apiBind = optionalBind(input.apiBind);
+  const adminBind = optionalBind(input.adminBind);
+
   return {
     file,
     mobilePort,
@@ -306,6 +323,11 @@ function normalizeGroup(raw, mode, dev = false) {
     },
     adminToken,
     adminTokenFile,
+    apiPort,
+    adminPort,
+    apiBind,
+    adminBind,
+    publicControlPort,
   };
 }
 
