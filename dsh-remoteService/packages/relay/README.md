@@ -444,8 +444,11 @@ https://<relayDomain>:<controlPort>/__admin/
 2. token 文件 `group.adminTokenFile`（默认 `<group.json 目录>/admin-token`，0600；**首次启动自动生成**）；
 3. 本机查看：`node bin/relay.js admin-token --config /etc/dsh-relay/relay.json`（`--json` 可机器读）。
 
-安全说明：管理页 HTML 本身不返回任何数据（token 由部署方粘贴后存浏览器 localStorage，不落日志）；
-后台与注册/隧道共用控制面 TLS，请只在内网/可信网络访问 controlPort，或按 `server/README.md` 用防火墙限制来源。
+安全说明：管理页 HTML 本身不返回任何数据（token 由部署方粘贴后存浏览器 localStorage，不落日志）。
+后台与主机隧道/注册**共用控制面 TLS 端口**：该端口必须对主机公网可达（主机 WSS 连接），
+和单机版 8443 一致；`/__admin` 只是同端口上的运营面，靠 admin token + 失败限速保护。
+如需进一步收紧，可在 nginx 侧给后台入口加 basic auth / IP 白名单（或给后台单独域名反代），
+admin token 只给部署方、不要发给群成员。
 
 **容器镜像**：`dsh-remote-relay:0.2.0-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见

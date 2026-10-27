@@ -612,8 +612,9 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    ```
 
    默认端口：宿主 `1443`（edge，手机访问）、`18443`（控制面：主机隧道+注册+后台）、`18080`（/healthz，默认只绑回环）。
-   edge 和控制面需要公网可达（手机/主机从外网连）；控制面同时承载 `/__admin`，靠 admin token + 限速保护，
-   如条件允许可用防火墙/安全组限制来源，或按下一小节用 nginx 统一入口。
+   **edge 和控制面都必须公网可达**（手机/主机从外网连）；控制面同时承载 `/__admin`，靠 admin token + 限速保护。
+   注意：不要用防火墙阻断控制面的来源——那会挡掉主机隧道和注册；想收紧后台入口，用下一小节的 nginx 前置方案
+   （basic auth / IP 白名单 / 独立域名反代），而不是关端口。
 
    **与已有 nginx / classic relay 共存**：group 模式不需要 nginx 做 TLS 终止/证书（relay 自己终止手机 TLS）。
    nginx 只能有一份 `stream {}`，443/8443 每个端口只能 listen 一次，所以：
@@ -650,7 +651,12 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    `https://<relayDomain>:18443` + 邀请码 → 注册并连接 → 生成 v2 配对二维码；手机 App 0.1.0 扫码配对。
 
 > 安全提醒：group 模式下 relay 可见会话明文；admin token / `group.json` / `signing-key.pem` / `admin-token`
-> 都在 `data/`（勿入库）；控制面不要直接暴露给群成员，只暴露 edge 端口。
+> 都在 `data/`（勿入库）。
+>
+> **控制面端口（18443/8443）必须对主机公网可达**——主机要从各自网络连 WSS 隧道、调用注册接口，
+> 和单机版 8443 的定位完全一样。它同时承载 `/__admin` 后台，这是和单机版唯一的差别：
+> 后台靠 admin token + 失败限速保护，**不要公开宣传后台地址**，条件允许时用 nginx 前置
+> basic auth / IP 白名单，或按需给后台单独域名反代；**admin token 只给部署方，不要发给群成员**。
 
 ## 11. 相关文档
 
