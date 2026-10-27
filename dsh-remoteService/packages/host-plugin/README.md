@@ -287,8 +287,13 @@ volumes:
   邀请码一次性，注册成功后会从配置中清空；
 - `POST /api/remote-access/group/reset` → 停隧道、删除 `group.json`、关闭群体模式。
 
+**群体版配对**：桌面端点「配对新设备」生成 **QR v2**（`dshremote://pair?v=2&host=<hostId>.<domain>&port=<mobilePort>&auth=token&...`，
+端口来自服务端下发）；手机经 `https://<hostId>:<port>/__dsh_remote/pair` 提交 **P-256 公钥**（不再签 CSR/证书）→
+主机确认后写入设备记录（`groupPublicKey`）→ 自动 `device.sync` 给 relay → 手机即可换短时 token 访问。
+relay 边缘对 `/__dsh_remote/pair`、`/__dsh_remote/pair/status` 放行（一次性 secret + 主机确认保护，主机侧另有限速）。
+
 设备配对/撤销会自动 `device.sync` 到 relay（`DeviceStore.onChange`）；主机重连时也会全量同步。
-**P1 边界**：QR v2（端口/认证模式）与 App token 流程在后续切片接入。
+**P1 边界**：App 侧 token 流程（原生设备密钥 → challenge 签名 → `__Host-` cookie）在后续切片接入。
 
 ---
 

@@ -1,12 +1,15 @@
 import { randomBytes, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import {
+  buildGroupPairingUri,
   buildPairingUri,
+  groupDevicePublicKeyObject,
   hostFqdn,
   newPairingSecret,
   pairingCode,
   pairingSas,
   safeEqualStrings,
+  sha256Base64Url,
 } from 'dsh-remote-protocol';
 import { parseDeviceCsr, signDeviceCertificate } from './identity.js';
 import { hostAddress } from './config.js';
@@ -26,12 +29,14 @@ export class PairingError extends Error {
 
 /** 配对会话状态机：创建 → 等待扫码 → pending（桌面确认）/ paired。 */
 export class PairingManager {
-  constructor({ identity, ca, devices, audit, getConfig, log = () => {} }) {
+  constructor({ identity, ca, devices, audit, getConfig, getGroupInfo, log = () => {} }) {
     this.identity = identity;
     this.ca = ca;
     this.devices = devices;
     this.audit = audit;
     this.getConfig = getConfig;
+    /** 群体模式：返回 {hostId, relayDomain, mobilePort}；classic 模式返回 undefined。 */
+    this.getGroupInfo = typeof getGroupInfo === 'function' ? getGroupInfo : () => undefined;
     this.log = log;
     this.session = undefined;
     this.attempts = new Map(); // ip -> { count, resetAt }
@@ -55,23 +60,42 @@ export class PairingManager {
     }
   }
 
+  /** 群体版信息（group 模式已注册时才有）。 */
+  groupInfo() {
+    const info = this.getGroupInfo();
+    return info && info.hostId && info.relayDomain ? info : undefined;
+  }
+
   /** 创建一次性配对会话（会取消旧的）。 */
   createSession() {
     this.cleanup();
     const config = this.getConfig();
-    if (!config.hostId || !config.relayDomain) {
-      throw new PairingError('not-configured', '请先配置 hostId / relayDomain 并启用远程访问', 409);
-    }
-    const fqdn = hostAddress(config);
+    const groupInfo = this.groupInfo();
     const secret = newPairingSecret();
     const expiresAt = this.now() + PAIRING_TTL_MS;
-    const uri = buildPairingUri({
-      host: fqdn,
-      secret,
-      hostFingerprint: this.identity.fingerprint,
-      expiresAt,
-      relayDomain: config.relayDomain,
-    });
+    let uri;
+    if (groupInfo) {
+      uri = buildGroupPairingUri({
+        host: `${groupInfo.hostId}.${groupInfo.relayDomain}`,
+        port: groupInfo.mobilePort,
+        secret,
+        hostFingerprint: this.identity.fingerprint,
+        expiresAt,
+        relayDomain: groupInfo.relayDomain,
+        hostId: groupInfo.hostId,
+      });
+    } else {
+      if (!config.hostId || !config.relayDomain) {
+        throw new PairingError('not-configured', '请先配置 hostId / relayDomain 并启用远程访问', 409);
+      }
+      uri = buildPairingUri({
+        host: hostAddress(config),
+        secret,
+        hostFingerprint: this.identity.fingerprint,
+        expiresAt,
+        relayDomain: config.relayDomain,
+      });
+    }
     const session = {
       pairingId: `p_${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       secret,
@@ -134,10 +158,10 @@ export class PairingManager {
   }
 
   /**
-   * App 侧提交配对请求（带一次性密钥 + CSR）。
-   * @returns {Promise<{status:'paired'|'pending', ...}>}
+   * App 侧提交配对请求：classic 带一次性密钥 + CSR；group 带一次性密钥 + P-256 公钥（base64url）。
+   * @returns {{status:'paired'|'pending', ...}}
    */
-  handlePairRequest({ secret, csrPem, deviceName, platform, remoteAddress }) {
+  handlePairRequest({ secret, csrPem, publicKey, deviceName, platform, remoteAddress }) {
     this.cleanup();
     this.rateLimit(remoteAddress);
     const s = this.session;
@@ -153,6 +177,7 @@ export class PairingManager {
       if (s.attempts >= PAIRING_MAX_ATTEMPTS_PER_IP) this.cancel();
       throw new PairingError('invalid-secret', '配对密钥不正确', 403);
     }
+    if (this.groupInfo()) return this.requestGroupPairing(s, { publicKey, deviceName, platform });
     const parsed = parseDeviceCsr(csrPem);
     if (parsed.engine === 'js') {
       this.log('openssl 不可用，已回退纯 JS 校验 EC 设备 CSR（Windows 无需安装 openssl）');
@@ -191,7 +216,45 @@ export class PairingManager {
     return this.issue(s, s.temp);
   }
 
+  /**
+   * 群体版配对：登记设备 P-256 公钥（不签证书）；需要桌面确认时同 classic 流程。
+   * @param {any} session
+   * @param {{publicKey?: string, deviceName?: string, platform?: string}} input
+   */
+  requestGroupPairing(session, { publicKey, deviceName, platform }) {
+    const key = String(publicKey ?? '');
+    try {
+      groupDevicePublicKeyObject(key);
+    } catch {
+      throw new PairingError('invalid-public-key', '设备公钥必须是 P-256 未压缩点（base64url，65 字节）', 400);
+    }
+    const fingerprint = sha256Base64Url(Buffer.from(key, 'base64url'));
+    const temp = {
+      deviceId: `d_${randomBytes(6).toString('hex')}`,
+      name: String(deviceName || '新设备').slice(0, 80),
+      platform: String(platform || 'unknown').slice(0, 20),
+      publicKey: key,
+      publicKeyFingerprint: fingerprint,
+    };
+    const sas = pairingSas(session.secret, this.identity.publicKeyDerB64, key);
+    if (!session.requiresApproval) return this.issue(session, temp);
+    session.status = 'pending';
+    session.sas = sas;
+    session.temp = temp;
+    session.ticket = randomUUID();
+    this.audit.append({ action: 'pairing', resource: session.pairingId, result: 'pending-approval' });
+    return {
+      status: 'pending',
+      ticket: session.ticket,
+      sas,
+      expiresAt: session.expiresAt,
+      hostName: this.hostName(),
+      hostFingerprint: this.identity.fingerprint,
+    };
+  }
+
   issue(session, temp) {
+    if (this.groupInfo() && temp.publicKey) return this.issueGroup(session, temp);
     const signed = signDeviceCertificate({
       ca: this.ca,
       csrPem: temp.csrPem,
@@ -224,6 +287,42 @@ export class PairingManager {
     };
     session.resultKeptUntil = this.now() + 5 * 60 * 1000;
     this.audit.append({ deviceId: device.id, action: 'pairing', resource: session.pairingId, result: 'paired', hash: signed.devicePublicKeyFingerprint });
+    return session.result;
+  }
+
+  /** 群体版签发：把 P-256 公钥写成设备记录（无证书），并标记配对完成。 */
+  issueGroup(session, temp) {
+    const groupInfo = this.groupInfo();
+    const device = this.devices.add({
+      id: temp.deviceId,
+      name: temp.name,
+      platform: temp.platform,
+      serial: temp.publicKeyFingerprint.toUpperCase(),
+      publicKeyFingerprint: temp.publicKeyFingerprint,
+      groupPublicKey: temp.publicKey,
+      notAfter: null,
+    });
+    session.status = 'paired';
+    session.result = {
+      status: 'paired',
+      auth: 'token',
+      deviceId: device.id,
+      deviceName: device.name,
+      devicePublicKey: temp.publicKey,
+      hostId: groupInfo?.hostId ?? '',
+      relayDomain: groupInfo?.relayDomain ?? '',
+      mobilePort: groupInfo?.mobilePort ?? 0,
+      hostName: this.hostName(),
+      hostFingerprint: this.identity.fingerprint,
+    };
+    session.resultKeptUntil = this.now() + 5 * 60 * 1000;
+    this.audit.append({
+      deviceId: device.id,
+      action: 'pairing',
+      resource: session.pairingId,
+      result: 'paired',
+      hash: temp.publicKeyFingerprint,
+    });
     return session.result;
   }
 

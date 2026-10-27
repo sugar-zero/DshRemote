@@ -29,6 +29,9 @@ export const RESTART_PATH = `${TUNNEL_BASE}/restart`;
 /** 配对二维码 URI scheme。 */
 export const PAIR_URI_SCHEME = 'dshremote';
 export const PAIR_URI_VERSION = 1;
+/** 群体版（A 模式）配对 URI v2：带服务端下发的端口与 auth=token。 */
+export const PAIR_URI_VERSION_GROUP = 2;
+export const PAIR_AUTH_TOKEN = 'token';
 
 /** 主机名后缀约定：<hostId>.<relayDomain>。 */
 export function hostFqdn(hostId, relayDomain) {
@@ -118,6 +121,54 @@ export function buildPairingUri({ host, secret, hostFingerprint, expiresAt, rela
   url.searchParams.set('exp', String(Math.floor(expiresAt / 1000)));
   if (relayDomain) url.searchParams.set('relay', relayDomain);
   return url.href;
+}
+
+/**
+ * 构造群体版配对 URI（v2）：host 为 `<hostId>.<relayDomain>`，port 为服务端下发的手机访问端口，
+ * auth=token 表示设备用 P-256 密钥 + 短时 token 而不是 mTLS 证书。
+ * @param {{host: string, port?: number, secret: string, hostFingerprint: string, expiresAt: number, relayDomain?: string, hostId?: string}} opts
+ */
+export function buildGroupPairingUri({ host, port, secret, hostFingerprint, expiresAt, relayDomain, hostId }) {
+  const url = new URL(`${PAIR_URI_SCHEME}://pair`);
+  url.searchParams.set('v', String(PAIR_URI_VERSION_GROUP));
+  url.searchParams.set('host', host);
+  if (port !== undefined && Number.isFinite(Number(port))) url.searchParams.set('port', String(Number(port)));
+  url.searchParams.set('secret', secret);
+  url.searchParams.set('hostfp', hostFingerprint);
+  url.searchParams.set('exp', String(Math.floor(expiresAt / 1000)));
+  url.searchParams.set('auth', PAIR_AUTH_TOKEN);
+  if (relayDomain) url.searchParams.set('relay', relayDomain);
+  if (hostId) url.searchParams.set('hostid', hostId);
+  return url.href;
+}
+
+/** 解析群体版配对 URI（v2）；无效时抛错。 */
+export function parseGroupPairingUri(uri) {
+  const url = new URL(String(uri));
+  if (url.protocol !== `${PAIR_URI_SCHEME}:`) throw new Error('不是 DSH 远程配对 URI');
+  if (url.hostname !== 'pair') throw new Error('配对 URI 必须使用 dshremote://pair');
+  const version = Number(url.searchParams.get('v') ?? '0');
+  if (version !== PAIR_URI_VERSION_GROUP) throw new Error(`不是群体版配对 URI（v=${String(version)}）`);
+  if (url.searchParams.get('auth') !== PAIR_AUTH_TOKEN) throw new Error('群体版配对 URI 缺少 auth=token');
+  const host = url.searchParams.get('host');
+  const secret = url.searchParams.get('secret');
+  const hostFingerprint = url.searchParams.get('hostfp');
+  const exp = Number(url.searchParams.get('exp') ?? '0');
+  if (!host || !secret || !hostFingerprint || !Number.isFinite(exp)) throw new Error('配对 URI 缺少字段');
+  const portRaw = url.searchParams.get('port');
+  const port = portRaw === null ? undefined : Number(portRaw);
+  if (port !== undefined && (!Number.isInteger(port) || port < 1 || port > 65535)) throw new Error('配对 URI port 非法');
+  return {
+    version,
+    host,
+    port,
+    secret,
+    hostFingerprint,
+    expiresAt: exp * 1000,
+    relayDomain: url.searchParams.get('relay') ?? undefined,
+    hostId: url.searchParams.get('hostid') ?? undefined,
+    auth: PAIR_AUTH_TOKEN,
+  };
 }
 
 /** 解析配对 URI；无效时抛错。 */

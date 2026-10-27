@@ -244,5 +244,10 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   注册·隧道状态 / 注册并连接 / 重置注册；group 模式下提示 TLS·APNs 不生效）；管理 API
   `POST /group/register` 与 `POST /group/reset`；设备配对/撤销自动 `device.sync`（DeviceStore.onChange）；
   邀请码一次性（注册成功后清空）。`npm test` **184/184**。
-- **下一片**：QR v2（服务端下发端口 + auth 模式）+ App token 流程（原生设备密钥 → challenge 签名 →
-  `__Host-` cookie，替代 mTLS）+ 手机端 settings/pairing 适配；随后把 §10 攻击用例表在真机链路复核。
+- **2026-10-27：切片 6 已落地（Host/协议侧）**——群体版配对：QR **v2**（`host` + 服务端下发 `port` +
+  `auth=token` + relay/hostid）；手机经 relay 边缘 `POST /__dsh_remote/pair` 提交 **P-256 公钥**（不签证书）→
+  主机确认后写入设备记录并自动 `device.sync`；relay 边缘对 pair 路径放行（一次性 secret + 主机确认 + 主机侧限速）。
+  端到端测试覆盖：注册 → v2 QR 解析 → 边缘配对 → 设备同步 → challenge/token → 隧道访问 → Host 不一致 421 →
+  无 cookie 401 → 撤销后 401；`npm test` **184/184**。
+- **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
+  注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。

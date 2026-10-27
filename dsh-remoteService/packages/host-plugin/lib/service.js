@@ -98,6 +98,8 @@ export class RemoteService {
       devices: this.devices,
       audit: this.audit,
       getConfig: () => this.config,
+      // 群体模式：二维码用 v2（服务端下发的 hostId/relayDomain/mobilePort + auth=token）
+      getGroupInfo: () => (this.config?.groupEnabled ? this.groupRuntime?.registrationInfo() : undefined),
       log: this.log,
     });
     this.proxy = new DshProxy({
@@ -121,6 +123,7 @@ export class RemoteService {
       config,
       devices: this.devices,
       proxy: this.proxy,
+      pairing: this.pairing,
       audit: this.audit,
       log: this.log,
     });

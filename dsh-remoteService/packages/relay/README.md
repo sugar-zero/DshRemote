@@ -417,7 +417,8 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
      `POST /__group/auth/token {deviceId, nonce, signature}` → `{token, expiresAt}` +
      `Set-Cookie: __Host-dsh_session=…; Path=/; Secure; HttpOnly; SameSite=Strict`（默认 15 分钟）。
 3. **边缘校验**：业务请求带 cookie；relay 校验 token（Ed25519 签名 / 过期 / hostId / 设备未撤销）后才开隧道，
-   未通过直接 401。
+   未通过直接 401。**例外**：`/__dsh_remote/pair` 与 `/__dsh_remote/pair/status` 放行（一次性配对 secret +
+   主机确认保护，安全由主机侧 PairingManager 负责；仍有主机侧限速与一次性过期）。
 4. **主机逐请求复验**：注册响应里的 `tokenPublicKey`（PEM）可离线校验 token（协议库
    `verifyGroupSessionToken`），主机无需回连 relay；设备撤销以 host 设备表为权威源。
 
