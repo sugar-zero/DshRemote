@@ -377,5 +377,32 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 - `mobilePort` 随注册下发，主机写进配对二维码（QR v2）。
 - `host revoke` 撤销主机后 token 失效；隧道接入后即时断链（当前切片尚无数据面）。
 
-**P1 切片边界**：本切片只落注册/开通；**边缘 TLS 终止、出站隧道、短时 token 鉴权**在下一阶段接入
-（见设计文档 §12）。因此 `group` 模式当前仍保留 classic 的 443 透传端口，手机数据面尚不能走 group 链路。
+### 边缘 TLS + 出站隧道（P1 切片 2）
+
+`group.edge` 开启后，relay 在 `group.edge.port` 用**通配证书**终止手机 TLS，并把解密后的字节流
+经控制面隧道转发给主机（`host.open {kind:"group-edge"}` + 既有二进制 DATA/CLOSE 帧）；流量控制与
+心跳沿用现有机制（分帧、背压水位、心跳走控制 JSON 通道，互不阻塞）。
+
+```json
+"group": {
+  "file": "/data/group.json",
+  "edge": {
+    "enabled": true,
+    "port": 11443,
+    "tls": { "certFile": "/data/certs/wildcard/fullchain.pem",
+             "keyFile":  "/data/certs/wildcard/privkey.pem" },
+    "allowUnauthenticated": false
+  }
+}
+```
+
+- 证书必须覆盖 `*.<relayDomain>`（或所有主机子域），手机按 SNI 访问 `<hostId>.<domain>`。
+- `allowUnauthenticated: true` **仅 dev/test**（非 dev 配置会直接报错）：本切片尚未接入设备鉴权，
+  生产默认下边缘连接一律 **503 `edge_authentication_unavailable`**，不会放行。
+- 错误语义：非 `<hostId>.<domain>` 的 SNI → `421`；主机未注册/离线 → `502`；连接/流表超限 → `503`。
+- 已验证（`test/group-tunnel.test.js`）：通配证书握手、SNI→hostId 路由、8MB 大帧回显逐字节一致、
+  传输期间心跳不断（主机不被踢）、主机断线后边缘流清理。
+
+**P1 切片边界**：已落「注册/开通」+「边缘 TLS 终止 + 出站隧道骨架」。**设备鉴权（短时 token +
+relay 签名断言）、主机插件侧 group 接入（本地明文代理 + 设置页）、QR v2** 在下一片接入；
+在此之前 `group` 模式的手机数据面不能用于生产。

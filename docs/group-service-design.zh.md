@@ -226,5 +226,9 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   CLI（`invite create|list|revoke`、`host list|revoke`）+ `group.json`（0600、只存 SHA-256、原子写）+
   每 IP/全局限速、邀请过期/次数/撤销、`maxHosts` 上限；`npm test` **170/170**、
   `validate:artifacts` 通过；文档见 `dsh-remoteService/packages/relay/README.md` §10。
-- **下一片**：边缘 TLS 终止（通配证书）+ 出站隧道（HTTP/WS 多路复用、大帧背压、心跳独立）、
-  短时 token + relay 签名断言 + 主机逐请求鉴权、主机设置页群体模式、QR v2。
+- **2026-10-27：切片 2 已落地**——边缘 TLS 终止（通配证书，`group.edge`）+ 出站隧道
+  （复用控制面多路复用 stream：`host.open {kind:"group-edge"}` + DATA/CLOSE 帧；分帧/背压/心跳独立）；
+  错误语义 421/502/503；未认证模式 dev-only（生产默认拒绝）。
+  已验证：8MB 大帧回显逐字节一致、传输期间心跳不断（主机不被踢）、断线清理；`npm test` **174/174**。
+- **下一片**：设备鉴权（短时 token + relay 签名断言 + 主机逐请求鉴权，替换 dev-only
+  `allowUnauthenticated`）、主机插件侧 group 接入（本地明文代理 + 设置页群体模式）、QR v2。

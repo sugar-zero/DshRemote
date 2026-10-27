@@ -197,7 +197,7 @@ function normalizeMode(raw) {
  * @param {unknown} raw
  * @param {'classic'|'group'} mode
  */
-function normalizeGroup(raw, mode) {
+function normalizeGroup(raw, mode, dev = false) {
   const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
   const file = input.file === undefined || input.file === null || input.file === '' ? undefined : String(input.file);
   if (mode === 'group' && !file) {
@@ -221,6 +221,26 @@ function normalizeGroup(raw, mode) {
   if (!Number.isSafeInteger(global) || global < 1) throw new Error('group.registration.maxAttemptsPerMinute 必须是正整数');
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1024) throw new Error('group.registration.bodyLimitBytes 必须 >= 1024');
 
+  // 群体版边缘 TLS（A 模式）：relay 终止手机 TLS，流的明文经控制面隧道转发到主机。
+  // 本切片只实现「隧道 + 边缘 TLS」骨架；设备鉴权（短时 token/签名断言）在下一片接入，
+  // 因此 allowUnauthenticated 仅允许 dev/test，绝不能用于生产。
+  const edgeInput = input.edge && typeof input.edge === 'object' && !Array.isArray(input.edge)
+    ? /** @type {Record<string, any>} */ (input.edge)
+    : {};
+  const edgeEnabled = edgeInput.enabled === true;
+  const edgeTls = normalizeTls(edgeInput.tls);
+  if (edgeEnabled && !edgeTls) {
+    throw new Error('group edge requires TLS: group.edge.tls = {"certFile","keyFile"} (通配证书) 或 {"cert","key"}');
+  }
+  const edgePort = edgeInput.port === undefined ? mobilePort : Number(edgeInput.port);
+  if (!Number.isInteger(edgePort) || edgePort < 0 || edgePort > 65535) {
+    throw new Error(`invalid group.edge.port ${JSON.stringify(edgeInput.port)}: expected 0..65535 (0 = ephemeral)`);
+  }
+  const allowUnauthenticated = edgeInput.allowUnauthenticated === true;
+  if (edgeEnabled && allowUnauthenticated && !dev) {
+    throw new Error('group.edge.allowUnauthenticated is dev-only (未认证边缘隧道不得用于生产)');
+  }
+
   return {
     file,
     mobilePort,
@@ -230,6 +250,12 @@ function normalizeGroup(raw, mode) {
       maxAttemptsPerMinutePerIp: perIp,
       maxAttemptsPerMinute: global,
       bodyLimitBytes: bodyLimit,
+    },
+    edge: {
+      enabled: edgeEnabled,
+      port: edgePort,
+      tls: edgeTls,
+      allowUnauthenticated,
     },
   };
 }
@@ -246,7 +272,7 @@ export function normalizeConfig(raw = {}) {
 
   const dev = Boolean(input.dev);
   const mode = normalizeMode(input.mode);
-  const group = normalizeGroup(input.group, mode);
+  const group = normalizeGroup(input.group, mode, dev);
   const tls = normalizeTls(input.tls);
   if (!tls && !dev) {
     throw new Error(

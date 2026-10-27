@@ -15,10 +15,12 @@
 import http from 'node:http';
 import https from 'node:https';
 import net from 'node:net';
+import tls from 'node:tls';
 import { WebSocket, WebSocketServer } from 'ws';
 import {
   CONTROL_PATH,
   FRAME_TYPE,
+  GROUP_EDGE_STREAM_KIND,
   GROUP_REGISTER_PATH,
   PROTOCOL_VERSION,
   RELAY_MSG,
@@ -31,7 +33,7 @@ import { MAX_CLIENT_HELLO_BYTES, parseClientHello } from './sni.js';
 import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
 import { createPushService } from './push.js';
-import { GroupRegistrationService } from './group.js';
+import { GroupRegistrationService, verifyHostToken } from './group.js';
 
 /** 控制面单帧上限（流帧由主机侧切成合理大小；给 32 MiB 余量）。 */
 const MAX_CONTROL_PAYLOAD = 32 * 1024 * 1024;
@@ -120,10 +122,17 @@ class Relay {
     this.dataPort = config.dataPort;
     this.controlPort = config.controlPort;
     this.httpPort = config.httpPort;
+    this.edgePort = 0;
     this.closed = false;
 
     /** @type {net.Server | null} */
     this.dataServer = null;
+    /** @type {tls.Server | null} 群体版边缘 TLS（A 模式） */
+    this.edgeServer = null;
+    /** @type {Set<import('node:tls').TLSSocket>} 边缘连接（close() 时强制断） */
+    this.edgeSockets = new Set();
+    /** @type {Map<string, number>} IP → 边缘连接数（DoS 兜底） */
+    this.edgeIpConnections = new Map();
     /** @type {http.Server | https.Server | null} */
     this.controlServer = null;
     /** @type {http.Server | null} */
@@ -159,11 +168,24 @@ class Relay {
     this.dataServer = net.createServer((socket) => this.handleDataConnection(socket));
     this.dataServer.on('error', (err) => this.logger.error(`data plane server error: ${err.code ?? ''} ${err.message}`));
 
+    if (this.config.mode === 'group' && this.config.group.edge.enabled) {
+      const edgeTls = readTlsMaterial(this.config.group.edge.tls);
+      this.edgeServer = tls.createServer(
+        { cert: edgeTls.cert, key: edgeTls.key, requestCert: false, rejectUnauthorized: false },
+        (socket) => this.handleEdgeConnection(socket),
+      );
+      this.edgeServer.on('tlsClientError', (err, socket) => {
+        this.logger.debug(`edge: TLS handshake failed from ${formatPeer(socket)}: ${err.code ?? err.message}`);
+      });
+      this.edgeServer.on('error', (err) => this.logger.error(`edge server error: ${err.code ?? ''} ${err.message}`));
+    }
+
     try {
       await Promise.all([
         this.listen(this.dataServer, this.config.dataPort, 'data'),
         this.listen(this.controlServer, this.config.controlPort, 'control'),
         this.listen(this.httpServer, this.config.httpPort, 'http'),
+        this.edgeServer ? this.listen(this.edgeServer, this.config.group.edge.port, 'edge') : Promise.resolve(),
       ]);
     } catch (err) {
       this.closed = true;
@@ -177,6 +199,17 @@ class Relay {
     this.dataPort = dataAddr.port;
     this.controlPort = controlAddr.port;
     this.httpPort = httpAddr.port;
+    if (this.edgeServer) {
+      this.edgePort = /** @type {net.AddressInfo} */ (this.edgeServer.address()).port;
+      if (this.config.group.edge.allowUnauthenticated) {
+        this.logger.warn(
+          `group edge listening on :${this.edgePort} WITHOUT device authentication (dev-only); `
+          + 'do not expose this to the internet',
+        );
+      } else {
+        this.logger.info(`group edge listening on :${this.edgePort} (device auth not implemented yet; connections will be rejected)`);
+      }
+    }
 
     const tick = Math.max(10, Math.min(this.config.timings.heartbeatIntervalMs, 5000));
     this.heartbeatTimer = setInterval(() => this.sweepHosts(), tick);
@@ -219,6 +252,7 @@ class Relay {
       httpPort: this.httpPort,
       domain: this.config.domain,
       mode: this.config.mode,
+      edgePort: this.edgePort,
       dev: this.config.dev,
       close: () => this.close(),
       health: () => this.health(),
@@ -258,6 +292,8 @@ class Relay {
     }
     for (const socket of this.dataSockets) socket.destroy();
     this.dataSockets.clear();
+    for (const socket of this.edgeSockets) socket.destroy();
+    this.edgeSockets.clear();
     this.controlServer?.closeAllConnections?.();
     this.httpServer?.closeAllConnections?.();
     await this.closeTransport();
@@ -276,6 +312,7 @@ class Relay {
       closeServer(this.dataServer),
       closeServer(this.httpServer),
       closeServer(this.controlServer),
+      closeServer(this.edgeServer),
     ]);
   }
 
@@ -454,8 +491,7 @@ class Relay {
       this.failConn(conn, 'unauthorized', 'invalid host credentials');
       return;
     }
-    const expected = this.tokenStore.get(hostId);
-    if (typeof expected !== 'string' || !safeEqualStrings(msg.token, expected)) {
+    if (!this.verifyHostCredential(hostId, msg.token)) {
       this.logger.warn(`control: rejected host "${hostId}" from ${conn.remote}: invalid token`);
       this.failConn(conn, 'unauthorized', 'invalid host credentials');
       return;
@@ -907,6 +943,136 @@ class Relay {
         this.sendJson(host.ws, { t: RELAY_MSG.HOST_HEARTBEAT, ts: now });
       }
     }
+  }
+
+  /**
+   * 校验 host 控制面凭据：group 模式走注册 store 的 token hash；classic 走 tokens.json。
+   * @param {string} hostId
+   * @param {string} token
+   */
+  verifyHostCredential(hostId, token) {
+    if (this.config.mode === 'group') {
+      try {
+        if (verifyHostToken(this.config.group.file, hostId, token)) return true;
+      } catch (err) {
+        this.logger.warn(`control: cannot verify group host "${hostId}": ${err && err.message ? err.message : String(err)}`);
+      }
+    }
+    const expected = this.tokenStore.get(hostId);
+    return typeof expected === 'string' && safeEqualStrings(String(token), expected);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 群体版边缘平面（A 模式）：relay 终止手机 TLS，明文经控制面隧道转发到主机
+  // ---------------------------------------------------------------------------
+  // 本切片（P1 切片 2）只做「边缘 TLS 终止 + 出站隧道」骨架与压测；设备鉴权
+  //（短时 token + relay 签名断言）在下一片接入，因此未认证模式仅 dev 可用。
+
+  /** @param {import('node:tls').TLSSocket} socket */
+  handleEdgeConnection(socket) {
+    if (this.closed) {
+      socket.destroy();
+      return;
+    }
+    const ip = socket.remoteAddress ?? 'unknown';
+    const ipCount = this.edgeIpConnections.get(ip) ?? 0;
+    if (ipCount >= this.config.limits.maxConnectionsPerIp
+      || this.edgeSockets.size >= this.config.limits.maxDataConnections) {
+      this.logger.warn(`edge: dropping ${formatPeer(socket)}: connection limit reached`);
+      socket.destroy();
+      return;
+    }
+    this.edgeIpConnections.set(ip, ipCount + 1);
+    this.edgeSockets.add(socket);
+    socket.on('close', () => {
+      this.edgeSockets.delete(socket);
+      const left = (this.edgeIpConnections.get(ip) ?? 1) - 1;
+      if (left <= 0) this.edgeIpConnections.delete(ip);
+      else this.edgeIpConnections.set(ip, left);
+    });
+    socket.on('error', (err) => this.logger.debug(`edge: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
+    const sni = typeof socket.servername === 'string' && socket.servername !== '' ? socket.servername : null;
+    this.routeEdgeConnection(socket, sni);
+  }
+
+  /**
+   * 拒绝一条边缘连接（TLS 已建立，回最小 HTTP 响应后关闭）。
+   * @param {import('node:tls').TLSSocket} socket
+   * @param {number} status
+   * @param {string} reason
+   */
+  rejectEdgeHttp(socket, status, reason) {
+    if (socket.destroyed) return;
+    const reasonText = status === 421 ? 'Misdirected Request' : status === 502 ? 'Bad Gateway' : 'Service Unavailable';
+    const body = `${reason}\n`;
+    const head = `HTTP/1.1 ${status} ${reasonText}\r\n`
+      + 'content-type: text/plain; charset=utf-8\r\n'
+      + `content-length: ${Buffer.byteLength(body)}\r\n`
+      + 'connection: close\r\n\r\n';
+    try {
+      socket.end(head + body);
+    } catch {
+      socket.destroy();
+    }
+  }
+
+  /**
+   * 边缘 TLS 连接 → 控制面隧道 stream。
+   * @param {import('node:tls').TLSSocket} socket
+   * @param {string | null} sni
+   */
+  routeEdgeConnection(socket, sni) {
+    if (socket.destroyed) return;
+    const remote = formatPeer(socket);
+    const hostId = this.resolveHostIdFromSni(sni);
+    if (!hostId) {
+      this.logger.debug(`edge: dropping ${remote}: no route for SNI ${sni === null ? '(absent)' : JSON.stringify(sni)}`);
+      this.rejectEdgeHttp(socket, 421, 'no_route');
+      return;
+    }
+    if (!this.config.group.edge.allowUnauthenticated) {
+      // 设备鉴权尚未接入（下一片）：明确拒绝而不是放行，避免生产误用。
+      this.logger.warn(`edge: rejecting ${remote}: device authentication not implemented yet (dev-only allowUnauthenticated)`);
+      this.rejectEdgeHttp(socket, 503, 'edge_authentication_unavailable');
+      return;
+    }
+    const host = this.hosts.get(hostId);
+    if (!host || !isWsOpen(host.ws)) {
+      this.logger.debug(`edge: dropping ${remote}: host "${hostId}" is offline (SNI ${JSON.stringify(sni)})`);
+      this.rejectEdgeHttp(socket, 502, 'host_offline');
+      return;
+    }
+    socket.pause();
+    const streamId = this.allocateStreamId(host);
+    if (streamId === null) {
+      this.logger.warn(`edge: dropping ${remote}: stream table for host "${hostId}" is full`);
+      this.rejectEdgeHttp(socket, 503, 'stream_limit');
+      return;
+    }
+    const stream = {
+      id: streamId,
+      host,
+      socket,
+      /** @type {Buffer[]} */
+      pending: [],
+      opened: false,
+      finished: false,
+      hostClosed: false,
+      /** @type {NodeJS.Timeout | null} */
+      openTimer: null,
+      kind: GROUP_EDGE_STREAM_KIND,
+    };
+    host.streams.set(streamId, stream);
+    socket.on('close', () => this.finishStream(stream, 'app_closed'));
+    stream.openTimer = setTimeout(() => {
+      if (stream.opened || stream.finished) return;
+      this.logger.warn(`edge: stream ${streamId} → host "${hostId}" open timeout`);
+      this.sendJson(host.ws, { t: RELAY_MSG.HOST_CLOSE, streamId, reason: 'open_timeout' });
+      this.finishStream(stream, 'open_timeout');
+    }, this.config.timings.openTimeoutMs);
+    stream.openTimer.unref?.();
+    this.logger.debug(`edge: stream ${streamId} → host "${hostId}" (SNI ${JSON.stringify(sni)}) from ${remote}`);
+    this.sendJson(host.ws, { t: RELAY_MSG.HOST_OPEN, streamId, sni, kind: GROUP_EDGE_STREAM_KIND });
   }
 
   // ---------------------------------------------------------------------------
