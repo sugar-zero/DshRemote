@@ -258,14 +258,16 @@ volumes:
 | 字段 | 说明 |
 |---|---|
 | `groupEnabled` | 开启群体版（与 classic 的 relayUrl/hostId/token/证书字段互斥） |
-| `groupServiceUrl` | 部署方 relay 服务地址，如 `https://relay.example.com:8443`（POC 允许 `http://`，需 `groupInsecure`） |
+| `groupServiceUrl` | 部署方 relay **注册 API** 地址，如 `https://relay.example.com:19443`（与控制面 WSS 分离；POC 允许 `http://`，需 `groupInsecure`）。隧道 WSS 地址由注册响应 `controlUrl` 下发 |
 | `groupInviteCode` | 一次性邀请码；注册成功后应清空（只用于首次开通） |
 | `groupPlainPort` | loopback 明文代理端口（默认 0 = 随机；只被本机隧道客户端连接） |
 | `groupInsecure` | 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss） |
 
 流程：
 
-1. 填「服务地址 + 邀请码」→ 主机 `POST /__group/register` 自助注册 → 落盘
+1. 填「注册 API 地址 + 邀请码」→ 主机 `POST /__group/register` 自助注册 → 落盘
+   （注册响应含 `controlUrl`：主机据此连控制面 WSS 隧道，不再从服务地址推导端口。
+   从旧版升级时服务地址要从控制面端口改成注册 API 端口，并重新注册一次；旧注册记录没有 `controlUrl`。）
    `~/.dsh/remote-access/group.json`（0600）：hostId / hostToken / relayDomain / mobilePort /
    relay token 公钥 / serviceUrl / hostName；
 2. 启动后：loopback 明文代理（`127.0.0.1:<groupPlainPort>`）+ 主动连 relay 控制面隧道；

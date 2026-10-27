@@ -342,6 +342,10 @@ P1 切片先实现「邀请码 → 主机自助注册」；边缘 TLS 终止与�
     "file": "/data/group.json",
     "mobilePort": 11443,
     "maxHosts": 200,
+    "apiPort": 9443,
+    "adminPort": 9444,
+    "adminBind": "0.0.0.0",
+    "publicControlPort": 8443,
     "registration": { "enabled": true, "maxAttemptsPerMinutePerIp": 10, "maxAttemptsPerMinute": 120 }
   }
 }
@@ -357,15 +361,21 @@ node bin/relay.js host list --config /etc/dsh-relay/relay.json
 node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 ```
 
-注册接口（主机插件自动调用；控制面 `POST /__group/register`，生产为 HTTPS）：
+注册接口（主机插件自动调用；配置 `group.apiPort` 后走**独立注册 API 面** `POST /__group/register`，
+生产为 HTTPS；未配置 `apiPort` 时退回控制面，兼容旧部署）：
 
 ```json
 { "inviteCode": "<one-time invite code>", "hostName": "Living Room Mac" }
 → 200 { "ok": true, "protocolVersion": 1, "hostId": "h_ab12cd34xy",
         "hostToken": "<shown once>", "hostName": "Living Room Mac",
         "relayDomain": "relay.example.com", "mobilePort": 11443,
+        "controlUrl": "wss://relay.example.com:8443/control",
         "tokenPublicKey": "-----BEGIN PUBLIC KEY-----..." }
 ```
+
+`controlUrl` 是主机回连隧道的**控制面 WSS 地址**（host 取注册请求 Host，端口优先
+`group.publicControlPort`，否则取实际监听端口）：职责分离后注册 API 端口 ≠ WSS 端口，
+主机插件必须用它，而不是从服务地址推导。
 
 错误码：`invalid_request`(400) / `invalid_invite|invite_expired|invite_exhausted|registration_disabled`(403)
 / `host_limit`(409) / `rate_limited`(429，带 `Retry-After`)。
@@ -426,13 +436,41 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 `maxAttemptsPerMinutePerIp`（默认 30）、`signingKeyFile`（默认 `<group.json 目录>/signing-key.pem`，
 Ed25519、0600、首次启动自动生成；**私钥只在 relay，主机只拿公钥**）。
 
+### 接口分层（P1 切片 9：职责分离）
+
+| 面 | 配置 | 默认端口 | 只做 |
+|---|---|---|---|
+| 手机 edge | `group.edge.port` | 443 | 手机 App 流量（relay 终止 TLS） |
+| 控制面 WSS | `controlPort` | 8443 | `host.hello` 鉴权、心跳、`host.open`、流帧——**只接受 WebSocket upgrade** |
+| 注册 API | `group.apiPort` | 9443 | `POST /__group/register` |
+| 部署方后台 | `group.adminPort` + `group.adminBind` | 9444（默认绑 127.0.0.1） | `/__admin` 页面 + JSON API |
+
+配置 `apiPort` / `adminPort` 后，控制面**不再**提供注册/后台路由（普通 HTTP 一律 404）；
+不配置时保持旧的「都挂在控制面」行为（向后兼容）。
+
+```json
+"group": {
+  "apiPort": 9443,
+  "apiBind": "0.0.0.0",
+  "adminPort": 9444,
+  "adminBind": "127.0.0.1",
+  "publicControlPort": 8443
+}
+```
+
+容器部署时 `adminBind` 设为 `0.0.0.0`（由 Docker 端口映射限制宿主机只绑回环）。
+`publicControlPort` 是注册响应下发 `controlUrl` 用的公网 WSS 端口（nginx 8443 / 直连映射 18443）。
+
 ### 部署方后台（`/__admin`，P1 切片 7）
 
-group 模式启动后，部署方在浏览器打开：
+group 模式启动后，部署方在浏览器打开（配置了 `adminPort` 时是独立后台面，默认只绑回环）：
 
 ```
-https://<relayDomain>:<controlPort>/__admin/
+https://<relayDomain>:<adminPort>/__admin/
 ```
+
+推荐经 nginx 反代到 `admin.<domain>` 并加 basic auth / IP 白名单（见 `server/nginx/group-admin-http.conf`），
+或用 SSH 隧道访问；不要直接把这个端口暴露公网。
 
 页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；明文只显示一次并可复制）；
 列邀请码并撤销；列主机（在线/离线/已撤销）并撤销主机。数据全部来自 `group.json`，页面每 10 秒自动刷新。
@@ -445,15 +483,14 @@ https://<relayDomain>:<controlPort>/__admin/
 3. 本机查看：`node bin/relay.js admin-token --config /etc/dsh-relay/relay.json`（`--json` 可机器读）。
 
 安全说明：管理页 HTML 本身不返回任何数据（token 由部署方粘贴后存浏览器 localStorage，不落日志）。
-后台与主机隧道/注册**共用控制面 TLS 端口**：该端口必须对主机公网可达（主机 WSS 连接），
-和单机版 8443 一致；`/__admin` 只是同端口上的运营面，靠 admin token + 失败限速保护。
-如需进一步收紧，可在 nginx 侧给后台入口加 basic auth / IP 白名单（或给后台单独域名反代），
-admin token 只给部署方、不要发给群成员。
+配置 `adminPort` 后后台与主机隧道/注册**物理分离**：控制面只跑 WSS，后台默认绑 127.0.0.1，
+靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
+（未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.0-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.1-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 
-**P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」+「部署方后台」。
+**P1 切片边界**：已落「注册/开通」+「边缘 TLS + 隧道」+「设备会话鉴权（relay 边缘）」+「部署方后台」+「接口职责分离（edge/WSS/API/admin 四个面）」。
 **主机插件侧 group 接入（注册客户端 / 本地明文代理 / 逐请求复验 / 设置页）、QR v2、App token 流程**
 在下一片接入；在此之前 `group` 模式不能用于生产（`allowUnauthenticated` 仅测试）。

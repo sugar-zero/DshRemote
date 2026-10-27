@@ -24,12 +24,18 @@
 #   # 本机 Apple Silicon、服务器 x86_64：
 #   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 #
-# 后台：浏览器打开 https://<relayDomain>:18443/__admin/
+# 职责分离（四个面）：
+#   edge  : 手机访问（默认宿主 1443 → 容器 443，relay 自己终止 TLS）
+#   WSS   : 主机隧道（默认宿主 18443 → 容器 8443，只做 WebSocket upgrade）
+#   API   : 主机自助注册（默认宿主 19443 → 容器 9443；主机插件「服务地址」填它）
+#   admin : 部署方后台（默认宿主 127.0.0.1:19444 → 容器 9444；nginx/SSH 隧道访问）
+#
+# 后台：https://<relayDomain>:19444/__admin/（或经 nginx 反代到 admin 域名）
 #   admin token：首次启动自动生成到 data/admin-token（0600）；也可设 RELAY_ADMIN_TOKEN。
 #   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
 #
 # 导出离线镜像：
-#   docker save -o dsh-relay-0.2.0-group-linux-amd64.tar dsh-remote-relay:0.2.0-group
+#   docker save -o dsh-relay-0.2.1-group-linux-amd64.tar dsh-remote-relay:0.2.1-group
 # ============================================================================
 
 name: dsh-remote-group
@@ -39,7 +45,7 @@ services:
     build:
       context: ../dsh-remoteService
       dockerfile: packages/relay/Dockerfile
-    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.0-group}
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.1-group}
     container_name: dsh-relay-group
     user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
     command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]
@@ -47,10 +53,13 @@ services:
     ports:
       # 手机访问（relay 边缘终止 TLS）。默认对公网；若宿主机 nginx 前置，把 BIND 设为 127.0.0.1。
       - "${RELAY_GROUP_EDGE_BIND:-0.0.0.0}:${RELAY_GROUP_EDGE_PORT_HOST:-1443}:443"
-      # 控制面：主机隧道 + 自助注册 + /__admin 后台。主机需要从公网连这个端口；
-      # 有 nginx 前置时同样把 BIND 设为 127.0.0.1（由 nginx L4 转发 8443）。
+      # 控制面 WSS（只跑主机隧道；注册/后台已拆到独立端口）。
       - "${RELAY_GROUP_CONTROL_BIND:-0.0.0.0}:${RELAY_GROUP_CONTROL_PORT_HOST:-18443}:8443"
-      # 80：/healthz + 301（不承载业务）；默认只绑回环，健康检查/本机排障用
+      # 注册 API（主机自助开通；公网可达，主机插件「服务地址」用这个）
+      - "${RELAY_GROUP_API_GATEWAY_BIND:-0.0.0.0}:${RELAY_GROUP_API_PORT_HOST:-19443}:${RELAY_GROUP_API_PORT:-9443}"
+      # 部署方后台（默认只绑回环；经 nginx/basic auth 或 SSH 隧道访问）
+      - "${RELAY_GROUP_ADMIN_GATEWAY_BIND:-127.0.0.1}:${RELAY_GROUP_ADMIN_PORT_HOST:-19444}:${RELAY_GROUP_ADMIN_PORT:-9444}"
+      # 80：/healthz + 301（不承载业务）；默认只绑回环
       - "${RELAY_GROUP_HTTP_BIND:-127.0.0.1}:${RELAY_GROUP_HTTP_PORT_HOST:-18080}:80"
     environment:
       RELAY_MODE: group
@@ -61,6 +70,13 @@ services:
       #   直连（无 nginx）时 = RELAY_GROUP_EDGE_PORT_HOST（默认 1443）
       #   有 nginx 前置时 = nginx 监听端口（通常 443），不是容器宿主映射的 1443
       RELAY_GROUP_MOBILE_PORT: ${RELAY_GROUP_MOBILE_PORT:-443}
+      # 职责分离：注册 API / 后台独立监听（控制面只做 WSS）
+      RELAY_GROUP_API_PORT: ${RELAY_GROUP_API_PORT:-9443}
+      RELAY_GROUP_API_BIND: ${RELAY_GROUP_API_BIND:-0.0.0.0}
+      RELAY_GROUP_ADMIN_PORT: ${RELAY_GROUP_ADMIN_PORT:-9444}
+      RELAY_GROUP_ADMIN_BIND: ${RELAY_GROUP_ADMIN_BIND:-0.0.0.0}
+      # 注册响应下发给主机回连的控制面 WSS 公网端口（nginx 8443 / 直连映射 18443）
+      RELAY_GROUP_PUBLIC_CONTROL_PORT: ${RELAY_GROUP_PUBLIC_CONTROL_PORT:-8443}
     volumes:
       - ./data:/data
     sysctls:

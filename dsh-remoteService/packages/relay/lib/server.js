@@ -133,6 +133,8 @@ class Relay {
         relayDomain: config.domain,
         logger: config.logger,
         tokenPublicKey: this.groupAuth?.publicKey,
+        getControlPort: () => this.controlPort,
+        publicControlPort: config.group.publicControlPort,
       })
       : null;
     /** 群体版部署方后台（/__admin）：默认自动生成 admin-token 文件（0600）。 */
@@ -175,6 +177,12 @@ class Relay {
     this.edgeIpConnections = new Map();
     /** @type {http.Server | https.Server | null} */
     this.controlServer = null;
+    /** @type {http.Server | https.Server | null} group 注册 API 独立监听（apiPort） */
+    this.groupApiServer = null;
+    /** @type {http.Server | https.Server | null} group 部署方后台独立监听（adminPort） */
+    this.groupAdminServer = null;
+    this.groupApiPort = 0;
+    this.groupAdminPort = 0;
     /** @type {http.Server | null} */
     this.httpServer = null;
     /** @type {WebSocketServer | null} */
@@ -192,6 +200,23 @@ class Relay {
       : http.createServer(controlRequestHandler);
     this.controlServer.on('error', (err) => this.logger.error(`control plane server error: ${err.code ?? ''} ${err.message}`));
     this.controlServer.on('upgrade', (req, socket, head) => this.handleControlUpgrade(req, socket, head));
+
+    // 职责分离：控制面只做 WSS 隧道；注册 API / 部署方后台各自独立监听（apiPort / adminPort）。
+    if (this.config.mode === 'group') {
+      const makeHttpServer = (handler, name) => {
+        const server = tlsMaterial
+          ? https.createServer({ cert: tlsMaterial.cert, key: tlsMaterial.key }, handler)
+          : http.createServer(handler);
+        server.on('error', (err) => this.logger.error(`${name} server error: ${err.code ?? ''} ${err.message}`));
+        return server;
+      };
+      if (this.config.group.apiPort !== undefined) {
+        this.groupApiServer = makeHttpServer((req, res) => this.handleGroupApiHttpRequest(req, res), 'group api');
+      }
+      if (this.config.group.adminPort !== undefined) {
+        this.groupAdminServer = makeHttpServer((req, res) => { void this.groupAdmin(req, res); }, 'group admin');
+      }
+    }
 
     this.wss = new WebSocketServer({
       noServer: true,
@@ -229,6 +254,22 @@ class Relay {
         this.listen(this.controlServer, this.config.controlPort, 'control'),
         this.listen(this.httpServer, this.config.httpPort, 'http'),
         this.edgeServer ? this.listen(this.edgeServer, this.config.group.edge.port, 'edge') : Promise.resolve(),
+        this.groupApiServer
+          ? this.listen(
+            this.groupApiServer,
+            this.config.group.apiPort,
+            'group api',
+            this.config.group.apiBind ?? this.config.dataHost,
+          )
+          : Promise.resolve(),
+        this.groupAdminServer
+          ? this.listen(
+            this.groupAdminServer,
+            this.config.group.adminPort,
+            'group admin',
+            this.config.group.adminBind ?? '127.0.0.1',
+          )
+          : Promise.resolve(),
       ]);
     } catch (err) {
       this.closed = true;
@@ -241,6 +282,8 @@ class Relay {
     if (this.dataServer) this.dataPort = /** @type {net.AddressInfo} */ (this.dataServer.address()).port;
     this.controlPort = controlAddr.port;
     this.httpPort = httpAddr.port;
+    if (this.groupApiServer) this.groupApiPort = /** @type {net.AddressInfo} */ (this.groupApiServer.address()).port;
+    if (this.groupAdminServer) this.groupAdminPort = /** @type {net.AddressInfo} */ (this.groupAdminServer.address()).port;
     if (this.edgeServer) {
       this.edgePort = /** @type {net.AddressInfo} */ (this.edgeServer.address()).port;
       if (this.config.group.edge.allowUnauthenticated) {
@@ -262,11 +305,25 @@ class Relay {
       + (this.dataServer ? `data :${this.dataPort} (tls passthrough), ` : '')
       + `control :${this.controlPort} (${tlsMaterial ? 'wss' : 'ws/dev'}), http :${this.httpPort}; domain ${this.config.domain}`,
     );
+    if (this.groupApiServer) {
+      const scheme = tlsMaterial ? 'https' : 'http';
+      this.logger.info(
+        `group api: ${scheme}://${this.config.domain}:${this.groupApiPort}${GROUP_REGISTER_PATH} `
+        + `(self-registration; control plane :${this.controlPort} now WSS-only)`,
+      );
+    }
     if (this.groupAdmin) {
       const scheme = tlsMaterial ? 'https' : 'http';
       const info = this.groupAdminTokenInfo;
       const tokenHint = info?.file ? `${info.file}${info.generated ? ' (generated)' : ''}` : 'configured via group.adminToken';
-      this.logger.info(`admin UI: ${scheme}://${this.config.domain}:${this.controlPort}${GROUP_ADMIN_BASE}/ — token: ${tokenHint}`);
+      if (this.groupAdminServer) {
+        this.logger.info(
+          `group admin: ${scheme}://${this.config.group.adminBind ?? '127.0.0.1'}:${this.groupAdminPort}${GROUP_ADMIN_BASE}/ `
+          + `— token: ${tokenHint}`,
+        );
+      } else {
+        this.logger.info(`admin UI: ${scheme}://${this.config.domain}:${this.controlPort}${GROUP_ADMIN_BASE}/ — token: ${tokenHint}`);
+      }
     }
     return this.api();
   }
@@ -276,12 +333,12 @@ class Relay {
    * @param {number} port
    * @param {string} name
    */
-  listen(server, port, name) {
+  listen(server, port, name, host = this.config.dataHost) {
     return new Promise((resolve, reject) => {
       const onError = (err) => {
         server.removeListener('listening', onListening);
         const code = err && err.code ? ` (${err.code})` : '';
-        reject(new Error(`failed to bind ${name} plane on ${this.config.dataHost}:${port}${code}: ${err && err.message ? err.message : String(err)}`));
+        reject(new Error(`failed to bind ${name} plane on ${host}:${port}${code}: ${err && err.message ? err.message : String(err)}`));
       };
       const onListening = () => {
         server.removeListener('error', onError);
@@ -289,7 +346,7 @@ class Relay {
       };
       server.once('error', onError);
       server.once('listening', onListening);
-      server.listen({ port, host: this.config.dataHost });
+      server.listen({ port, host });
     });
   }
 
@@ -299,6 +356,8 @@ class Relay {
       dataPort: this.dataPort,
       controlPort: this.controlPort,
       httpPort: this.httpPort,
+      groupApiPort: this.groupApiPort,
+      groupAdminPort: this.groupAdminPort,
       domain: this.config.domain,
       mode: this.config.mode,
       edgePort: this.edgePort,
@@ -345,6 +404,8 @@ class Relay {
     this.edgeSockets.clear();
     this.controlServer?.closeAllConnections?.();
     this.httpServer?.closeAllConnections?.();
+    this.groupApiServer?.closeAllConnections?.();
+    this.groupAdminServer?.closeAllConnections?.();
     await this.closeTransport();
     this.logger.info('relay stopped');
   }
@@ -362,6 +423,8 @@ class Relay {
       closeServer(this.httpServer),
       closeServer(this.controlServer),
       closeServer(this.edgeServer),
+      closeServer(this.groupApiServer),
+      closeServer(this.groupAdminServer),
     ]);
   }
 
@@ -402,15 +465,41 @@ class Relay {
     } catch {
       pathname = req.url ?? '/';
     }
-    if (this.groupAdmin && (pathname === GROUP_ADMIN_BASE || pathname.startsWith(`${GROUP_ADMIN_BASE}/`))) {
+    const separatedAdmin = this.config.mode === 'group' && this.config.group.adminPort !== undefined;
+    const separatedApi = this.config.mode === 'group' && this.config.group.apiPort !== undefined;
+    if (!separatedAdmin && this.groupAdmin && (pathname === GROUP_ADMIN_BASE || pathname.startsWith(`${GROUP_ADMIN_BASE}/`))) {
       void this.groupAdmin(req, res);
       return;
+    }
+    if (!separatedApi && this.groupService && pathname === GROUP_REGISTER_PATH) {
+      void this.groupService.handleHttp(req, res);
+      return;
+    }
+    const body = JSON.stringify({ ok: false, error: { code: 'not_found', message: 'control plane only accepts WebSocket upgrades on /control' } });
+    res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
+    res.end(body);
+  }
+
+  /**
+   * 独立注册 API 面（group.apiPort）：只服务 POST /__group/register；其它 404。
+   * 控制面配置了 apiPort 后不再提供注册接口。
+   * @param {http.IncomingMessage} req @param {http.ServerResponse} res
+   */
+  handleGroupApiHttpRequest(req, res) {
+    let pathname = '/';
+    try {
+      pathname = new URL(req.url ?? '/', 'http://relay.invalid').pathname;
+    } catch {
+      pathname = req.url ?? '/';
     }
     if (this.groupService && pathname === GROUP_REGISTER_PATH) {
       void this.groupService.handleHttp(req, res);
       return;
     }
-    const body = JSON.stringify({ ok: false, error: { code: 'not_found', message: 'control plane only accepts WebSocket upgrades on /control' } });
+    const body = JSON.stringify({
+      ok: false,
+      error: { code: 'not_found', message: 'group api plane serves POST /__group/register only' },
+    });
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
   }

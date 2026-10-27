@@ -63,6 +63,30 @@ export function normalizeGroupServiceUrl(raw, options = {}) {
 }
 
 /**
+ * 规范化注册响应下发的控制面地址（WSS 隧道回连用）：
+ * 职责分离后，注册 API 端口与 WSS 端口不同，必须用服务端下发的 controlUrl。
+ * @param {string} raw
+ * @param {{allowInsecure?: boolean}} [options]
+ * @returns {string} 基准 URL（ws:// 或 wss:// + host:port，无路径）
+ */
+export function normalizeGroupControlUrl(raw, options = {}) {
+  const allowInsecure = options.allowInsecure === true;
+  let url;
+  try {
+    url = new URL(String(raw ?? '').trim());
+  } catch {
+    throw new Error('控制面地址不是合法 URL');
+  }
+  const allowed = allowInsecure ? ['wss:', 'ws:'] : ['wss:'];
+  if (!allowed.includes(url.protocol)) {
+    throw new Error(`控制面地址协议必须是 wss://${allowInsecure ? '（POC 模式也允许 ws://）' : ''}`);
+  }
+  if (!url.hostname) throw new Error('控制面地址缺少主机名');
+  if (!url.port) throw new Error('控制面地址缺少端口');
+  return `${url.protocol}//${url.host}`;
+}
+
+/**
  * 基准服务地址 → relay 控制面 WebSocket URL。
  * @param {string} serviceUrl
  */
@@ -87,6 +111,7 @@ export function loadGroupRegistration(file = paths.groupRegistration()) {
   if (typeof stored.hostToken !== 'string' || stored.hostToken === '') return undefined;
   if (typeof stored.relayDomain !== 'string' || !FQDN_RE.test(stored.relayDomain)) return undefined;
   if (typeof stored.tokenPublicKey !== 'string' || !stored.tokenPublicKey.includes('BEGIN PUBLIC KEY')) return undefined;
+  if (stored.controlUrl !== undefined && typeof stored.controlUrl !== 'string') return undefined;
   return stored;
 }
 
@@ -165,6 +190,10 @@ export class GroupHostRuntime {
     const relayDomain = String(response.relayDomain ?? '');
     const mobilePort = Number(response.mobilePort);
     const tokenPublicKey = String(response.tokenPublicKey ?? '');
+    const controlUrlRaw = typeof response.controlUrl === 'string' ? response.controlUrl : '';
+    const controlUrl = controlUrlRaw === ''
+      ? undefined
+      : normalizeGroupControlUrl(controlUrlRaw, { allowInsecure: this.insecure });
     if (!isGroupHostId(hostId)) throw new Error('注册响应 hostId 非法');
     if (hostToken === '') throw new Error('注册响应缺少 hostToken');
     if (!FQDN_RE.test(relayDomain)) throw new Error('注册响应 relayDomain 非法');
@@ -178,12 +207,13 @@ export class GroupHostRuntime {
       relayDomain,
       mobilePort,
       tokenPublicKey,
+      ...(controlUrl ? { controlUrl } : {}),
       hostName,
       registeredAt: this.now(),
     };
     saveGroupRegistration(this.registration, this.registrationFile);
     this.audit?.append({ action: 'group-register', result: 'ok', hostId });
-    this.log(`group: registered as ${hostId} on ${serviceUrl}`);
+    this.log(`group: registered as ${hostId} on ${serviceUrl}${controlUrl ? ` (control: ${controlUrl})` : ''}`);
     return this.registrationInfo();
   }
 
@@ -217,7 +247,8 @@ export class GroupHostRuntime {
     }
     if (!this.connector) {
       this.connector = new RelayConnector({
-        relayUrl: this.registration.serviceUrl,
+        // 职责分离：注册 API 与 WSS 控制面不同端口；优先用注册响应下发的 controlUrl。
+        relayUrl: this.registration.controlUrl ?? this.registration.serviceUrl,
         hostId: this.registration.hostId,
         hostToken: this.registration.hostToken,
         hostName: this.registration.hostName || this.config.hostName || this.registration.hostId,

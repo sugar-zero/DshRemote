@@ -253,11 +253,16 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   （状态 / 邀请码创建·列出·撤销 / 主机列出·撤销 / 在线隧道数）；`Authorization: Bearer` admin token
   （显式配置或首次启动生成 `<group.json 目录>/admin-token` 0600，`relay.js admin-token` 可查看）；
   失败限速、页面无外部资源/无数据、CSP 收紧；`npm test` **188/188**。
-- **2026-10-27：切片 8 已落地（部署镜像）**——relay **0.2.0** group 镜像（linux/amd64，
-  `dsh-remote-relay:0.2.0-group`，离线 tar 60MB）；group 模式不再启动 classic 443 L4 透传，边缘 TLS 直接监听
+- **2026-10-27：切片 8 已落地（部署镜像）**——relay **0.2.1** group 镜像（linux/amd64，
+  `dsh-remote-relay:0.2.1-group`，离线 tar 60MB）；group 模式不再启动 classic 443 L4 透传，边缘 TLS 直接监听
   `group.edge.port`；容器 entrypoint 在 group 模式跳过 host token 预置；新增
   `server/docker-compose.group.yml` + `server/group/relay.group.example.json`；容器内实测：健康检查、
   `/__admin` 页面/API、邀请码创建、主机自助注册、边缘通配 TLS（502 离线主机）全部通过。
   新增 `server/.env.group.example`（group compose 的环境变量模板，与 classic `.env` 分离；`.env.group` 已忽略）。
+- **2026-10-27：切片 9 已落地（接口职责分离）**——控制面 WSS 只做主机隧道；`group.apiPort`（注册 API）
+  与 `group.adminPort`（部署方后台，默认 bind 127.0.0.1）各自独立监听；注册响应新增 `controlUrl`
+  （公网 WSS 地址，来自 `group.publicControlPort`），主机插件据此回连隧道；未配置时保留旧的控制面兜底行为；
+  新增 `test/group-surfaces.test.js`（控制面 HTTP 404 / API 面只收注册 / 后台面独立 token）；
+  compose 默认端口：edge 1443 / WSS 18443 / API 19443 / admin 127.0.0.1:19444；镜像重建为 `dsh-remote-relay:0.2.1-group`；`npm test` 190/190。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。

@@ -31,6 +31,7 @@ import {
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path';
 import {
+  CONTROL_PATH,
   GROUP_DEFAULT_MOBILE_PORT,
   GROUP_REGISTER_BODY_LIMIT_BYTES,
   GROUP_REGISTER_ERROR,
@@ -466,6 +467,8 @@ export class GroupRegistrationService {
    * @param {{enabled?: boolean, maxAttemptsPerMinutePerIp?: number, maxAttemptsPerMinute?: number, bodyLimitBytes?: number}} [options.registration]
    * @param {any} [options.logger]
    * @param {() => number} [options.now]
+   * @param {() => number} [options.getControlPort] 实际监听的控制面端口（注册响应里下发 WSS 地址用）
+   * @param {number} [options.publicControlPort] 公网控制面端口（nginx/端口映射后的端口）
    */
   constructor(options) {
     this.file = options.file;
@@ -479,6 +482,12 @@ export class GroupRegistrationService {
     this.now = options.now ?? (() => Date.now());
     /** @type {string | undefined} relay 会话 token 签名公钥（PEM）；主机用它逐请求校验 token。 */
     this.tokenPublicKey = typeof options.tokenPublicKey === 'string' && options.tokenPublicKey !== '' ? options.tokenPublicKey : undefined;
+    /** @type {() => number | undefined} */
+    this.getControlPort = typeof options.getControlPort === 'function' ? options.getControlPort : () => undefined;
+    /** @type {number | undefined} 公网控制面端口（不配则用实际监听端口）。 */
+    this.publicControlPort = Number.isInteger(options.publicControlPort) && options.publicControlPort > 0
+      ? options.publicControlPort
+      : undefined;
     this.limiter = new SlidingWindowLimiter({
       perKeyPerMinute: registration.maxAttemptsPerMinutePerIp ?? 10,
       globalPerMinute: registration.maxAttemptsPerMinute ?? 120,
@@ -507,6 +516,30 @@ export class GroupRegistrationService {
   }
 
   /**
+   * 注册响应里下发的控制面 WSS 地址（主机隧道用）：
+   *   - scheme 跟随本次注册请求（https → wss / http → ws，兼容 dev）；
+   *   - host 取请求 Host（生产=relay 域名；dev=127.0.0.1）；
+   *   - 端口优先 group.publicControlPort（nginx/端口映射后的公网端口），否则取实际监听端口。
+   * 职责分离后，注册 API 端口 ≠ 控制面 WSS 端口，主机必须用这个地址回连隧道。
+   * @param {import('node:http').IncomingMessage} req
+   */
+  #controlUrl(req) {
+    const hostHeader = typeof req.headers?.host === 'string' ? req.headers.host.trim() : '';
+    if (hostHeader === '') return undefined;
+    let hostname;
+    try {
+      hostname = new URL(`https://${hostHeader}`).hostname;
+    } catch {
+      return undefined;
+    }
+    if (hostname === '') return undefined;
+    const port = this.publicControlPort ?? Number(this.getControlPort());
+    if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
+    const scheme = req.socket && /** @type {any} */ (req.socket).encrypted ? 'wss' : 'ws';
+    return `${scheme}://${hostname}:${port}${CONTROL_PATH}`;
+  }
+
+  /**
    * 处理 POST 注册请求（响应 200 JSON；错误返回稳定 code）。
    * @param {import('node:http').IncomingMessage} req
    * @param {import('node:http').ServerResponse} res
@@ -520,6 +553,7 @@ export class GroupRegistrationService {
       const body = await readJsonBody(req, this.bodyLimitBytes);
       const result = this.register({ body, clientKey: clientKey ?? req.socket.remoteAddress ?? 'unknown' });
       this.logger.info(`group: registered host ${result.hostId}${result.hostName ? ` (name: ${result.hostName})` : ''}`);
+      const controlUrl = this.#controlUrl(req);
       return sendJson(res, 200, {
         ok: true,
         protocolVersion: 1,
@@ -528,6 +562,7 @@ export class GroupRegistrationService {
         hostName: result.hostName,
         relayDomain: this.relayDomain,
         mobilePort: result.mobilePort,
+        ...(controlUrl ? { controlUrl } : {}),
         ...(this.tokenPublicKey ? { tokenPublicKey: this.tokenPublicKey } : {}),
       });
     } catch (err) {
