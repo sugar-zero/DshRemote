@@ -476,6 +476,8 @@ export class GroupRegistrationService {
     this.bodyLimitBytes = registration.bodyLimitBytes ?? GROUP_REGISTER_BODY_LIMIT_BYTES;
     this.logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} };
     this.now = options.now ?? (() => Date.now());
+    /** @type {string | undefined} relay 会话 token 签名公钥（PEM）；主机用它逐请求校验 token。 */
+    this.tokenPublicKey = typeof options.tokenPublicKey === 'string' && options.tokenPublicKey !== '' ? options.tokenPublicKey : undefined;
     this.limiter = new SlidingWindowLimiter({
       perKeyPerMinute: registration.maxAttemptsPerMinutePerIp ?? 10,
       globalPerMinute: registration.maxAttemptsPerMinute ?? 120,
@@ -524,6 +526,7 @@ export class GroupRegistrationService {
         hostToken: result.hostToken,
         hostName: result.hostName,
         mobilePort: result.mobilePort,
+        ...(this.tokenPublicKey ? { tokenPublicKey: this.tokenPublicKey } : {}),
       });
     } catch (err) {
       if (err instanceof GroupRegistrationError) {

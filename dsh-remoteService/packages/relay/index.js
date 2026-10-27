@@ -68,5 +68,6 @@ export {
   verifyHostToken,
   writeGroupStore,
 } from './lib/group.js';
+export { GroupAuthError, GroupAuthService } from './lib/group-auth.js';
 
 export default { createRelay, startRelay };

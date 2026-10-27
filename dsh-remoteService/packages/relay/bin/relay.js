@@ -189,6 +189,13 @@ function readConfigFile(path) {
   if (config.group && typeof config.group === 'object' && typeof config.group.file === 'string' && config.group.file !== '') {
     config.group = { ...config.group, file: resolveFromConfigDir(config.group.file) };
   }
+  if (config.group && typeof config.group === 'object' && config.group.auth && typeof config.group.auth === 'object'
+    && typeof config.group.auth.signingKeyFile === 'string' && config.group.auth.signingKeyFile !== '') {
+    config.group = {
+      ...config.group,
+      auth: { ...config.group.auth, signingKeyFile: resolveFromConfigDir(config.group.auth.signingKeyFile) },
+    };
+  }
   if (config.tls && typeof config.tls === 'object') {
     config.tls = { ...config.tls };
     if (config.tls.certFile) config.tls.certFile = resolveFromConfigDir(config.tls.certFile);
