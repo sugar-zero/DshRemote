@@ -25,6 +25,7 @@ server/.env
 # 生产环境 secrets / 证书（server 目录还有独立 .gitignore）
 .env
 **/.env
+**/.env.group
 *.pem
 *.key
 *.crt

@@ -258,5 +258,6 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   `group.edge.port`；容器 entrypoint 在 group 模式跳过 host token 预置；新增
   `server/docker-compose.group.yml` + `server/group/relay.group.example.json`；容器内实测：健康检查、
   `/__admin` 页面/API、邀请码创建、主机自助注册、边缘通配 TLS（502 离线主机）全部通过。
+  新增 `server/.env.group.example`（group compose 的环境变量模板，与 classic `.env` 分离；`.env.group` 已忽略）。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。

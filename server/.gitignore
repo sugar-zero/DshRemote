@@ -2,6 +2,8 @@
 data/
 certs/
 .env
+.env.group
+.env.local
 *.pem
 *.key
 *.crt

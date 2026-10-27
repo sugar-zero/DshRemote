@@ -13,10 +13,12 @@
 #   # 边缘通配证书：data/certs/wildcard/{fullchain.pem,privkey.pem}
 #   chown -R 100:101 data
 #
+# 环境变量模板：cp .env.group.example .env.group（按部署修改端口/镜像/日志）
+#
 # 构建 + 启动：
-#   docker compose -f docker-compose.group.yml up -d --build
+#   docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 #   # 本机 Apple Silicon、服务器 x86_64：
-#   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose -f docker-compose.group.yml up -d --build
+#   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 #
 # 后台：浏览器打开 https://<relayDomain>:18443/__admin/
 #   admin token：首次启动自动生成到 data/admin-token（0600）；也可设 RELAY_ADMIN_TOKEN。
