@@ -240,3 +240,6 @@ export function normalizeGroupHostName(raw) {
   const value = String(raw ?? '').replace(/[\u0000-\u001f\u007f]/g, '').trim();
   return value.slice(0, 64);
 }
+
+/** host.open 的 kind：群体版边缘 TLS 终止后的隧道流（relay 终止 TLS，主机侧接本地明文代理）。 */
+export const GROUP_EDGE_STREAM_KIND = 'group-edge';
