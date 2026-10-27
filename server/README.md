@@ -33,7 +33,8 @@ server/
 ├── group/relay.group.example.json # group：复制为 data/config/relay.json
 ├── nginx/
 │   ├── host-nginx-stream.conf    # classic：已有宿主机 nginx 的 443/8443 L4 透传
-│   ├── group-nginx-stream.conf   # group：宿主机 nginx 的 443/8443 L4 转发（relay 自己终止 TLS）
+│   ├── group-nginx-stream.conf   # group 独立服务器：443/8443 L4 转发（relay 自己终止 TLS）
+│   ├── host-nginx-stream.combined.conf # classic + group 同机：合并版 stream（SNI 分流，只 listen 一次）
 │   └── container-nginx.conf      # 专用服务器：compose 内 nginx
 ├── data/                         # git ignore：tokens、relay 配置、证书
 └── certs/                        # git ignore：可选挂载证书
@@ -585,8 +586,19 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    chown -R 100:101 data      # 镜像内 relay 用户 UID/GID
    ```
 
-   `data/config/relay.json` 里 `group.mobilePort` 要和手机实际访问端口一致（默认宿主 1443 → 配置 1443；
-   生产若把 443 映射给边缘，就改成 443）。
+   **端口关系（必须分清三个端口）**：
+
+   | 端口 | 直连（无 nginx） | 有 nginx 前置（推荐生产） |
+   |---|---|---|
+   | 手机实际访问（QR/注册下发） | `1443` | **`443`**（nginx listen） |
+   | nginx listen | — | `443`（公网） |
+   | relay 容器宿主映射 | `1443`（0.0.0.0） | `127.0.0.1:1443`（仅本机 nginx） |
+   | 容器内 relay edge | `443` | `443` |
+
+   规则：**`RELAY_GROUP_MOBILE_PORT`（= `group.mobilePort`）必须等于手机实际访问的公网端口**，
+   不是容器宿主映射端口。常见错误：nginx 监听 443 → 转发 127.0.0.1:1443，却把 mobilePort 留成 1443，
+   手机就会去连公网 1443（不可达/冲突）。容器宿主映射端口不要与 nginx listen 端口相同。
+   直连形态下两者可以都是 1443；nginx 前置时必须让 nginx 用 443（或其它新公网端口）并把 mobilePort 改成同一个值。
 
 3. **启动**（二选一）：
 
@@ -603,10 +615,20 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    edge 和控制面需要公网可达（手机/主机从外网连）；控制面同时承载 `/__admin`，靠 admin token + 限速保护，
    如条件允许可用防火墙/安全组限制来源，或按下一小节用 nginx 统一入口。
 
-   **与已有 nginx 共存**：group 模式不需要 nginx 做 TLS 终止/证书（relay 自己终止手机 TLS）。
-   若 443/8443 已被 nginx 占用，用 [`nginx/group-nginx-stream.conf`](nginx/group-nginx-stream.conf)
-   把 443/8443 按 L4 转发到容器映射端口（按 SNI 分流、不解密），并在 `.env.group` 里把
-   `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`。
+   **与已有 nginx / classic relay 共存**：group 模式不需要 nginx 做 TLS 终止/证书（relay 自己终止手机 TLS）。
+   nginx 只能有一份 `stream {}`，443/8443 每个端口只能 listen 一次，所以：
+
+   - **只部署 group**（独立服务器）：用 [`nginx/group-nginx-stream.conf`](nginx/group-nginx-stream.conf)
+     （listen 443/8443 → 容器映射端口，SNI 分流、不解密）；
+   - **同机已有 classic**：用 [`nginx/host-nginx-stream.combined.conf`](nginx/host-nginx-stream.combined.conf)
+     一份合并配置（classic/group/现有网站按 SNI 分流）；**不能**同时 include 两个单版本文件。
+     group compose 的宿主端口也要避开 classic 已占用的 1443/18443，例如
+     `RELAY_GROUP_EDGE_PORT_HOST=16443`、`RELAY_GROUP_CONTROL_PORT_HOST=19443`，并把
+     `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`；
+   - group 必须有**自己的 relay 域名**（不能用 classic 的域名，通配证书也不同）。
+
+   合并模板里 8443 用 WSS 的 SNI 区分 classic/group 两个控制面；若两个 relay 域名相同则无法共用 8443，
+   需要给 group 控制面换一个公网端口。
 
    **备份**：`data/` 里保存了 `group.json`（主机/邀请码）、`signing-key.pem`（设备会话 token 签名私钥）、
    `admin-token`（后台令牌）和证书；迁移/升级前备份整个 `data/`，其中 `signing-key.pem` 和 `admin-token` 不要泄露。
