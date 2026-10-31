@@ -49,6 +49,14 @@ export function createAdminHandler({ ctx, service, authDisabled = false }) {
         }
         return;
       }
+      if (sub === '/group/retry' && method === 'POST') {
+        try {
+          sendOk(res, await service.retryGroup());
+        } catch (error) {
+          sendError(res, error.status ?? 500, error.code ?? 'group-retry-failed', error.message);
+        }
+        return;
+      }
       if (sub === '/pairing/start' && method === 'POST') {
         try {
           sendOk(res, service.pairing.createSession());

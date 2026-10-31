@@ -266,6 +266,20 @@ export class GroupHostRuntime {
     return this.status();
   }
 
+  /**
+   * 重试隧道连接（不重新注册、不清本地注册信息）。
+   * 用于修好 nginx/证书/网络后立即重连，不必「重置注册」重新消耗邀请码。
+   */
+  async reconnect() {
+    if (!this.registration) throw new Error('尚未注册服务，无法重试连接');
+    if (this.connector) {
+      try { this.connector.stop(); } catch { /* ignore */ }
+      this.connector = undefined;
+    }
+    this.audit?.append({ action: 'group-reconnect', result: 'ok' });
+    return this.start();
+  }
+
   /** 把本机设备列表同步给 relay（device.sync 全量覆盖）。 */
   syncDevices() {
     const devices = this.#deviceRecords();

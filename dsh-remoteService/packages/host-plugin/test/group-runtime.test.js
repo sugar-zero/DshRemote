@@ -309,6 +309,10 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
       });
       return probe.startsWith('HTTP/1.1 401');
     });
+
+    // 8) 「重试连接」：不重置注册，重建隧道后应重新连上
+    await runtime.reconnect();
+    await waitFor(() => runtime.status().connected === true);
   } finally {
     try { await runtime?.stop(); } catch { /* ignore */ }
     try { await relay?.close(); } catch { /* ignore */ }
