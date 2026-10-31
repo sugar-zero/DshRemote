@@ -597,6 +597,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    | `RELAY_GROUP_ADMIN_HOST_PORT` | 部署方浏览器 | `19444` | `19444` | ✗ 只绑回环，别放行 |
    | `RELAY_GROUP_EDGE_HOST_PORT` | 本机 nginx → relay | `1443` | `1443`（bind 127.0.0.1） | ✗ nginx 内部 |
    | `RELAY_GROUP_CONTROL_HOST_PORT` | 本机 nginx → relay | `18443` | `18443`（bind 127.0.0.1） | ✗ nginx 内部 |
+   | `RELAY_GROUP_HEALTH_HOST_PORT` | 本机排障（/healthz） | `18080` | `18080`（同机 classic 改 18081） | ✗ 只回环 |
 
    容器内端口固定：edge=`443`、控制面 WSS=`8443`、注册 API=`9443`、后台=`9444`、healthz=`80`（不用改）。
 
@@ -633,8 +634,9 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
      （listen 443/8443 → 容器映射端口，SNI 分流、不解密）；
    - **同机已有 classic**：用 [`nginx/host-nginx-stream.combined.conf`](nginx/host-nginx-stream.combined.conf)
      一份合并配置（classic/group/现有网站按 SNI 分流）；**不能**同时 include 两个单版本文件。
-     group compose 的宿主端口也要避开 classic 已占用的 1443/18443，例如
-     `RELAY_GROUP_EDGE_HOST_PORT=16443`、`RELAY_GROUP_CONTROL_HOST_PORT=18444`，并把
+     group compose 的宿主端口也要避开 classic 已占用的 1443/18443/18080，例如
+     `RELAY_GROUP_EDGE_HOST_PORT=16443`、`RELAY_GROUP_CONTROL_HOST_PORT=18444`、
+     `RELAY_GROUP_HEALTH_HOST_PORT=18081`，并把
      `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`
      （注册 API/后台默认 19443/19444，不与 classic 冲突）；
    - group 必须有**自己的 relay 域名**（不能用 classic 的域名，通配证书也不同）。
