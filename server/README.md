@@ -616,6 +616,18 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    - **nginx 前置时只需要转发两个端口**：公网 `443 → 127.0.0.1:1443`、`8443 → 127.0.0.1:18443`；
      API（19443）直接对公网；后台（19444）不要转发到公网。
 
+   **常见问题：明明配了 `RELAY_DOMAIN`，容器仍报「缺少 RELAY_DOMAIN」**：
+   `docker compose` 默认只读 `.env`，不读 `.env.group`。如果你把变量放在 `.env.group` 里，
+   启动命令必须带 `--env-file .env.group`（或把文件改名为 `.env`）。自检：
+
+   ```bash
+   grep RELAY_DOMAIN .env .env.group 2>/dev/null
+   docker compose --env-file .env.group -f docker-compose.group.yml config | grep RELAY_DOMAIN
+   docker inspect dsh-relay-group --format '{{range .Config.Env}}{{println .}}{{end}}' | grep RELAY_DOMAIN
+   ```
+
+   第一/二步能看到值、第三步为空 → 说明启动容器时没带对 env 文件；`docker compose ... up -d --force-recreate` 重建。
+
 3. **启动**（二选一）：
 
    ```bash
