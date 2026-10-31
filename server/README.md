@@ -661,6 +661,38 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    **从旧版升级**（服务地址原来填控制面端口）：把主机的「服务地址」改成注册 API 地址并重新注册一次
    （旧的 group registration 里没有 `controlUrl`，会退回旧推导且注册路径在控制面已 404）。
 
+### 生产服务器上的目录与文件命名
+
+仓库里的 `docker-compose.group.yml` / `.env.group.example` 是为了和 classic 模板区分；
+**Docker Compose 不关心文件名**，只关心 `-f` 指定的编排文件和 `--env-file`（或同目录 `.env`）。
+到生产服务器上**建议改名成标准名**，直接 `docker compose up -d`：
+
+```text
+/opt/dsh-group/
+├── docker-compose.yml      # = 仓库 server/docker-compose.group.yml
+├── .env                    # = 仓库 server/.env.group.example（改端口/镜像/域名相关变量）
+└── data/                   # 挂载进容器：config/relay.json、certs/、group.json、admin-token…
+```
+
+```bash
+cd /opt/dsh-group
+chmod 600 .env
+docker load -i /path/to/dsh-relay-0.2.1-group-linux-amd64.tar
+docker compose config          # 先确认变量插值（镜像/端口/挂载）
+docker compose up -d --no-build
+docker compose ps && docker compose logs -f relay
+```
+
+要点：
+
+- 改名后 `.env` 会被自动读取；不在同目录时用 `docker compose --env-file /opt/dsh-group/.env -f ...`；
+- 服务器上没有源码树时**不要带 `--build`**（compose 文件里的 `build:` 段只在显式 `--build` 或镜像不存在时才会触发；
+  镜像已 `docker load` 就只跑 `--no-build`）；想彻底避免误构建可把 `build:` 段删掉；
+- 同机同时跑 classic 和 group：放**两个不同目录**，各自 `docker-compose.yml` + `.env` 即可
+  （文件里 `name: dsh-remote-group` / `dsh-remote-server` 已区分 project，`docker compose ls` 可看）；
+- 不要把 `.env`、`data/`（含 group.json / signing-key.pem / admin-token / 证书）提交或打包上传后留在仓库里；
+  `.env` 权限 `600`，`data/` 归容器运行的 UID/GID（默认 100:101）。
+
 > 安全提醒：group 模式下 relay 可见会话明文；admin token / `group.json` / `signing-key.pem` / `admin-token`
 > 都在 `data/`（勿入库）。
 >
