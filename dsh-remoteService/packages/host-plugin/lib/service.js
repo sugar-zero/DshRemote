@@ -16,7 +16,7 @@ import { checkTlsKeyPair } from './tls-check.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 import { GroupHostRuntime } from './group.js';
 
-const VERSION = '0.1.21';
+const VERSION = '0.1.22';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
