@@ -582,10 +582,16 @@ test('设置页初值优先读 status.config（群体版字段，无 classic 密
   assert.equal(draft.groupPlainPort, '34567');
   assert.equal(draft.groupInsecure, false);
   assert.equal(draft.groupInviteCode, '', '邀请码永远不进入 draft 初始值');
+  assert.equal(draft.restartHostEnabled, false, '「重启主机」组件默认关闭');
   // classic 字段已从草稿中删除
-  for (const key of ['relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled']) {
+  for (const key of ['relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'apnsKeyFile', 'groupEnabled']) {
     assert.equal(key in draft, false, `draft 不应再有 ${key}`);
   }
+
+  // 「重启主机」组件：优先读 config.restartHostEnabled，其次兼容 status.restart.enabled
+  assert.equal(clientModule.__test.draftFromStatus({ config: { restartHostEnabled: true } }).restartHostEnabled, true);
+  assert.equal(clientModule.__test.draftFromStatus({ restart: { enabled: true } }).restartHostEnabled, true);
+  assert.equal(clientModule.__test.draftFromStatus({ restart: { enabled: false } }, { restartHostEnabled: true }).restartHostEnabled, false);
 
   const legacy = clientModule.__test.draftFromStatus(null, { groupServiceUrl: 'https://typed.example', hostName: 'Typed' });
   assert.equal(legacy.groupServiceUrl, 'https://typed.example', '无 status 时保留上次编辑值');
@@ -1208,14 +1214,17 @@ test('设置页：只展示群体服务字段，切换到启用后保存提交 e
   await flushAsync();
   tree = renderer.render();
 
-  // 群体版设置页不出现 classic/推送/远程重启字段
+  // 群体版设置页不出现 classic/推送字段
   const pageText = collectText(tree);
-  for (const banned of ['中继地址', '中继主机令牌', 'TLS 证书', '推送提醒', 'APNs', '重启主机']) {
+  for (const banned of ['中继地址', '中继主机令牌', 'TLS 证书', '推送提醒', 'APNs']) {
     assert.equal(pageText.includes(banned), false, `设置页不应再出现 classic 字段：${banned}`);
   }
   assert.match(pageText, /群体服务/);
   assert.match(pageText, /服务地址/);
   assert.match(pageText, /邀请码/);
+  // 「组件」区（群体版也提供「允许手机重启主机 DSH」）
+  assert.match(pageText, /组件/);
+  assert.match(pageText, /允许手机重启主机 DSH/);
 
   // 打开「启用远程访问」开关后保存 → POST /config { enabled: true }
   const enableToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
@@ -1232,4 +1241,70 @@ test('设置页：只展示群体服务字段，切换到启用后保存提交 e
   const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
   assert.ok(configCall, '保存应 POST /config');
   assert.deepEqual(JSON.parse(String(configCall.options.body)), { enabled: true });
+});
+
+test('设置页：组件区可开启「允许手机重启主机 DSH」并保存 restartHostEnabled', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: {
+      registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443',
+      hostId: 'h_test1234', fqdn: 'h_test1234.relay.example.com', mobilePort: 11443, plainPort: 34567,
+      controlUrl: '', lastError: null,
+    },
+    host: { id: 'h_test1234', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    restart: { enabled: false },
+    config: {
+      enabled: true, hostName: 'Example Mac', requireApproval: true, restartHostEnabled: false,
+      groupServiceUrl: 'https://relay.example.com:19443', groupPlainPort: 34567, groupInsecure: false,
+    },
+  };
+  let restartHostEnabled = false;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/config') && options.method === 'POST') {
+      const patch = JSON.parse(String(options.body ?? '{}'));
+      if (patch.restartHostEnabled !== undefined) restartHostEnabled = patch.restartHostEnabled === true;
+    }
+    const data = {
+      ...baseStatus,
+      restart: { enabled: restartHostEnabled },
+      config: { ...baseStatus.config, restartHostEnabled },
+    };
+    if (String(url).includes('/config') && options.method === 'POST') {
+      return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+    }
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  tree = renderer.render();
+
+  const findRestartToggle = (root) => findAll(root, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '').includes('允许手机重启主机 DSH'))[0];
+
+  const toggle = findRestartToggle(tree);
+  assert.ok(toggle, '组件区应有「允许手机重启主机 DSH」开关');
+  assert.equal(toggle.props['aria-checked'], false, '默认关闭');
+  toggle.props.onClick();
+  await flushAsync();
+  tree = renderer.render();
+  const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
+  assert.ok(saveButtons.length >= 1, '组件区应有保存按钮');
+  saveButtons.at(-1).props.onClick();
+  await flushAsync();
+  const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
+  assert.ok(configCall, '保存应 POST /config');
+  assert.deepEqual(JSON.parse(String(configCall.options.body)), { restartHostEnabled: true });
+
+  // 保存响应回来后开关态同步为开启
+  const refreshed = findRestartToggle(renderer.render());
+  assert.equal(refreshed.props['aria-checked'], true);
 });

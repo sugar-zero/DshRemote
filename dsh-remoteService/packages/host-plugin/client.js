@@ -87,6 +87,7 @@ window.__ModuleLoader__.load({
       'section.status': '连接状态',
       'section.service': '服务设置',
       'section.group': '群体服务',
+      'section.components': '组件',
       'section.pairing': '设备配对',
       'section.devices': '已配对设备',
       'section.audit': '最近审计',
@@ -96,6 +97,8 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': '关闭后隧道断开，手机将无法访问这台电脑。',
       'sw.requireApproval': '新设备配对需要本机确认',
       'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
+      'sw.restartHost': '允许手机重启主机 DSH',
+      'sw.restartHostNote': '开启后 App 顶栏显示 ⏻：装了插件/改完功能后可在手机上直接重启主机（会短暂断开连接，随后自动恢复）。关闭后 App 不显示该按钮，重启接口也会拒绝请求；仍可在本机手动重启。',
       'field.hostName': '主机名称',
       'field.hostNameHint': '手机上显示的名字',
       'field.groupServiceUrl': '服务地址',
@@ -187,6 +190,7 @@ window.__ModuleLoader__.load({
       'devices.never': '从未连接',
       'audit.empty': '还没有审计记录。',
       'audit.ok': '成功',
+      'audit.accepted': '已受理',
       'audit.fail': '失败',
       'audit.created': '已创建',
       'audit.paired': '已配对',
@@ -215,7 +219,8 @@ window.__ModuleLoader__.load({
       'action.groupRetry': '重试隧道连接',
       'action.groupReconnect': '重连隧道',
       'action.groupDeviceSync': '同步设备列表',
-      'action.configUpdate': '修改配置'
+      'action.configUpdate': '修改配置',
+      'action.hostRestart': '重启主机 DSH'
     };
 
     const en = {
@@ -234,6 +239,7 @@ window.__ModuleLoader__.load({
       'section.status': 'Connection status',
       'section.service': 'Service settings',
       'section.group': 'Group service',
+      'section.components': 'Components',
       'section.pairing': 'Device pairing',
       'section.devices': 'Paired devices',
       'section.audit': 'Recent audit',
@@ -243,6 +249,8 @@ window.__ModuleLoader__.load({
       'sw.enabledNote': 'Disabling disconnects the tunnel; the phone can no longer reach this computer.',
       'sw.requireApproval': 'Require confirmation on this computer for new pairings',
       'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
+      'sw.restartHost': 'Allow the phone to restart host DSH',
+      'sw.restartHostNote': 'When on, the app top bar shows ⏻ so you can restart the host from the phone after installing plugins or changing features (the connection briefly drops and recovers). When off, the button is hidden and restart requests are rejected; manual restarts on this computer still work.',
       'field.hostName': 'Host name',
       'field.hostNameHint': 'Shown on the phone',
       'field.groupServiceUrl': 'Service URL',
@@ -334,6 +342,7 @@ window.__ModuleLoader__.load({
       'devices.never': 'Never connected',
       'audit.empty': 'No audit entries yet.',
       'audit.ok': 'OK',
+      'audit.accepted': 'Accepted',
       'audit.fail': 'Failed',
       'audit.created': 'Created',
       'audit.paired': 'Paired',
@@ -362,7 +371,8 @@ window.__ModuleLoader__.load({
       'action.groupRetry': 'Tunnel retry',
       'action.groupReconnect': 'Tunnel reconnected',
       'action.groupDeviceSync': 'Devices synced',
-      'action.configUpdate': 'Config updated'
+      'action.configUpdate': 'Config updated',
+      'action.hostRestart': 'Host DSH restart'
     };
 
     function makeTranslator(dicts) {
@@ -493,7 +503,7 @@ window.__ModuleLoader__.load({
     }
 
     /**
-     * 设置页编辑草稿：只含群体服务版字段（服务地址 / 邀请码 / 主机名 / 桌面确认）。
+     * 设置页编辑草稿：只含群体服务版字段（服务地址 / 邀请码 / 主机名 / 桌面确认 / 组件）。
      * 群体版没有 TLS 证书、主机令牌、推送等 classic 字段。
      */
     function draftFromStatus(status, previous) {
@@ -507,6 +517,12 @@ window.__ModuleLoader__.load({
         enabled: config.enabled !== undefined ? config.enabled === true : (status ? status.enabled === true : false),
         hostName: stringOrPrevious(firstDefined(config.hostName, host.name), prev.hostName || ''),
         requireApproval: pickRequireApproval(status),
+        // 「组件」：允许手机重启主机 DSH（默认关闭）。优先读 config，其次兼容旧的 status.restart。
+        restartHostEnabled: config.restartHostEnabled !== undefined
+          ? config.restartHostEnabled === true
+          : (status && status.restart && typeof status.restart.enabled === 'boolean'
+            ? status.restart.enabled
+            : (prev.restartHostEnabled === true)),
         groupServiceUrl: stringOrPrevious(firstDefined(config.groupServiceUrl, group.serviceUrl), prev.groupServiceUrl || ''),
         // 邀请码一次性且只上行：永远不进入 draft 初始值（注册成功后立即清空）。
         groupInviteCode: '',
@@ -543,6 +559,7 @@ window.__ModuleLoader__.load({
       'group-reconnect': 'action.groupReconnect',
       'group-device-sync': 'action.groupDeviceSync',
       'config.update': 'action.configUpdate',
+      'host-restart': 'action.hostRestart',
     };
 
     function actionLabel(action, t) {
@@ -553,6 +570,7 @@ window.__ModuleLoader__.load({
 
     const RESULT_KEYS = {
       ok: 'audit.ok',
+      accepted: 'audit.accepted',
       created: 'audit.created',
       paired: 'audit.paired',
       'pending-approval': 'audit.pending',
@@ -572,7 +590,7 @@ window.__ModuleLoader__.load({
       const key = RESULT_KEYS[raw.toLowerCase()];
       if (!key) return { label: raw === '' ? '—' : raw, tone: '' };
       let tone = 'warn';
-      if (key === 'audit.ok' || key === 'audit.created' || key === 'audit.paired') tone = 'good';
+      if (key === 'audit.ok' || key === 'audit.accepted' || key === 'audit.created' || key === 'audit.paired') tone = 'good';
       if (key === 'audit.cancelled' || key === 'audit.expired') tone = 'off';
       return { label: t(key), tone };
     }
@@ -1348,6 +1366,7 @@ window.__ModuleLoader__.load({
         const hostName = draft.hostName.trim();
         if (hostName !== baseline.hostName) patch.hostName = hostName;
         if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
+        if (draft.restartHostEnabled !== baseline.restartHostEnabled) patch.restartHostEnabled = draft.restartHostEnabled === true;
         const groupServiceUrl = draft.groupServiceUrl.trim();
         if (groupServiceUrl !== baseline.groupServiceUrl) patch.groupServiceUrl = groupServiceUrl;
         const groupPlainPortRaw = String(draft.groupPlainPort ?? '').trim();
@@ -1631,6 +1650,19 @@ window.__ModuleLoader__.load({
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
             busy === 'save' ? t('btn.saving') : t('btn.save'))));
 
+      // 组件：「允许手机重启主机 DSH」（默认关闭；关闭时 App 隐藏 ⏻ 且接口 501）。
+      const componentsSection = h(Section, { title: t('section.components') },
+        h(Row, { label: t('sw.restartHost'), note: t('sw.restartHostNote') },
+          h(Toggle, {
+            checked: draft.restartHostEnabled,
+            disabled,
+            label: t('sw.restartHost'),
+            onChange: (value) => setDraft({ ...draft, restartHostEnabled: value }),
+          })),
+        h('div', { 'data-ra-actions': '' },
+          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
+            busy === 'save' ? t('btn.saving') : t('btn.save'))));
+
       const pairingSection = h(Section, { title: t('section.pairing') },
         h(Row, {
           label: pairing ? (pairingPending ? t('pairing.pendingPill') : t('pairing.active')) : t('pairing.inactive'),
@@ -1714,6 +1746,7 @@ window.__ModuleLoader__.load({
         statusSection,
         groupSection,
         serviceSection,
+        componentsSection,
         pairingSection,
         devicesSection,
         auditSection,

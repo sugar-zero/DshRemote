@@ -16,12 +16,12 @@ async function setup() {
   return { home, service };
 }
 
-test('RemoteService：版本与管理 API 展示的版本一致（0.2.0）', async () => {
+test('RemoteService：版本与管理 API 展示的版本一致（0.2.1）', async () => {
   const { home, service } = await setup();
   try {
     const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     assert.equal(service.status().version, pkgVersion);
-    assert.equal(pkgVersion, '0.2.0');
+    assert.equal(pkgVersion, '0.2.1');
   } finally {
     await service.dispose();
     home.cleanup();
@@ -42,21 +42,29 @@ test('RemoteService：配置 schema 只保留群体字段，classic 字段不会
       tlsCertFile: '/path/fullchain.pem',
       pushEnabled: true,
       apnsKeyFile: '/path/AuthKey.p8',
-      restartHostEnabled: true,
       groupEnabled: true,
       groupServiceUrl: 'https://relay.example.com:19443',
     });
     const raw = JSON.parse(readFileSync(paths.config(), 'utf8'));
-    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'tlsCertFile', 'pushEnabled', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled']) {
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'tlsCertFile', 'pushEnabled', 'apnsKeyFile', 'groupEnabled']) {
       assert.equal(key in raw, false, `classic 字段 ${key} 不应写回配置`);
     }
     const config = loadConfig();
     assert.equal(config.groupServiceUrl, 'https://relay.example.com:19443');
-    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'publicPort', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'pushProvider', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled', 'listenPort', 'relayTlsInsecure']) {
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'publicPort', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'pushProvider', 'apnsKeyFile', 'groupEnabled', 'listenPort', 'relayTlsInsecure']) {
       assert.equal(key in DEFAULT_CONFIG, false, `${key} 不应出现在 DEFAULT_CONFIG`);
       assert.equal(key in config, false, `${key} 不应出现在加载后的配置`);
     }
     assert.deepEqual(config.denyPrefixes, DEFAULT_CONFIG.denyPrefixes);
+
+    // 「重启主机」组件是群体版正式配置字段（默认关闭），保存后能读回。
+    assert.equal(DEFAULT_CONFIG.restartHostEnabled, false, '重启组件默认关闭');
+    assert.equal(config.restartHostEnabled, false);
+    const enabled = saveConfig({ restartHostEnabled: true });
+    assert.equal(enabled.restartHostEnabled, true);
+    assert.equal(loadConfig().restartHostEnabled, true);
+    saveConfig({ restartHostEnabled: false });
+    assert.equal(loadConfig().restartHostEnabled, false);
   } finally {
     await service.dispose();
     home.cleanup();

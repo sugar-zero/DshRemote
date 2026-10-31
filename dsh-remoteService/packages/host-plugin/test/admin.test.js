@@ -94,13 +94,14 @@ test('管理 API：群体版状态只暴露群字段（不再有推送 / TLS / �
     assert.equal(data.group.registered, false);
     assert.equal(typeof data.host.fingerprint, 'string');
     assert.equal(data.push, undefined, 'status 不应再有 push 字段');
-    assert.equal(data.restart, undefined, 'status 不应再有 restart 字段');
+    assert.deepEqual(data.restart, { enabled: false }, '「重启主机」组件默认关闭');
     assert.equal(data.config.pushEnabled, undefined);
     assert.equal(data.config.apnsKeyFile, undefined);
     assert.equal(data.config.relayUrl, undefined);
     assert.equal(data.config.tlsCertFile, undefined);
     assert.equal(data.config.groupServiceUrl, '');
     assert.equal(data.config.requireApproval, true);
+    assert.equal(data.config.restartHostEnabled, false);
   } finally {
     await service.dispose();
     home.cleanup();

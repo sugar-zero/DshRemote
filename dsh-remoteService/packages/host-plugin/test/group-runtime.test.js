@@ -362,13 +362,16 @@ test('群体版主机配置校验：只需要服务地址（classic 字段已删
     [],
   );
   assert.deepEqual(validateConfig({ enabled: false }), [], '未启用时不做字段校验');
-  // classic/单体配置字段不再存在（relayUrl/hostId/hostToken/证书/推送/远程重启...）
+  // classic/单体配置字段不再存在（relayUrl/hostId/hostToken/证书/推送/groupEnabled...）；
+  // 「重启主机」组件（restartHostEnabled）是群体版正式字段，单独在下面断言。
   for (const key of [
     'relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'relayTlsInsecure',
-    'tlsCertFile', 'tlsKeyFile', 'listenPort', 'restartHostEnabled',
+    'tlsCertFile', 'tlsKeyFile', 'listenPort',
     'pushEnabled', 'pushCooldownSeconds', 'pushProvider', 'apnsKeyFile', 'apnsKeyId',
     'apnsTeamId', 'apnsTopic', 'apnsEnvironment', 'groupEnabled',
   ]) {
     assert.equal(key in DEFAULT_CONFIG, false, `${key} 不应再是群体版配置字段`);
   }
+  assert.equal(DEFAULT_CONFIG.restartHostEnabled, false, '「重启主机」组件默认关闭');
+  assert.deepEqual(validateConfig({ enabled: true, groupServiceUrl: 'https://relay.example.com:8443', restartHostEnabled: true }), []);
 });

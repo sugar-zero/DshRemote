@@ -17,11 +17,13 @@ export const DEFAULT_CONFIG = Object.freeze({
   groupInviteCode: '',     // 一次性邀请码；注册成功后清空
   groupPlainPort: 0,       // loopback 明文代理端口（0 = 随机；只被隧道客户端连接）
   groupInsecure: false,    // 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss）
+  restartHostEnabled: false, // 「组件」：允许手机重启主机 DSH（默认关闭；501 拒绝 + App 隐藏 ⏻）
 });
 
 const ALLOWED_KEYS = new Set([
   'enabled', 'hostName', 'requireApproval', 'maxRequestBytes', 'denyPrefixes',
   'groupServiceUrl', 'groupInviteCode', 'groupPlainPort', 'groupInsecure',
+  'restartHostEnabled',
 ]);
 
 /**

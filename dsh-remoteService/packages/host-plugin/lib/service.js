@@ -8,8 +8,9 @@ import { AuditLog } from './audit.js';
 import { PairingManager } from './pairing.js';
 import { DshProxy } from './proxy.js';
 import { GroupHostRuntime, loadGroupRegistration } from './group.js';
+import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 
 /**
  * 群体服务版主机插件运行时装配：
@@ -17,15 +18,35 @@ const VERSION = '0.2.0';
  *
  * 主机不监听任何公网/本机 TLS 端口，也不持有证书或推送配置：relay 边缘终止手机 TLS，
  * 明文流经出站隧道交给本机 loopback 代理，逐请求 token 验签 + 设备在册校验后反代 DSH。
+ *
+ * 「重启主机 DSH」是可关闭组件（`config.restartHostEnabled`，默认关闭）：开启后手机可经
+ * `POST /__dsh_remote/restart` 让主机调度 detached helper 重启整个 DSH 客户端。
  */
 export class RemoteService {
-  /** @param {object} ctx DSH 插件上下文 */
-  constructor(ctx) {
+  /**
+   * @param {object} ctx DSH 插件上下文
+   * @param {{
+   *   spawnHostRestart?: typeof import('node:child_process').spawn,
+   *   hostRestartDedupeMs?: number,
+   *   hostRestartEnv?: NodeJS.ProcessEnv,
+   * }} [options] 测试注入（spawn 必须是假的，绝不真的杀进程）
+   */
+  constructor(ctx, options = {}) {
     this.ctx = ctx;
     this.lastError = null;
     this.log = (message) => {
       try { console.log(`[dsh-remote] ${message}`); } catch { /* ignore */ }
     };
+    // 远程「重启主机 DSH」：短窗口去重 + 可注入 spawn（测试绝不真的杀进程）。
+    this.hostRestartScheduler = createHostRestartScheduler({
+      windowMs: options.hostRestartDedupeMs,
+      log: this.log,
+      request: () => requestHostRestart({
+        log: this.log,
+        spawnImpl: options.spawnHostRestart,
+        env: options.hostRestartEnv,
+      }),
+    });
     this.ready = this.#init().catch((error) => {
       this.lastError = error.message;
       this.log(`init failed: ${error.stack ?? error.message}`);
@@ -97,6 +118,9 @@ export class RemoteService {
       pairing: this.pairing,
       audit: this.audit,
       log: this.log,
+      version: VERSION,
+      // 手机经隧道 POST /__dsh_remote/restart 时由 GroupHostRuntime 调用（内部再校验组件开关）。
+      restartHost: (request) => this.restartHost(request),
     });
     try {
       await this.groupRuntime.start();
@@ -144,6 +168,41 @@ export class RemoteService {
     this.groupRuntime = undefined;
     if (groupRuntime) {
       try { await groupRuntime.stop(); } catch { /* ignore */ }
+    }
+  }
+
+  /**
+   * 远程「重启主机 DSH」：去重后调度 detached helper 杀进程并重新拉起。
+   *
+   * 只做调度，不自己动手杀进程；实际重启由 lib/host-restart.js 的 helper 在 ~1s 后完成，
+   * 这样 HTTP **202** 能先发回手机。审计由 GroupHostRuntime 的 `/__dsh_remote/restart`
+   * 路由统一写（每请求一条 accepted/failed，去重命中标 hash=deduped），这里只记日志。
+   *
+   * 组件开关 `config.restartHostEnabled !== true` 时抛 501 `host-restart-disabled`
+   * （路由层也会先拦一道，绕过 UI 直接调用接口同样拒绝）。
+   *
+   * @param {{device?: {id?: string, deviceId?: string}}} [request] 路由层传入的请求上下文
+   * @returns {{mode: string, deduped: boolean}}
+   */
+  restartHost(request = {}) {
+    const deviceId = request?.device?.id ?? request?.device?.deviceId ?? 'unknown';
+    if (this.config?.restartHostEnabled !== true) {
+      throw Object.assign(new Error('远程重启已在「设置 → 远程访问 → 组件」中关闭'), {
+        status: 501,
+        code: 'host-restart-disabled',
+      });
+    }
+    try {
+      const result = this.hostRestartScheduler.request();
+      if (result.deduped) {
+        this.log(`host-restart: 忽略 ${this.hostRestartScheduler.windowMs}ms 内的重复请求（device=${deviceId}, mode=${result.mode}）`);
+      } else {
+        this.log(`host-restart: 已安排重启（device=${deviceId}, mode=${result.mode}），DSH 将在约 1s 后退出并重新拉起`);
+      }
+      return result;
+    } catch (error) {
+      this.log(`host-restart: 调度失败（device=${deviceId}）: ${error?.message ?? error}`);
+      throw error;
     }
   }
 
@@ -237,6 +296,8 @@ export class RemoteService {
       },
       pairing: this.pairing?.publicSession() ?? { active: false },
       devices: this.devices?.list() ?? [],
+      // 「重启主机」组件状态（App 据此决定是否显示顶栏 ⏻；默认关闭）
+      restart: { enabled: config.restartHostEnabled === true },
       // 群体服务版（A 模式）：注册/隧道状态（唯一模式）
       group,
       // 管理 UI 需要读取的配置子集（密钥类字段不落配置，也没有可回显的密钥）
@@ -244,6 +305,7 @@ export class RemoteService {
         enabled: Boolean(config.enabled),
         hostName: config.hostName ?? '',
         requireApproval: Boolean(config.requireApproval),
+        restartHostEnabled: Boolean(config.restartHostEnabled),
         maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         denyPrefixes: Array.isArray(config.denyPrefixes) ? config.denyPrefixes : [],
         groupServiceUrl: config.groupServiceUrl ?? '',

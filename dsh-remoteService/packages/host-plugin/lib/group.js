@@ -6,7 +6,10 @@
  *   - 主机主动连 relay 控制面（隧道），relay 边缘终止手机 TLS 后把明文流经隧道交给主机；
  *   - 主机在本机 **loopback 明文 HTTP 代理**上逐请求鉴权：
  *       Host 必须等于 `<hostId>.<relayDomain>`；
- *       cookie `__Host-dsh_session` = relay 签名的短时 token（本地用 relay 公钥离线验签）；
+ *       会话凭证 = `__Host-dsh_session` cookie **或** `Authorization: Bearer <token>`（二者等价；
+ *       relay 边缘目前只认 cookie，App 的原生请求显式带 cookie；Bearer 作为等价兜底，
+ *       便于 App JS fetch / 本地调试与后续 relay 支持）；
+ *       token 由 relay 签名（本地用 relay 公钥离线验签）；
  *       token 里的 deviceId 必须仍是本机有效设备；
  *     通过后才交给 DshProxy 反代到 127.0.0.1 的 DSH（cookie 注入/deny list/WS 全部复用）。
  *
@@ -34,7 +37,30 @@ import { pathnameOf, readJsonBody, sendError, sendJson } from './http-utils.js';
 /** group.json 版本。 */
 export const GROUP_REGISTRATION_VERSION = 1;
 
+/**
+ * 远程重启主机 DSH 的内部路径（host-plugin 侧定义；protocol 0.2.0 已删除 classic 的
+ * `RESTART_PATH` 常量。App 侧等价实现使用同一字面量）。
+ */
+export const RESTART_PATH = `${TUNNEL_BASE}/restart`;
+
 const FQDN_RE = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
+const BEARER_RE = /^Bearer\s+(\S+)$/i;
+
+/**
+ * 提取请求的群体版会话 token：`Authorization: Bearer <token>` 优先，否则 `__Host-dsh_session` cookie。
+ *
+ * 两者等价（同一份 relay 签名 token、同一套离线验签 + 设备在册校验）：relay 边缘与
+ * 浏览器 WebView 走 cookie，App 的 JS fetch / 本地调试可用 Bearer。绝不把来源 IP /
+ * 自定义头 / 查询参数当作身份。
+ *
+ * @param {{authorization?: string, cookie?: string}} [headers]
+ * @returns {string|undefined}
+ */
+export function sessionTokenFromHeaders(headers = {}) {
+  const match = BEARER_RE.exec(String(headers?.authorization ?? '').trim());
+  if (match) return match[1];
+  return parseCookieHeader(headers?.cookie)[GROUP_SESSION_COOKIE];
+}
 
 /**
  * 规范化「服务地址」：接受 https://host[:port] 或 wss://host[:port]（POC 允许 http/ws）。
@@ -123,6 +149,9 @@ export class GroupHostRuntime {
    * @param {string} [options.registrationFile]
    * @param {() => Array<{deviceId: string, publicKey: string}>} [options.getGroupDevices] 测试/集成注入
    * @param {() => number} [options.now]
+   * @param {string} [options.version] 插件版本（`GET /__dsh_remote/status` 展示）
+   * @param {(request: {device?: object}) => Promise<{mode: string, deduped?: boolean}>|{mode: string, deduped?: boolean}} [options.restartHost]
+   *   「重启主机 DSH」调度器（service.restartHost；测试注入假实现）。缺失 = 501 host-restart-unavailable。
    */
   constructor(options) {
     this.config = options.config ?? {};
@@ -135,6 +164,9 @@ export class GroupHostRuntime {
     /** @type {import('./pairing.js').PairingManager | undefined} 群体版配对（把 P-256 公钥写成设备记录） */
     this.pairing = options.pairing;
     this.now = options.now ?? (() => Date.now());
+    this.version = options.version ?? '';
+    /** @type {((request: object) => any) | undefined} 远程重启调度（见 service.restartHost） */
+    this.restartHost = typeof options.restartHost === 'function' ? options.restartHost : undefined;
     this.insecure = options.config?.groupInsecure === true;
     this.registration = loadGroupRegistration(this.registrationFile);
     /** @type {http.Server | undefined} */
@@ -267,34 +299,7 @@ export class GroupHostRuntime {
     }
     // 重新拉起时同步服务端信息（mobilePort/controlUrl 等可能已变）
     if (hadRegistration) await this.#tryRefreshRegistration();
-    if (!this.plainServer) {
-      this.plainServer = http.createServer((req, res) => {
-        this.#handlePlain(req, res).catch((error) => {
-          this.log(`group: plain proxy error: ${error && error.message ? error.message : String(error)}`);
-          if (!res.headersSent) this.#send(res, 500, { ok: false, error: 'internal' });
-          else res.destroy();
-        });
-      });
-      // DSH Web 的实时通道（/api/remote.mux 等）是 WebSocket 升级请求；http.Server 默认
-      // 把 upgrade 交给 'upgrade' 事件，没有监听器会直接销毁 socket，页面表现为「暂无会话 /
-      // 重新连接中」。这里与 #handlePlain 同一套鉴权后交给 DshProxy.handleUpgrade。
-      this.plainServer.on('upgrade', (req, socket, head) => {
-        this.#handlePlainUpgrade(req, socket, head).catch((error) => {
-          this.log(`group: plain upgrade proxy error: ${error && error.message ? error.message : String(error)}`);
-          if (!socket.destroyed) socket.destroy();
-        });
-      });
-      this.plainServer.on('error', (error) => this.log(`group: plain proxy server error: ${error.code ?? error.message}`));
-      await new Promise((resolve, reject) => {
-        this.plainServer.once('error', reject);
-        this.plainServer.listen(Number(this.config.groupPlainPort) || 0, '127.0.0.1', () => {
-          this.plainServer.off('error', reject);
-          this.plainPort = /** @type {import('node:net').AddressInfo} */ (this.plainServer.address()).port;
-          resolve(undefined);
-        });
-      });
-      this.log(`group: plain loopback proxy on 127.0.0.1:${this.plainPort}`);
-    }
+    await this.startPlainProxy();
     if (!this.connector) {
       this.connector = new RelayConnector({
         // 职责分离：注册 API 与 WSS 控制面不同端口；优先用注册响应下发的 controlUrl。
@@ -314,6 +319,44 @@ export class GroupHostRuntime {
       this.connector.start();
     }
     return this.status();
+  }
+
+  /**
+   * 启动本机 loopback 明文代理（幂等；只 bind 127.0.0.1，不开放任何入站端口）。
+   *
+   * 单独拆出便于测试直接驱动 `/__dsh_remote/*` 路由（不需要注册/隧道）；
+   * 生产路径一律由 `start()` 调用。
+   * @returns {Promise<number>} 实际监听端口
+   */
+  async startPlainProxy() {
+    if (this.plainServer) return this.plainPort;
+    this.plainServer = http.createServer((req, res) => {
+      this.#handlePlain(req, res).catch((error) => {
+        this.log(`group: plain proxy error: ${error && error.message ? error.message : String(error)}`);
+        if (!res.headersSent) this.#send(res, 500, { ok: false, error: 'internal' });
+        else res.destroy();
+      });
+    });
+    // DSH Web 的实时通道（/api/remote.mux 等）是 WebSocket 升级请求；http.Server 默认
+    // 把 upgrade 交给 'upgrade' 事件，没有监听器会直接销毁 socket，页面表现为「暂无会话 /
+    // 重新连接中」。这里与 #handlePlain 同一套鉴权后交给 DshProxy.handleUpgrade。
+    this.plainServer.on('upgrade', (req, socket, head) => {
+      this.#handlePlainUpgrade(req, socket, head).catch((error) => {
+        this.log(`group: plain upgrade proxy error: ${error && error.message ? error.message : String(error)}`);
+        if (!socket.destroyed) socket.destroy();
+      });
+    });
+    this.plainServer.on('error', (error) => this.log(`group: plain proxy server error: ${error.code ?? error.message}`));
+    await new Promise((resolve, reject) => {
+      this.plainServer.once('error', reject);
+      this.plainServer.listen(Number(this.config.groupPlainPort) || 0, '127.0.0.1', () => {
+        this.plainServer.off('error', reject);
+        this.plainPort = /** @type {import('node:net').AddressInfo} */ (this.plainServer.address()).port;
+        resolve(undefined);
+      });
+    });
+    this.log(`group: plain loopback proxy on 127.0.0.1:${this.plainPort}`);
+    return this.plainPort;
   }
 
   /**
@@ -389,8 +432,8 @@ export class GroupHostRuntime {
       socket.end('HTTP/1.1 421 Misdirected Request\r\n\r\n');
       return;
     }
-    const cookies = parseCookieHeader(req.headers.cookie);
-    const token = cookies[GROUP_SESSION_COOKIE];
+    // cookie（WebView）与 `Authorization: Bearer`（App native fetch）等价
+    const token = sessionTokenFromHeaders(req.headers);
     const payload = token
       ? verifyGroupSessionToken({
         token,
@@ -483,8 +526,8 @@ export class GroupHostRuntime {
       return;
     }
 
-    const cookies = parseCookieHeader(req.headers.cookie);
-    const token = cookies[GROUP_SESSION_COOKIE];
+    // cookie（WebView）与 `Authorization: Bearer`（App native fetch）等价
+    const token = sessionTokenFromHeaders(req.headers);
     const payload = token
       ? verifyGroupSessionToken({
         token,
@@ -505,7 +548,7 @@ export class GroupHostRuntime {
       return;
     }
     this.#touchDevice(payload.deviceId);
-    // —— 已鉴权的内部远程接口（群体版只提供 status）——
+    // —— 已鉴权的内部远程接口（群体版提供 status + restart）——
     if (pathname === STATUS_PATH) {
       if (req.method !== 'GET') {
         sendError(res, 405, 'method-not-allowed', '仅支持 GET');
@@ -520,9 +563,51 @@ export class GroupHostRuntime {
           domain: `${this.registration.hostId}.${this.registration.relayDomain}`,
           auth: 'token',
           relayConnected: Boolean(this.connector?.isConnected()),
+          version: this.version || null,
+          // 「重启主机」组件：关闭时 App 不显示顶栏 ⏻，重启接口也会拒绝（501）
+          restart: { enabled: this.config?.restartHostEnabled === true },
           devices: { total: devices.length, active: devices.filter((device) => !device.revokedAt).length },
         },
       });
+      return;
+    }
+    // —— 远程重启主机 DSH（App 顶栏 ⏻；成功返回 202，helper 约 1s 后重启）——
+    if (pathname === RESTART_PATH) {
+      if (req.method !== 'POST') {
+        sendError(res, 405, 'method-not-allowed', '仅支持 POST');
+        return;
+      }
+      const deviceId = payload.deviceId;
+      if (this.config?.restartHostEnabled !== true) {
+        this.audit?.append({ deviceId, action: 'host-restart', result: 'failed', hash: 'disabled' });
+        sendError(res, 501, 'host-restart-disabled', '远程重启已在「设置 → 远程访问 → 组件」中关闭');
+        return;
+      }
+      if (typeof this.restartHost !== 'function') {
+        this.audit?.append({ deviceId, action: 'host-restart', result: 'failed', hash: 'not-enabled' });
+        sendError(res, 501, 'host-restart-unavailable', '当前主机未启用远程重启（插件版本或运行环境不支持）');
+        return;
+      }
+      try {
+        // 只做调度（detached helper 延迟 ~1s 才动手），先让 202 返回手机。
+        const result = await this.restartHost({ device: { id: deviceId, deviceId } });
+        const mode = String(result?.mode ?? 'unknown');
+        this.audit?.append({
+          deviceId,
+          action: 'host-restart',
+          result: 'accepted',
+          hash: result?.deduped ? 'deduped' : mode,
+        });
+        sendJson(res, 202, { ok: true, data: { restarting: true, mode } });
+      } catch (error) {
+        this.audit?.append({
+          deviceId,
+          action: 'host-restart',
+          result: 'failed',
+          hash: error?.code ?? 'restart-failed',
+        });
+        sendError(res, error.status ?? 500, error.code ?? 'host-restart-failed', error.message ?? '安排主机重启失败');
+      }
       return;
     }
     if (pathname.startsWith(`${TUNNEL_BASE}/`)) {
