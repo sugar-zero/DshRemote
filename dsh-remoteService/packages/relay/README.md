@@ -380,6 +380,21 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 `group.publicControlPort`，否则取实际监听端口）：职责分离后注册 API 端口 ≠ WSS 端口，
 主机插件必须用它，而不是从服务地址推导。
 
+**刷新注册**（`POST /__group/refresh`，同样挂在注册 API 面）用于服务端改了 `mobilePort` /
+`publicControlPort` 后让已注册主机同步，**不消耗邀请码**：
+
+```json
+POST /__group/refresh        Authorization: Bearer <hostToken>
+{ "hostId": "h_ab12cd34xy" }
+→ 200 { "ok": true, "protocolVersion": 1, "hostId": "...", "hostName": "...",
+        "relayDomain": "relay.example.com", "mobilePort": 1446,
+        "controlUrl": "wss://relay.example.com:18446/control",
+        "tokenPublicKey": "-----BEGIN PUBLIC KEY-----..." }
+```
+
+hostToken 错误 401、主机已撤销 403、主机不存在 404；主机插件在每次「重试连接」和重新拉起时
+会先调用它同步（旧 relay 无此接口时忽略、继续用缓存）。
+
 错误码：`invalid_request`(400) / `invalid_invite|invite_expired|invite_exhausted|registration_disabled`(403)
 / `host_limit`(409) / `rate_limited`(429，带 `Retry-After`)。
 
@@ -494,7 +509,7 @@ https://<relayDomain>:<adminPort>/__admin/
 靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
 （未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.5-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.6-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 

@@ -311,7 +311,11 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
       return probe.startsWith('HTTP/1.1 401');
     });
 
-    // 8) 「重试连接」：不重置注册，重建隧道后应重新连上
+    // 8) 刷新注册信息（hostToken 鉴权，不消耗邀请码）与「重试连接」自动同步
+    const refreshed = await runtime.refreshRegistration();
+    assert.equal(refreshed.mobilePort, 11443);
+    assert.equal(refreshed.hostId, registration.hostId);
+    // 9) 「重试连接」：不重置注册，重建隧道后应重新连上
     await runtime.reconnect();
     await waitFor(() => runtime.status().connected === true);
   } finally {

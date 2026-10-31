@@ -38,7 +38,7 @@
 #   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
 #
 # 导出离线镜像：
-#   docker save -o dsh-relay-0.2.5-group-linux-amd64.tar dsh-remote-relay:0.2.5-group
+#   docker save -o dsh-relay-0.2.6-group-linux-amd64.tar dsh-remote-relay:0.2.6-group
 # ============================================================================
 
 name: dsh-remote-group
@@ -48,7 +48,7 @@ services:
     build:
       context: ../dsh-remoteService
       dockerfile: packages/relay/Dockerfile
-    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.5-group}
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.6-group}
     container_name: dsh-relay-group
     user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
     command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]

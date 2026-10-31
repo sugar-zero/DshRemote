@@ -294,7 +294,8 @@ group 模式下状态里的 `relay.connected` 也映射为群体隧道状态（�
 
 - `POST /api/remote-access/group/register`（body `{serviceUrl, inviteCode, hostName?}`）→ 注册并连接；
   邀请码一次性，注册成功后会从配置中清空；
-- `POST /api/remote-access/group/retry` → **重试隧道连接**（不重置注册、不消耗邀请码；修好 nginx/证书后用）；
+- `POST /api/remote-access/group/retry` → **重试隧道连接**：先调 relay `POST /__group/refresh` 同步
+  最新 mobilePort/controlUrl（不消耗邀请码），再重建隧道；重新拉起插件时也会自动同步一次；
 - `POST /api/remote-access/group/reset` → 停隧道、删除 `group.json`、关闭群体模式。
 
 **群体版配对**：桌面端点「配对新设备」生成 **QR v2**（`dshremote://pair?v=2&host=<hostId>.<domain>&port=<mobilePort>&auth=token&...`，

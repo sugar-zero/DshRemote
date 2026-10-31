@@ -260,6 +260,8 @@ export const GROUP_PROTOCOL_VERSION = 1;
 
 /** relay 控制面上的自助注册路径（POST JSON）。 */
 export const GROUP_REGISTER_PATH = '/__group/register';
+/** 群体版：已注册主机刷新注册信息（hostToken 鉴权，不消耗邀请码；用于服务端端口/域名变更后同步）。 */
+export const GROUP_REFRESH_PATH = '/__group/refresh';
 
 /** 群体版默认手机访问端口（部署方可配置；relay 边缘终止 TLS 后使用）。 */
 export const GROUP_DEFAULT_MOBILE_PORT = 11443;
@@ -276,6 +278,9 @@ export const GROUP_REGISTER_ERROR = Object.freeze({
   RATE_LIMITED: 'rate_limited',
   REGISTRATION_DISABLED: 'registration_disabled',
   HOST_LIMIT: 'host_limit',
+  INVALID_TOKEN: 'invalid_token',
+  HOST_NOT_FOUND: 'host_not_found',
+  HOST_REVOKED: 'host_revoked',
 });
 
 const GROUP_HOST_ID_RE = /^h_[a-z0-9]{6,30}$/;
