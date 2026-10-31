@@ -18,6 +18,7 @@ import http from 'node:http';
 import https from 'node:https';
 import {
   CONTROL_PATH,
+  GROUP_REFRESH_PATH,
   GROUP_REGISTER_PATH,
   GROUP_SESSION_COOKIE,
   PAIR_PATH,
@@ -218,14 +219,69 @@ export class GroupHostRuntime {
   }
 
   /**
-   * 启动：确保已注册 → 起 loopback 明文代理 → 连 relay 隧道（连上后自动同步设备）。
+   * 刷新注册信息（hostToken 鉴权，不消耗邀请码）：
+   * 服务端改了 mobilePort/controlUrl 后，主机重新拉起时自动同步。
+   */
+  async refreshRegistration() {
+    if (!this.registration) throw new Error('尚未注册服务，无法刷新注册信息');
+    const url = new URL(GROUP_REFRESH_PATH, this.registration.serviceUrl);
+    const response = await this.#postJson(
+      url,
+      { hostId: this.registration.hostId },
+      { authorization: `Bearer ${this.registration.hostToken}` },
+    );
+    if (!response || response.ok !== true) {
+      const code = response?.error?.code ?? 'refresh_failed';
+      const message = response?.error?.message ?? '刷新注册信息失败';
+      throw Object.assign(new Error(`刷新注册信息失败：${code}（${message}）`), { code });
+    }
+    const hostId = String(response.hostId ?? '');
+    const relayDomain = String(response.relayDomain ?? '');
+    const mobilePort = Number(response.mobilePort);
+    const tokenPublicKey = String(response.tokenPublicKey ?? '');
+    const controlUrlRaw = typeof response.controlUrl === 'string' ? response.controlUrl : '';
+    const controlUrl = controlUrlRaw === ''
+      ? this.registration.controlUrl
+      : normalizeGroupControlUrl(controlUrlRaw, { allowInsecure: this.insecure });
+    if (hostId !== this.registration.hostId) throw new Error('刷新响应 hostId 与本地不一致');
+    if (!FQDN_RE.test(relayDomain)) throw new Error('刷新响应 relayDomain 非法');
+    if (!Number.isInteger(mobilePort) || mobilePort < 1 || mobilePort > 65535) throw new Error('刷新响应 mobilePort 非法');
+    if (!tokenPublicKey.includes('BEGIN PUBLIC KEY')) throw new Error('刷新响应缺少 relay token 公钥');
+
+    this.registration = {
+      ...this.registration,
+      relayDomain,
+      mobilePort,
+      tokenPublicKey,
+      ...(controlUrl ? { controlUrl } : {}),
+    };
+    saveGroupRegistration(this.registration, this.registrationFile);
+    this.audit?.append({ action: 'group-refresh', result: 'ok', hostId });
+    this.log(`group: refreshed registration (mobilePort=${mobilePort}${controlUrl ? `, control=${controlUrl}` : ''})`);
+    return this.registrationInfo();
+  }
+
+  /** 启动前尽力同步一次服务端信息（旧 relay 无 refresh 接口时忽略，继续用缓存）。 */
+  async #tryRefreshRegistration() {
+    try {
+      await this.refreshRegistration();
+    } catch (error) {
+      this.log(`group: refresh registration skipped: ${error && error.message ? error.message : String(error)}`);
+    }
+  }
+
+  /**
+   * 启动：确保已注册 → 同步服务端下发信息 → 起 loopback 明文代理 → 连 relay 隧道。
    */
   async start() {
     this.closed = false;
+    const hadRegistration = Boolean(this.registration);
     if (!this.registration) {
       if (String(this.config.groupInviteCode ?? '').trim() !== '') await this.register();
       else throw new Error('尚未注册服务：请填写「服务地址 + 邀请码」并完成注册');
     }
+    // 重新拉起时同步服务端信息（mobilePort/controlUrl 等可能已变）
+    if (hadRegistration) await this.#tryRefreshRegistration();
     if (!this.plainServer) {
       this.plainServer = http.createServer((req, res) => {
         this.#handlePlain(req, res).catch((error) => {
@@ -469,7 +525,7 @@ export class GroupHostRuntime {
    * @param {URL} url
    * @param {any} body
    */
-  #postJson(url, body) {
+  #postJson(url, body, extraHeaders = {}) {
     return new Promise((resolve, reject) => {
       const client = url.protocol === 'https:' || url.protocol === 'wss:' ? https : http;
       const payload = Buffer.from(JSON.stringify(body), 'utf8');
@@ -480,7 +536,11 @@ export class GroupHostRuntime {
           port: url.port || (url.protocol === 'https:' || url.protocol === 'wss:' ? 443 : 80),
           path: url.pathname,
           method: 'POST',
-          headers: { 'content-type': 'application/json', 'content-length': payload.length },
+          headers: {
+            'content-type': 'application/json',
+            'content-length': payload.length,
+            ...extraHeaders,
+          },
           rejectUnauthorized: !this.insecure,
         },
         (response) => {

@@ -24,6 +24,7 @@ import {
   GROUP_AUTH_TOKEN_PATH,
   GROUP_EDGE_STREAM_KIND,
   GROUP_REGISTER_PATH,
+  GROUP_REFRESH_PATH,
   PAIR_PATH,
   PAIR_STATUS_PATH,
   PROTOCOL_VERSION,
@@ -309,7 +310,7 @@ class Relay {
       const scheme = tlsMaterial ? 'https' : 'http';
       this.logger.info(
         `group api: ${scheme}://${this.config.domain}:${this.groupApiPort}${GROUP_REGISTER_PATH} `
-        + `(self-registration; control plane :${this.controlPort} now WSS-only)`,
+        + `(self-registration + ${GROUP_REFRESH_PATH}; control plane :${this.controlPort} now WSS-only)`,
       );
     }
     if (this.groupAdmin) {
@@ -475,6 +476,10 @@ class Relay {
       void this.groupService.handleHttp(req, res);
       return;
     }
+    if (!separatedApi && this.groupService && pathname === GROUP_REFRESH_PATH) {
+      void this.groupService.handleRefreshHttp(req, res);
+      return;
+    }
     const body = JSON.stringify({ ok: false, error: { code: 'not_found', message: 'control plane only accepts WebSocket upgrades on /control' } });
     res.writeHead(404, { 'content-type': 'application/json; charset=utf-8', 'content-length': Buffer.byteLength(body) });
     res.end(body);
@@ -494,6 +499,10 @@ class Relay {
     }
     if (this.groupService && pathname === GROUP_REGISTER_PATH) {
       void this.groupService.handleHttp(req, res);
+      return;
+    }
+    if (this.groupService && pathname === GROUP_REFRESH_PATH) {
+      void this.groupService.handleRefreshHttp(req, res);
       return;
     }
     const body = JSON.stringify({

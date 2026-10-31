@@ -61,6 +61,7 @@ export {
   listHosts,
   listInvites,
   readGroupStore,
+  refreshHost,
   registerHost,
   resolveGroupFile,
   revokeHost,

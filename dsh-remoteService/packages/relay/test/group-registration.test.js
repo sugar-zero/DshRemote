@@ -24,6 +24,7 @@ import {
   defaultGroupFile,
   listHosts,
   listInvites,
+  refreshHost,
   registerHost,
   revokeHost,
   revokeInvite,
@@ -165,6 +166,16 @@ test('group store: invite/token stored hashed (0600), invite single-use, revoke 
     assert.equal(hosts.length, 1);
     assert.equal(hosts[0].hostId, registration.hostId);
     assert.equal(hosts[0].hostName, 'Friend Mac');
+    assert.equal(hosts[0].revoked, false);
+
+    // 刷新注册信息：hostToken 鉴权、不消耗邀请码、可同步新的 mobilePort
+    assert.throws(
+      () => refreshHost(file, { hostId: registration.hostId, hostToken: 'wrong-token' }),
+      (error) => error.code === 'invalid_token',
+    );
+    const refreshed = refreshHost(file, { hostId: registration.hostId, hostToken: registration.hostToken, mobilePort: 15555 });
+    assert.equal(refreshed.mobilePort, 15555);
+    assert.equal(listHosts(file)[0].mobilePort, 15555);
     assert.equal(hosts[0].revoked, false);
 
     const used = listInvites(file)[0];

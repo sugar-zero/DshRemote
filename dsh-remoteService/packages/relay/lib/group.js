@@ -78,6 +78,9 @@ export class GroupRegistrationError extends Error {
 const STATUS_BY_CODE = Object.freeze({
   [GROUP_REGISTER_ERROR.INVALID_REQUEST]: 400,
   [GROUP_REGISTER_ERROR.INVALID_INVITE]: 403,
+  [GROUP_REGISTER_ERROR.INVALID_TOKEN]: 401,
+  [GROUP_REGISTER_ERROR.HOST_NOT_FOUND]: 404,
+  [GROUP_REGISTER_ERROR.HOST_REVOKED]: 403,
   [GROUP_REGISTER_ERROR.INVITE_EXPIRED]: 403,
   [GROUP_REGISTER_ERROR.INVITE_EXHAUSTED]: 403,
   [GROUP_REGISTER_ERROR.RATE_LIMITED]: 429,
@@ -354,6 +357,43 @@ function timingSafeEqualString(a, b) {
 
 
 /**
+ * 已注册主机刷新注册信息（hostToken 鉴权，不消耗邀请码）：
+ * 服务端改了 mobilePort（或其它下发参数）后，主机可用它同步，无需重新注册。
+ * @param {string} file
+ * @param {{hostId: string, hostToken: string, mobilePort?: number, now?: number}} options
+ */
+export function refreshHost(file, options = {}) {
+  const now = Number.isFinite(options.now) ? Number(options.now) : Date.now();
+  const hostId = normalizeHostId(options.hostId);
+  const token = String(options.hostToken ?? '');
+  if (token === '') throw new GroupRegistrationError(GROUP_REGISTER_ERROR.INVALID_REQUEST, 'hostToken is required');
+  const store = readGroupStore(file);
+  const record = store.hosts[hostId];
+  if (!record) throw new GroupRegistrationError(GROUP_REGISTER_ERROR.HOST_NOT_FOUND, 'host is not registered');
+  if (Number(record.revokedAt) > 0) throw new GroupRegistrationError(GROUP_REGISTER_ERROR.HOST_REVOKED, 'host has been revoked');
+  const expected = sha256Base64Url(token);
+  const saved = typeof record.hostTokenHash === 'string' ? record.hostTokenHash : '';
+  if (saved === '' || expected.length !== saved.length || !timingSafeEqualString(expected, saved)) {
+    throw new GroupRegistrationError(GROUP_REGISTER_ERROR.INVALID_TOKEN, 'host token is not valid');
+  }
+  const port = options.mobilePort === undefined ? Number(record.mobilePort) || undefined : Number(options.mobilePort);
+  if (port !== undefined) {
+    if (!Number.isInteger(port) || port < 1 || port > 65535) {
+      throw new GroupRegistrationError(GROUP_REGISTER_ERROR.INVALID_REQUEST, 'mobilePort must be 1..65535');
+    }
+    record.mobilePort = port;
+  }
+  record.updatedAt = now;
+  writeGroupStore(file, store);
+  return {
+    hostId,
+    hostName: record.hostName ?? '',
+    mobilePort: Number(record.mobilePort) || undefined,
+    createdAt: Number(record.createdAt) || 0,
+  };
+}
+
+/**
  * 找出可用的邀请（按 code hash 匹配）；不返回 code 本身。
  * @param {any} store
  * @param {string} code
@@ -541,6 +581,63 @@ export class GroupRegistrationService {
     if (!Number.isInteger(port) || port < 1 || port > 65535) return undefined;
     const scheme = req.socket && /** @type {any} */ (req.socket).encrypted ? 'wss' : 'ws';
     return `${scheme}://${hostname}:${port}${CONTROL_PATH}`;
+  }
+
+  /**
+   * 刷新已注册主机的下发信息（hostToken 鉴权，不消耗邀请码）。
+   * @param {{body: any, clientKey: string, hostToken: string}} input
+   */
+  refresh({ body, clientKey, hostToken }) {
+    this.limiter.hit(String(clientKey ?? 'unknown'));
+    const payload = body && typeof body === 'object' && !Array.isArray(body) ? body : {};
+    const result = refreshHost(this.file, {
+      hostId: payload.hostId,
+      hostToken,
+      mobilePort: this.mobilePort,
+      now: this.now(),
+    });
+    return result;
+  }
+
+  /**
+   * 处理 POST /__group/refresh（hostToken 鉴权；返回最新 mobilePort/controlUrl 等）。
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:http').ServerResponse} res
+   * @param {string} [clientKey]
+   */
+  async handleRefreshHttp(req, res, clientKey) {
+    try {
+      if (req.method !== 'POST') {
+        return sendJson(res, 405, { ok: false, error: { code: GROUP_REGISTER_ERROR.INVALID_REQUEST, message: 'method not allowed' } }, { allow: 'POST' });
+      }
+      const auth = typeof req.headers.authorization === 'string' ? req.headers.authorization.trim() : '';
+      const match = /^Bearer\s+(.+)$/i.exec(auth);
+      const hostToken = match ? match[1].trim() : '';
+      if (hostToken === '') {
+        return sendJson(res, 401, { ok: false, error: { code: GROUP_REGISTER_ERROR.INVALID_TOKEN, message: 'host token is required' } });
+      }
+      const body = await readJsonBody(req, this.bodyLimitBytes);
+      const result = this.refresh({ body, clientKey: clientKey ?? req.socket.remoteAddress ?? 'unknown', hostToken });
+      const controlUrl = this.#controlUrl(req);
+      this.logger.info(`group: refreshed host ${result.hostId} (mobilePort=${result.mobilePort})`);
+      return sendJson(res, 200, {
+        ok: true,
+        protocolVersion: 1,
+        hostId: result.hostId,
+        hostName: result.hostName,
+        relayDomain: this.relayDomain,
+        mobilePort: result.mobilePort,
+        ...(controlUrl ? { controlUrl } : {}),
+        ...(this.tokenPublicKey ? { tokenPublicKey: this.tokenPublicKey } : {}),
+      });
+    } catch (err) {
+      if (err instanceof GroupRegistrationError) {
+        const status = groupErrorStatus(err.code);
+        return sendJson(res, status, { ok: false, error: { code: err.code, message: err.message } });
+      }
+      this.logger.error(`group: refresh failed: ${err && err.message ? err.message : String(err)}`);
+      return sendJson(res, 500, { ok: false, error: { code: 'internal', message: 'refresh failed' } });
+    }
   }
 
   /**

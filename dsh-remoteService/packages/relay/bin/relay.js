@@ -594,7 +594,7 @@ async function main(argv) {
     return;
   }
   if (flags.version === true) {
-    console.log('dsh-remote-relay 0.2.5');
+    console.log('dsh-remote-relay 0.2.6');
     return;
   }
   if (positionals[0] === 'token') {

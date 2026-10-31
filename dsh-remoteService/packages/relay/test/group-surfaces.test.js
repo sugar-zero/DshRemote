@@ -117,6 +117,25 @@ test('职责分离：控制面 WSS-only；注册 API / 后台各自独立监听'
     assert.notEqual(new URL(registered.json.controlUrl).port, String(relay.groupApiPort));
     assert.equal(Number(new URL(registered.json.controlUrl).port), relay.controlPort);
 
+    // 刷新注册：走注册 API 面（hostToken 鉴权），控制面 404
+    const hostToken = registered.json.hostToken;
+    const refreshControl = await request(relay.controlPort, {
+      method: 'POST',
+      path: '/__group/refresh',
+      headers: { authorization: `Bearer ${hostToken}` },
+      body: { hostId: registered.json.hostId },
+    });
+    assert.equal(refreshControl.status, 404);
+    const refreshed = await request(relay.groupApiPort, {
+      method: 'POST',
+      path: '/__group/refresh',
+      headers: { authorization: `Bearer ${hostToken}` },
+      body: { hostId: registered.json.hostId },
+    });
+    assert.equal(refreshed.status, 200, refreshed.text);
+    assert.equal(refreshed.json.mobilePort, 1443);
+    assert.match(refreshed.json.controlUrl, /^ws:\/\/127\.0\.0\.1:\d+\/control$/);
+
     // 后台面：页面无需 token；API 需要 token；其它路径 404
     const page = await request(relay.groupAdminPort, { path: '/__admin' });
     assert.equal(page.status, 200);
