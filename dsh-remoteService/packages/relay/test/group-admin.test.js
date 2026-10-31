@@ -101,6 +101,11 @@ test('admin：静态页面 + token 鉴权 + 状态/邀请码/主机管理', asyn
     assert.match(page.headers['content-type'] ?? '', /text\/html/);
     assert.match(page.text, /群体服务后台/);
     assert.match(page.headers['content-security-policy'] ?? '', /default-src 'none'/);
+    // 邀请码不展示明文，只提供复制按钮；新建邀请也不显示 code 文本
+    assert.match(page.text, /复制邀请码/);
+    assert.match(page.text, /••••••••/);
+    assert.doesNotMatch(page.text, /邀请码（只显示一次）/);
+    assert.doesNotMatch(page.text, /邀请码（只显示一次）/);
 
     // token 鉴权
     assert.equal((await request(port, { path: '/__admin/api/state' })).status, 401);

@@ -476,7 +476,7 @@ https://<relayDomain>:<adminPort>/__admin/
 推荐经 nginx 反代到 `admin.<domain>` 并加 basic auth / IP 白名单（见 `server/nginx/group-admin-http.conf`），
 或用 SSH 隧道访问；不要直接把这个端口暴露公网。
 
-页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；生成后列表里可随时查看/复制）；
+页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；后台不展示明文，只提供「复制」按钮）；
 注意：列表里的 `inv_xxx` 是**邀请码 ID，不能当邀请码用**；真正要填给主机/App 的是生成时显示的
 **43 字符 base64url 邀请码**（只显示一次，丢了只能新建；store 只存哈希）。
 列邀请码并撤销；列主机（在线/离线/已撤销）并撤销主机。数据全部来自 `group.json`，页面每 10 秒自动刷新。
@@ -493,7 +493,7 @@ https://<relayDomain>:<adminPort>/__admin/
 靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
 （未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.4-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.5-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 

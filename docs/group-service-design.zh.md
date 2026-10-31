@@ -269,6 +269,7 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   `data/config/relay.json`（0600，已存在不覆盖），缺域名/证书时给出可操作报错；
   镜像 **0.2.4** 起邀请码在 `group.json`（0600）中明文保存，后台/CLI 可随时查看复制（旧邀请码只有哈希，
   升级后显示"不可显示"，需重新生成）；host token 仍只存 SHA-256；
+  镜像 **0.2.5** 起后台不再展示邀请码明文，只提供「复制」按钮（防肩窥），CLI `invite list` 仍可查看；
   compose 默认端口：edge 1443 / WSS 18443 / API 19443 / admin 127.0.0.1:19444；镜像重建为 `dsh-remote-relay:0.2.1-group`；`npm test` 190/190。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。
