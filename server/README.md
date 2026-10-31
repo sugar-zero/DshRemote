@@ -713,7 +713,8 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    **备份**：`data/` 里保存了 `group.json`（主机/邀请码）、`signing-key.pem`（设备会话 token 签名私钥）、
    `admin-token`（后台令牌）和证书；迁移/升级前备份整个 `data/`，其中 `signing-key.pem` 和 `admin-token` 不要泄露。
 
-4. **后台**：默认只绑回环，二选一访问：
+4. **后台**：默认只绑回环，二选一访问（后台「生成邀请码」后要复制的是**43 字符邀请码**，
+   不是列表里的 `inv_xxx` ID；邀请码只显示一次，丢了只能新建）：
    - SSH 隧道：`ssh -L 19444:127.0.0.1:19444 <VPS>`，然后浏览器打开 `https://127.0.0.1:19444/__admin/`
      （证书是 relay 域名，需在 `/etc/hosts` 映射或忽略证书告警；也可用 `--resolve` / 本地 SOCKS）；
    - nginx 反代：按 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 暴露成 `admin.<domain>` 并加 basic auth。
