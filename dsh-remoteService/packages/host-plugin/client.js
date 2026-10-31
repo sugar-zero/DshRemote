@@ -83,14 +83,19 @@ window.__ModuleLoader__.load({
       'status.unknown': '状态未知',
       'status.disabled': '未启用',
       'status.online': '中继在线',
+      'status.groupOnline': '群体服务在线',
+      'status.groupOffline': '群体服务离线',
       'status.offline': '中继离线',
       'status.waiting': '等待配对',
 
       'section.status': '连接状态',
       'section.connection': '连接配置',
+      'section.service': '服务设置',
       'section.group': '群体服务（实验）',
       'group.note': '群体服务版（A 模式）：relay 终止手机 TLS，主机只做出站隧道；注册后无需本地证书/令牌/APNs 配置。',
-      'group.tlsNote': '此模式下「TLS 证书路径」与「自托管 APNs」不生效；推送由服务部署方统一提供。',
+      'group.tlsNote': '此模式下不需要本地 TLS 证书 / 主机令牌 / APNs 配置；推送由服务部署方统一提供。',
+      'group.pushNote': '群体版推送由 relay 服务端负责（后续切片接入），本机无需 APNs 配置。',
+      'sw.enabledNoteGroup': '关闭后手机将无法访问这台电脑（群体隧道会断开）。',
       'sw.groupEnabled': '启用群体模式',
       'sw.groupEnabledNote': '开启后主机不监听 TLS、不持有证书；改为向服务端注册并走隧道。',
       'field.groupServiceUrl': '服务地址',
@@ -103,6 +108,8 @@ window.__ModuleLoader__.load({
       'group.hostId': '服务端分配的主机 ID',
       'group.fqdn': '手机访问域名',
       'group.connected': '隧道连接',
+      'group.mobilePort': '手机访问端口',
+      'group.plainPort': '本机明文代理端口',
       'group.lastError': '最近错误',
       'action.registerGroup': '注册并连接',
       'action.retryGroup': '重试连接',
@@ -279,14 +286,19 @@ window.__ModuleLoader__.load({
       'status.unknown': 'Status unknown',
       'status.disabled': 'Disabled',
       'status.online': 'Relay online',
+      'status.groupOnline': 'Group service online',
+      'status.groupOffline': 'Group service offline',
       'status.offline': 'Relay offline',
       'status.waiting': 'Waiting for pairing',
 
       'section.status': 'Connection status',
       'section.connection': 'Connection settings',
+      'section.service': 'Service',
       'section.group': 'Group service (experimental)',
       'group.note': 'Group mode (A): the relay terminates mobile TLS and the host only makes outbound tunnels. No local certs, tokens or APNs config needed after registration.',
-      'group.tlsNote': 'TLS certificate paths and self-hosted APNs do not apply in group mode; push is provided by the service operator.',
+      'group.tlsNote': 'No local TLS certs / host token / APNs config are needed in group mode; push is provided by the service operator.',
+      'group.pushNote': 'Group push is handled by the relay (next slice); no local APNs config needed.',
+      'sw.enabledNoteGroup': 'Turning this off makes this computer unreachable from the phone (group tunnel disconnects).',
       'sw.groupEnabled': 'Enable group mode',
       'sw.groupEnabledNote': 'The host stops listening on TLS and connects to the service relay via an outbound tunnel.',
       'field.groupServiceUrl': 'Service URL',
@@ -299,6 +311,8 @@ window.__ModuleLoader__.load({
       'group.hostId': 'Server-assigned host ID',
       'group.fqdn': 'Mobile access domain',
       'group.connected': 'Tunnel',
+      'group.mobilePort': 'Mobile port',
+      'group.plainPort': 'Local plain proxy port',
       'group.lastError': 'Last error',
       'action.registerGroup': 'Register & connect',
       'action.retryGroup': 'Retry connection',
@@ -723,10 +737,10 @@ window.__ModuleLoader__.load({
       return 'bad';
     }
 
-    function toneKey(tone) {
-      if (tone === 'good') return 'status.online';
+    function toneKey(tone, groupMode = false) {
+      if (tone === 'good') return groupMode ? 'status.groupOnline' : 'status.online';
       if (tone === 'warn') return 'status.waiting';
-      if (tone === 'bad') return 'status.offline';
+      if (tone === 'bad') return groupMode ? 'status.groupOffline' : 'status.offline';
       if (tone === 'off') return 'status.disabled';
       return 'status.loading';
     }
@@ -1077,11 +1091,12 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('visibilitychange', onVisibility);
       }, [load]);
 
+      const entryGroupMode = !!(status && status.config && status.config.groupEnabled);
       const tone = status === null ? (loadError === '' ? 'muted' : 'bad') : statusTone(status);
       let statusText;
       if (status === null) statusText = loadError === '' ? t('status.loading') : t('status.unknown');
-      else if (tone === 'good') statusText = `${t('status.online')} · ${deviceCountText(t, activeDevices(status).length)}`;
-      else statusText = t(toneKey(tone));
+      else if (tone === 'good') statusText = `${t(toneKey('good', entryGroupMode))} · ${deviceCountText(t, activeDevices(status).length)}`;
+      else statusText = t(toneKey(tone, entryGroupMode));
       const title = `${t('entry.label')} · ${statusText}`;
 
       return h('div', { 'data-ra-entry-wrap': '', 'data-wide': wide ? '1' : '0' },
@@ -1727,6 +1742,8 @@ window.__ModuleLoader__.load({
 
       const group = status.group || {};
       const groupRegistered = group.registered === true;
+      // 群体模式：页面只展示群体服务的信息与功能，classic（单机版）字段全部隐藏以免歧义
+      const groupMode = draft.groupEnabled === true;
       const groupSection = h(Section, { title: t('section.group') },
         h(Row, {
           label: t('sw.groupEnabled'),
@@ -1779,9 +1796,29 @@ window.__ModuleLoader__.load({
           : null,
         draft.groupEnabled ? h('div', { 'data-ra-note': '' }, t('group.tlsNote')) : null);
 
-      const statusSection = h(Section, { title: t('section.status') },
-        loadError !== '' ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('msg.loadFailed', { message: loadError })) : null,
-        h(InfoRow, { label: draft.groupEnabled ? t('field.groupServiceUrl') : t('field.relayUrl'), value: relay.url || '—' }),
+      const groupStatusRows = [
+        h(InfoRow, { label: t('field.groupServiceUrl'), value: group.serviceUrl || '—' }),
+        h(InfoRow, { label: t('group.controlUrl'), value: group.controlUrl || '—' }),
+        h(InfoRow, { label: t('group.registered'), value: groupRegistered ? t('group.registered') : t('group.notRegistered') }),
+        h(InfoRow, {
+          label: t('group.connected'),
+          value: h('span', { 'data-ra-inline': '' },
+            h(Dot, { tone: group.connected ? 'good' : 'bad' }),
+            group.connected ? t('relay.connected') : t('relay.disconnected')),
+        }),
+        group.lastError
+          ? h(InfoRow, { label: t('group.lastError'), value: h('span', { style: { color: '#ef4444' } }, String(group.lastError)) })
+          : null,
+        h(InfoRow, { label: t('group.hostId'), value: group.hostId || '—' }),
+        h(InfoRow, { label: t('group.fqdn'), value: group.fqdn || '—' }),
+        h(InfoRow, { label: t('group.mobilePort'), value: group.mobilePort ? String(group.mobilePort) : '—' }),
+        h(InfoRow, { label: t('group.plainPort'), value: group.plainPort ? String(group.plainPort) : '—' }),
+        h(InfoRow, { label: t('host.name'), value: host.name || '—' }),
+        h(InfoRow, { label: t('host.version'), value: status.version || '—' }),
+      ].filter(Boolean);
+
+      const classicStatusRows = [
+        h(InfoRow, { label: t('field.relayUrl'), value: relay.url || '—' }),
         h(InfoRow, {
           label: t('relay.status'),
           value: h('span', { 'data-ra-inline': '' },
@@ -1803,10 +1840,15 @@ window.__ModuleLoader__.load({
             enabled && tls.valid === false ? h('span', { 'data-ra-badge': '', 'data-tone': 'warn' }, t('host.certInvalid')) : null,
             tls.dev ? h('span', { 'data-ra-badge': '', 'data-tone': '' }, t('host.certDev')) : null),
         }),
-        h(InfoRow, { label: t('host.version'), value: status.version || '—' }));
+        h(InfoRow, { label: t('host.version'), value: status.version || '—' }),
+      ].filter(Boolean);
+
+      const statusSection = h(Section, { title: t('section.status') },
+        loadError !== '' ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('msg.loadFailed', { message: loadError })) : null,
+        ...(groupMode ? groupStatusRows : classicStatusRows));
 
       const pushWarnings = status && status.push && Array.isArray(status.push.warnings) ? status.push.warnings : [];
-      const connectionSection = h(Section, { title: t('section.connection') },
+      const classicConnectionSection = h(Section, { title: t('section.connection') },
         h(Row, { label: t('sw.enabled'), note: t('sw.enabledNote') },
           h(Toggle, {
             checked: draft.enabled,
@@ -1930,6 +1972,35 @@ window.__ModuleLoader__.load({
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
             busy === 'save' ? t('btn.saving') : t('btn.save'))));
 
+      const groupServiceSection = h(Section, { title: t('section.service') },
+        h(Row, { label: t('sw.enabled'), note: t('sw.enabledNoteGroup') },
+          h(Toggle, {
+            checked: draft.enabled,
+            disabled,
+            label: t('sw.enabled'),
+            onChange: (value) => setDraft({ ...draft, enabled: value }),
+          })),
+        h('div', { 'data-ra-grid': '' },
+          h(Field, {
+            label: t('field.hostName'),
+            value: draft.hostName,
+            placeholder: t('field.hostNameHint'),
+            onChange: (value) => setDraft({ ...draft, hostName: value }),
+          })),
+        h(Row, { label: t('sw.requireApproval'), note: t('sw.requireApprovalNote') },
+          h(Toggle, {
+            checked: draft.requireApproval,
+            disabled,
+            label: t('sw.requireApproval'),
+            onChange: (value) => setDraft({ ...draft, requireApproval: value }),
+          })),
+        h('div', { 'data-ra-note': '' }, t('group.pushNote')),
+        h('div', { 'data-ra-actions': '' },
+          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
+            busy === 'save' ? t('btn.saving') : t('btn.save'))));
+
+      const connectionSection = groupMode ? groupServiceSection : classicConnectionSection;
+
       const componentsSection = h(Section, { title: t('section.components') },
         h(Row, { label: t('sw.restartHost'), note: t('sw.restartHostNote') },
           h(Toggle, {
@@ -2019,7 +2090,7 @@ window.__ModuleLoader__.load({
             h('div', { 'data-ra-title-main': '' },
               h('div', { 'data-ra-title-text': '' }, t('page.title')),
               h('div', { 'data-ra-sub': '' }, t('page.subtitle'))),
-            h(StatusPill, { tone, label: t(toneKey(tone)) }))),
+            h(StatusPill, { tone, label: t(toneKey(tone, groupMode)) }))),
         pairingOpen ? null : h(Toast, { flash, onDismiss: dismissFlash }),
         statusSection,
         groupSection,

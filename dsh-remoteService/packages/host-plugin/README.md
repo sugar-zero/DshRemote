@@ -282,7 +282,8 @@ volumes:
 状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/controlUrl/hostId/fqdn/mobilePort/connected/plainPort）。
 group 模式下状态里的 `relay.connected` 也映射为群体隧道状态（否则 UI 会误显示"中继离线"）。
 
-设置页（Client 半）：group 模式下新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
+设置页（Client 半）：group 模式下只显示群体服务相关信息与功能（classic 的中继地址/主机令牌/TLS 证书/
+自托管 APNs 等字段全部隐藏，避免歧义）；新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
 注册/隧道状态、**注册并连接** / **重试连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。
 **常见错误**：注册时报 `not_found（control plane only accepts WebSocket upgrades on /control）`
 → 「服务地址」填成了**控制面 WSS 端口**（18443/8443）。注册必须走**注册 API 地址**
