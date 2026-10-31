@@ -600,6 +600,8 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    | `RELAY_GROUP_HEALTH_HOST_PORT` | 本机排障（/healthz） | `18080` | `18080`（同机 classic 改 18081） | ✗ 只回环 |
 
    容器内端口固定：edge=`443`、控制面 WSS=`8443`、注册 API=`9443`、后台=`9444`、healthz=`80`（不用改）。
+   同机已有 classic 时：内部端口改 16443/18444/18081；**直连形态下 `RELAY_GROUP_MOBILE_PORT` /
+   `RELAY_GROUP_PUBLIC_CONTROL_PORT` 也要同步改成 16443/18444**；nginx 前置形态保持 443/8443。
 
    规则：
    - **`RELAY_GROUP_MOBILE_PORT`（= `group.mobilePort`）必须等于手机实际访问的公网端口**，不是容器宿主映射端口
@@ -638,7 +640,10 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
      `RELAY_GROUP_EDGE_HOST_PORT=16443`、`RELAY_GROUP_CONTROL_HOST_PORT=18444`、
      `RELAY_GROUP_HEALTH_HOST_PORT=18081`，并把
      `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`
-     （注册 API/后台默认 19443/19444，不与 classic 冲突）；
+     （注册 API/后台默认 19443/19444，不与 classic 冲突）。
+     **直连形态**还要把 ★ 端口同步改掉：`RELAY_GROUP_MOBILE_PORT=16443`、
+     `RELAY_GROUP_PUBLIC_CONTROL_PORT=18444`（否则手机/主机会去连 classic 的 1443/18443）；
+     **nginx 前置形态** ★ 端口保持 443/8443 即可。`.env.group` 第 3.5 节有完整对照；
    - group 必须有**自己的 relay 域名**（不能用 classic 的域名，通配证书也不同）。
 
    合并模板里 8443 用 WSS 的 SNI 区分 classic/group 两个控制面；若两个 relay 域名相同则无法共用 8443，
