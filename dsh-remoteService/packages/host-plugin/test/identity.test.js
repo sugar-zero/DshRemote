@@ -1,41 +1,30 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { X509Certificate } from 'node:crypto';
-import { withTempHome, makeCsr, makeEcCsr } from './helpers.js';
+import { readFileSync, statSync } from 'node:fs';
+import { withTempHome } from './helpers.js';
 
-test('host identity is stable across reloads; device CA signs CSR', async () => {
+test('主机身份：首次创建、再次加载指纹稳定，落盘 0600', async () => {
   const home = withTempHome();
   try {
-    const identityMod = await import('../lib/identity.js');
-    const a = identityMod.loadOrCreateHostIdentity();
-    const b = identityMod.loadOrCreateHostIdentity();
-    assert.equal(a.fingerprint, b.fingerprint);
+    const identityModule = await import('../lib/identity.js');
+    const { paths } = await import('../lib/paths.js');
+    const a = identityModule.loadOrCreateHostIdentity();
+    const b = identityModule.loadOrCreateHostIdentity();
     assert.equal(a.status, 'created');
     assert.equal(b.status, 'loaded');
-
-    const ca = identityMod.loadOrCreateDeviceCa();
-    const csr = makeCsr('iPhone-15-Pro');
-    const signed = identityMod.signDeviceCertificate({ ca, csrPem: csr.csrPem, deviceId: 'd_test01', commonName: 'iPhone', days: 1 });
-    assert.match(signed.certPem, /BEGIN CERTIFICATE/);
-    const leaf = new X509Certificate(signed.certPem);
-    const caCert = new X509Certificate(ca.certPem);
-    assert.equal(leaf.checkIssued(caCert), true);
-    assert.equal(leaf.verify(caCert.publicKey), true);
-    assert.equal(leaf.serialNumber.toUpperCase(), signed.serial);
-
-    // EC(P-256) CSR：forge 不支持，改走 openssl；供 Secure Enclave/Keystore 设备使用
-    const ec = makeEcCsr('iPhone-EC');
-    try {
-      const parsedEc = identityMod.parseDeviceCsr(ec.csrPem);
-      assert.equal(parsedEc.keyType, 'ec');
-      const signedEc = identityMod.signDeviceCertificate({ ca, csrPem: ec.csrPem, deviceId: 'd_ec01', commonName: 'iPhone-EC', days: 1 });
-      const ecLeaf = new X509Certificate(signedEc.certPem);
-      assert.equal(ecLeaf.checkIssued(caCert), true);
-      assert.equal(ecLeaf.verify(caCert.publicKey), true);
-      assert.equal(ecLeaf.serialNumber.toUpperCase(), signedEc.serial);
-    } finally {
-      ec.cleanup();
+    assert.equal(a.fingerprint, b.fingerprint, '重新加载后主机指纹必须稳定');
+    assert.equal(a.publicKeyDerB64, b.publicKeyDerB64);
+    assert.ok(a.fingerprint.length > 0);
+    const raw = JSON.parse(readFileSync(paths.hostIdentity(), 'utf8'));
+    assert.equal(raw.version, 1);
+    assert.equal(raw.publicKeyDerB64, a.publicKeyDerB64);
+    if (process.platform !== 'win32') {
+      assert.equal(statSync(paths.hostIdentity()).mode & 0o777, 0o600, '主机身份文件必须是 0600');
     }
+    // 群体版不再生成设备 CA / 开发 TLS 证书（classic 功能已删除）
+    assert.equal(identityModule.loadOrCreateDeviceCa, undefined);
+    assert.equal(identityModule.loadOrCreateDevServerCert, undefined);
+    assert.equal(identityModule.signDeviceCertificate, undefined);
   } finally {
     home.cleanup();
   }

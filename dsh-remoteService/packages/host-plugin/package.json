@@ -1,8 +1,8 @@
 {
   "name": "dsh-remote-service",
-  "version": "0.1.23",
+  "version": "0.2.0",
   "type": "module",
-  "description": "DSH 远程访问主机插件：设备配对、mTLS 反向代理、自托管盲中继连接、账号行上方入口",
+  "description": "DSH 群体服务版主机插件：自助注册部署方 relay、出站隧道、loopback 明文反代、token 验签、群体配对与管理 API",
   "license": "AGPL-3.0-or-later",
   "exports": {
     ".": "./index.js",
@@ -19,7 +19,6 @@
     "README.md"
   ],
   "dependencies": {
-    "node-forge": "^1.4.0",
     "qrcode-generator": "^2.0.4"
   },
   "engines": {

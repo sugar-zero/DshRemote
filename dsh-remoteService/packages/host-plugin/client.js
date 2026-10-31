@@ -1,11 +1,11 @@
 /**
- * dsh-remote-service —— Web Client 半
+ * dsh-remote-service —— Web Client 半（群体服务版 / A 模式）
  * ============================================================================
  * 两个挂载点（与 push-notify / ui-cordis 同一套 __ModuleLoader__ 约定）：
  *   1. sidebar.footer.action —— 侧栏底部、账号行正上方的「远程访问」入口；
- *   2. settings.section      —— 设置里的「远程访问」页（连接配置/配对/设备/审计）。
+ *   2. settings.section      —— 设置里的「远程访问」页（群体服务注册/配对/设备/审计）。
  * 数据全部走本机管理 API（同源 /api/remote-access/*，契约见 docs/ADMIN-API.md），
- * fetch 一律带 credentials: 'include'；hostToken 只上行不下行，DOM 里永远不回显。
+ * fetch 一律带 credentials: 'include'；主机不持有任何密钥字段需要在 DOM 回显。
  * 纯前端单文件，无构建步骤：只 require('react')（手机 WebView 下额外按需 require DSH 的
  * session 控制器 Client 模块做历史分片，见 installMobileHistory）；没有 Node 内置模块。
  * ============================================================================
@@ -78,26 +78,26 @@ window.__ModuleLoader__.load({
       'entry.label': '远程访问',
       'entry.devices': '{count} 台设备',
       'entry.devicesOne': '{count} 台设备',
-
       'status.loading': '读取中…',
       'status.unknown': '状态未知',
       'status.disabled': '未启用',
-      'status.online': '中继在线',
       'status.groupOnline': '群体服务在线',
       'status.groupOffline': '群体服务离线',
-      'status.offline': '中继离线',
       'status.waiting': '等待配对',
-
       'section.status': '连接状态',
-      'section.connection': '连接配置',
       'section.service': '服务设置',
-      'section.group': '群体服务（实验）',
-      'group.note': '群体服务版（A 模式）：relay 终止手机 TLS，主机只做出站隧道；注册后无需本地证书/令牌/APNs 配置。',
-      'group.tlsNote': '此模式下不需要本地 TLS 证书 / 主机令牌 / APNs 配置；推送由服务部署方统一提供。',
-      'group.pushNote': '群体版推送由 relay 服务端负责（后续切片接入），本机无需 APNs 配置。',
-      'sw.enabledNoteGroup': '关闭后手机将无法访问这台电脑（群体隧道会断开）。',
-      'sw.groupEnabled': '启用群体模式',
-      'sw.groupEnabledNote': '开启后主机不监听 TLS、不持有证书；改为向服务端注册并走隧道。',
+      'section.group': '群体服务',
+      'section.pairing': '设备配对',
+      'section.devices': '已配对设备',
+      'section.audit': '最近审计',
+      'group.note': '群体服务版（A 模式）：向部署方 relay 注册后，主机只做出站隧道；relay 边缘终止手机 TLS，明文请求经隧道进入本机 loopback 代理，逐请求验签后反代到 DSH。',
+      'pairing.needRegistration': '请先完成群体服务注册，再配对设备。',
+      'sw.enabled': '启用远程访问',
+      'sw.enabledNote': '关闭后隧道断开，手机将无法访问这台电脑。',
+      'sw.requireApproval': '新设备配对需要本机确认',
+      'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
+      'field.hostName': '主机名称',
+      'field.hostNameHint': '手机上显示的名字',
       'field.groupServiceUrl': '服务地址',
       'field.groupServiceUrlHint': 'https://relay.example.com:19443（注册 API 端口）',
       'field.groupInviteCode': '邀请码',
@@ -107,7 +107,10 @@ window.__ModuleLoader__.load({
       'group.notRegistered': '未注册',
       'group.hostId': '服务端分配的主机 ID',
       'group.fqdn': '手机访问域名',
+      'group.controlUrl': '隧道控制面地址',
       'group.connected': '隧道连接',
+      'group.tunnelOn': '已连接',
+      'group.tunnelOff': '未连接',
       'group.mobilePort': '手机访问端口',
       'group.plainPort': '本机明文代理端口',
       'group.lastError': '最近错误',
@@ -117,12 +120,8 @@ window.__ModuleLoader__.load({
       'msg.groupRegistered': '群体服务已注册并连接',
       'msg.groupRegisterFailed': '注册失败：{message}',
       'msg.groupReset': '已清除本机注册',
+      'msg.groupRetried': '已重新连接群体服务',
       'msg.groupMissing': '请填写服务地址与邀请码',
-      'section.components': '组件',
-      'section.pairing': '设备配对',
-      'section.devices': '已配对设备',
-      'section.audit': '最近审计',
-
       'msg.loading': '加载中…',
       'msg.retry': '重试',
       'msg.saved': '已保存',
@@ -138,7 +137,6 @@ window.__ModuleLoader__.load({
       'msg.paired': '设备已加入',
       'msg.pairDenied': '已拒绝',
       'msg.approveFailed': '确认失败：{message}',
-
       'btn.save': '保存',
       'btn.saving': '保存中…',
       'btn.cancel': '取消',
@@ -151,60 +149,8 @@ window.__ModuleLoader__.load({
       'btn.revokeConfirm': '确认撤销？',
       'btn.delete': '删除',
       'btn.deleteConfirm': '确认删除？',
-
-      'sw.enabled': '启用远程访问',
-      'sw.enabledNote': '关闭后中继断开，手机将无法访问这台电脑。',
-      'sw.requireApproval': '新设备配对需要本机确认',
-      'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
-      'sw.restartHost': '允许手机重启主机 DSH',
-      'sw.restartHostNote': '开启后 App 顶栏显示 ⏻：装了插件/改完功能后可在手机上直接重启主机（会短暂断开连接，随后自动恢复）。关闭后 App 不显示该按钮，重启接口也会拒绝请求；仍可在本机手动重启。',
-      'sw.pushEnabled': '推送提醒',
-      'sw.pushEnabledNote': '一轮任务结束/出错时发提醒：标题取会话标题、正文取本轮助手回复摘要（截断）；默认由主机直连 APNs（不经 relay、不用 Expo 账号）。锁屏会显示摘要。',
-      'sw.pushSelfHosted': '自托管直连 APNs',
-      'sw.pushSelfHostedNote': '开启：主机用 APNs 私钥直接发到 Apple；关闭：回退到旧版经 relay 的 Expo 推送。key 的 Environment 建议选 Sandbox & Production（只选 Sandbox 只能发开发包）。',
-      'field.pushCooldown': '同会话推送冷却（秒）',
-      'field.pushCooldownHint': '默认 30 秒，避免连续轮次刷屏',
-      'field.apnsKeyFile': 'APNs 私钥路径',
-      'field.apnsKeyFileHint': '/path/AuthKey_<KEY_ID>.p8（0600，勿放仓库）',
-      'field.apnsKeyId': 'APNs Key ID',
-      'field.apnsTeamId': 'Apple Team ID',
-      'field.apnsTopic': 'APNs Topic（bundle ID）',
-      'field.apnsTopicHint': 'com.example.app',
-      'push.warnings': 'APNs 配置未完成：{errors}',
-
-      'field.relayUrl': '中继地址',
-      'field.relayUrlHint': 'wss://relay.example.com:8443',
-      'field.relayDomain': '中继域名',
-      'field.relayDomainHint': 'relay.example.com',
-      'field.relayDomainNote': '主机域名为 <hostId>.<中继域名>。',
-      'field.hostId': '主机 ID',
-      'field.hostIdHint': 'h_ab12cd34',
-      'field.publicPort': '手机访问端口',
-      'field.publicPortHint': '443 或留空 = 默认 443；直连模式填 1443',
-      'field.publicPortNote': '二维码会把该端口告诉 App。用 nginx 443 模式时留空/443；直连 relay 数据面时填公网端口，例如 1443。',
-      'host.address': '手机访问地址',
-      'field.hostToken': '中继主机令牌',
-      'field.hostTokenPlaceholder': '已配置，留空保持不变',
-      'field.hostName': '主机名称',
-      'field.hostNameHint': '手机上显示的名字',
-      'field.tlsCertFile': 'TLS 证书路径',
-      'field.tlsKeyFile': 'TLS 私钥路径',
-      'field.configuredPlaceholder': '已配置，留空保持不变',
-      'field.hostTokenEmpty': '未配置，请输入',
-
-      'relay.status': '中继连接',
-      'relay.connected': '已连接',
-      'relay.disconnected': '未连接',
-      'relay.lastError': '最近错误',
-      'host.id': '主机 ID',
       'host.name': '主机名称',
-      'host.domain': '访问域名',
-      'host.fingerprint': '主机指纹',
-      'host.cert': 'TLS 证书',
-      'host.certInvalid': '证书无效',
-      'host.certDev': '开发证书',
       'host.version': '插件版本',
-
       'pairing.title': '配对新设备',
       'pairing.started': '配对码已生成',
       'pairing.pendingTitle': '待确认的配对请求',
@@ -218,10 +164,10 @@ window.__ModuleLoader__.load({
       'pairing.qrFailed': '二维码加载失败，请点击「重新生成」',
       'pairing.noQr': '暂无二维码，正在生成…',
       'pairing.step1': '手机安装 DSH Remote App，用 App 扫描左侧二维码。',
-      'pairing.step2': '或手动输入 12 位备用码',
+      'pairing.step2': '或手动输入备用码',
       'pairing.step3': '在手机上核对主机指纹与短码',
-      'pairing.step4': '确认后手机将获得设备证书，可随时在设置中撤销。',
-      'pairing.step4Note': '证书保存在手机的安全区。',
+      'pairing.step4': '确认后手机将登记设备公钥，之后用短时 token 访问。',
+      'pairing.step4Note': '设备私钥保存在手机的安全区，主机只保存公钥。',
       'pairing.hostFingerprint': '主机指纹',
       'pairing.sas': '短码 SAS',
       'pairing.expires': '二维码有效期 {time}',
@@ -234,13 +180,11 @@ window.__ModuleLoader__.load({
       'pairing.settingsNote': '点击「配对新设备」生成一次性二维码，2 分钟内有效。',
       'pairing.settingsPendingNote': '有设备正在等待本机确认，点击「配对新设备」完成确认。',
       'pairing.requiresApproval': '本次配对需要在这台电脑上确认。',
-
       'devices.empty': '还没有配对设备。',
       'devices.revoked': '已撤销',
       'devices.active': '已授权',
       'devices.lastSeen': '最近活跃',
       'devices.never': '从未连接',
-
       'audit.empty': '还没有审计记录。',
       'audit.ok': '成功',
       'audit.fail': '失败',
@@ -250,18 +194,14 @@ window.__ModuleLoader__.load({
       'audit.cancelled': '已取消',
       'audit.expired': '已过期',
       'audit.denied': '已拒绝',
-
       'relative.justNow': '刚刚',
       'relative.minutes': '{count} 分钟前',
       'relative.hours': '{count} 小时前',
       'relative.days': '{count} 天前',
-
       'action.pairing': '设备配对',
       'action.pairRequest': '配对请求',
-      'action.deviceAuth': '设备认证',
-      'action.wsAuth': 'WebSocket 认证',
       'action.deviceRevoke': '撤销设备',
-      'action.relayDisconnect': '中继断开',
+      'action.deviceDelete': '删除设备记录',
       'action.proxyDeny': '拒绝远程请求',
       'action.wsUpgrade': 'WebSocket 升级',
       'action.pairStart': '开始配对',
@@ -269,9 +209,13 @@ window.__ModuleLoader__.load({
       'action.pairApprove': '确认配对',
       'action.pairDeny': '拒绝配对',
       'action.devicePair': '设备配对',
-      'action.relayConnect': '连接中继',
-      'action.tunnelRequest': '远程请求',
-      'action.configUpdate': '修改配置',
+      'action.groupRegister': '注册群体服务',
+      'action.groupRefresh': '刷新注册信息',
+      'action.groupReset': '重置注册',
+      'action.groupRetry': '重试隧道连接',
+      'action.groupReconnect': '重连隧道',
+      'action.groupDeviceSync': '同步设备列表',
+      'action.configUpdate': '修改配置'
     };
 
     const en = {
@@ -281,28 +225,28 @@ window.__ModuleLoader__.load({
       'entry.label': 'Remote access',
       'entry.devices': '{count} devices',
       'entry.devicesOne': '{count} device',
-
       'status.loading': 'Loading…',
       'status.unknown': 'Status unknown',
       'status.disabled': 'Disabled',
-      'status.online': 'Relay online',
       'status.groupOnline': 'Group service online',
       'status.groupOffline': 'Group service offline',
-      'status.offline': 'Relay offline',
       'status.waiting': 'Waiting for pairing',
-
       'section.status': 'Connection status',
-      'section.connection': 'Connection settings',
-      'section.service': 'Service',
-      'section.group': 'Group service (experimental)',
-      'group.note': 'Group mode (A): the relay terminates mobile TLS and the host only makes outbound tunnels. No local certs, tokens or APNs config needed after registration.',
-      'group.tlsNote': 'No local TLS certs / host token / APNs config are needed in group mode; push is provided by the service operator.',
-      'group.pushNote': 'Group push is handled by the relay (next slice); no local APNs config needed.',
-      'sw.enabledNoteGroup': 'Turning this off makes this computer unreachable from the phone (group tunnel disconnects).',
-      'sw.groupEnabled': 'Enable group mode',
-      'sw.groupEnabledNote': 'The host stops listening on TLS and connects to the service relay via an outbound tunnel.',
+      'section.service': 'Service settings',
+      'section.group': 'Group service',
+      'section.pairing': 'Device pairing',
+      'section.devices': 'Paired devices',
+      'section.audit': 'Recent audit',
+      'group.note': 'Group service (A mode): after registering with the operator\'s relay, the host only makes an outbound tunnel. The relay terminates the phone TLS edge; plaintext requests come through the tunnel to the local loopback proxy, which verifies every request before proxying to DSH.',
+      'pairing.needRegistration': 'Register with the group service before pairing a device.',
+      'sw.enabled': 'Enable remote access',
+      'sw.enabledNote': 'Disabling disconnects the tunnel; the phone can no longer reach this computer.',
+      'sw.requireApproval': 'Require confirmation on this computer for new pairings',
+      'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
+      'field.hostName': 'Host name',
+      'field.hostNameHint': 'Shown on the phone',
       'field.groupServiceUrl': 'Service URL',
-      'field.groupServiceUrlHint': 'https://relay.example.com:19443（注册 API 端口）',
+      'field.groupServiceUrlHint': 'https://relay.example.com:19443 (registration API port)',
       'field.groupInviteCode': 'Invite code',
       'field.groupInviteCodeHint': 'One-time invite code (first registration only)',
       'field.groupInviteCodeRegistered': 'Registered — reset before switching service',
@@ -310,7 +254,10 @@ window.__ModuleLoader__.load({
       'group.notRegistered': 'Not registered',
       'group.hostId': 'Server-assigned host ID',
       'group.fqdn': 'Mobile access domain',
+      'group.controlUrl': 'Control plane URL',
       'group.connected': 'Tunnel',
+      'group.tunnelOn': 'Connected',
+      'group.tunnelOff': 'Disconnected',
       'group.mobilePort': 'Mobile port',
       'group.plainPort': 'Local plain proxy port',
       'group.lastError': 'Last error',
@@ -320,12 +267,8 @@ window.__ModuleLoader__.load({
       'msg.groupRegistered': 'Group service registered and connected',
       'msg.groupRegisterFailed': 'Registration failed: {message}',
       'msg.groupReset': 'Local registration cleared',
+      'msg.groupRetried': 'Group service reconnected',
       'msg.groupMissing': 'Enter service URL and invite code',
-      'section.components': 'Components',
-      'section.pairing': 'Device pairing',
-      'section.devices': 'Paired devices',
-      'section.audit': 'Recent audit',
-
       'msg.loading': 'Loading…',
       'msg.retry': 'Retry',
       'msg.saved': 'Saved',
@@ -341,7 +284,6 @@ window.__ModuleLoader__.load({
       'msg.paired': 'Device added',
       'msg.pairDenied': 'Pairing denied',
       'msg.approveFailed': 'Approval failed: {message}',
-
       'btn.save': 'Save',
       'btn.saving': 'Saving…',
       'btn.cancel': 'Cancel',
@@ -354,60 +296,8 @@ window.__ModuleLoader__.load({
       'btn.revokeConfirm': 'Confirm revoke?',
       'btn.delete': 'Delete',
       'btn.deleteConfirm': 'Confirm delete?',
-
-      'sw.enabled': 'Enable remote access',
-      'sw.enabledNote': 'Disabling disconnects the relay; the phone can no longer reach this computer.',
-      'sw.requireApproval': 'Require confirmation on this computer for new pairings',
-      'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
-      'sw.restartHost': 'Allow the phone to restart host DSH',
-      'sw.restartHostNote': 'When on, the app top bar shows ⏻ so you can restart the host from the phone after installing plugins or changing features (the connection briefly drops and recovers). When off, the button is hidden and restart requests are rejected; manual restarts on this computer still work.',
-      'sw.pushEnabled': 'Push notifications',
-      'sw.pushEnabledNote': 'Notify when a turn completes or fails: the title is the session title and the body is a truncated summary of the turn\'s final assistant reply. The host talks to APNs directly (no relay, no Expo account). Summaries may appear on the lock screen.',
-      'sw.pushSelfHosted': 'Self-hosted direct APNs',
-      'sw.pushSelfHostedNote': 'On: the host signs and sends to Apple with its APNs key. Off: fall back to the legacy Expo push via the relay. Prefer an APNs key scoped to Sandbox & Production (a Sandbox-only key cannot reach release builds).',
-      'field.pushCooldown': 'Per-session push cooldown (seconds)',
-      'field.pushCooldownHint': 'Default 30s, to avoid notification spam across turns',
-      'field.apnsKeyFile': 'APNs private key path',
-      'field.apnsKeyFileHint': '/path/AuthKey_<KEY_ID>.p8 (0600, keep outside the repo)',
-      'field.apnsKeyId': 'APNs Key ID',
-      'field.apnsTeamId': 'Apple Team ID',
-      'field.apnsTopic': 'APNs topic (bundle ID)',
-      'field.apnsTopicHint': 'com.example.app',
-      'push.warnings': 'APNs is not configured yet: {errors}',
-
-      'field.relayUrl': 'Relay URL',
-      'field.relayUrlHint': 'wss://relay.example.com:8443',
-      'field.relayDomain': 'Relay domain',
-      'field.relayDomainHint': 'relay.example.com',
-      'field.relayDomainNote': 'Host domain is <hostId>.<relay domain>.',
-      'field.hostId': 'Host ID',
-      'field.hostIdHint': 'h_ab12cd34',
-      'field.publicPort': 'Mobile access port',
-      'field.publicPortHint': '443 or empty = default 443; direct mode: 1443',
-      'field.publicPortNote': 'The QR code tells the app which port to use. Leave empty/443 behind nginx:443; set the public relay data port (e.g. 1443) for direct mode.',
-      'host.address': 'Mobile address',
-      'field.hostToken': 'Relay host token',
-      'field.hostTokenPlaceholder': 'Configured — leave empty to keep',
-      'field.hostName': 'Host name',
-      'field.hostNameHint': 'Shown on the phone',
-      'field.tlsCertFile': 'TLS certificate path',
-      'field.tlsKeyFile': 'TLS private key path',
-      'field.configuredPlaceholder': 'Configured — leave empty to keep',
-      'field.hostTokenEmpty': 'Not configured — enter it',
-
-      'relay.status': 'Relay connection',
-      'relay.connected': 'Connected',
-      'relay.disconnected': 'Disconnected',
-      'relay.lastError': 'Last error',
-      'host.id': 'Host ID',
       'host.name': 'Host name',
-      'host.domain': 'Domain',
-      'host.fingerprint': 'Host fingerprint',
-      'host.cert': 'TLS certificate',
-      'host.certInvalid': 'Invalid certificate',
-      'host.certDev': 'Development certificate',
       'host.version': 'Plugin version',
-
       'pairing.title': 'Pair a new device',
       'pairing.started': 'Pairing code generated',
       'pairing.pendingTitle': 'Pending pairing request',
@@ -421,10 +311,10 @@ window.__ModuleLoader__.load({
       'pairing.qrFailed': 'Failed to load the QR code — click Regenerate',
       'pairing.noQr': 'No QR code yet — generating…',
       'pairing.step1': 'Install DSH Remote App on the phone and scan the QR code on the left.',
-      'pairing.step2': 'Or enter the 12-character backup code manually',
+      'pairing.step2': 'Or enter the backup code manually',
       'pairing.step3': 'Verify the host fingerprint and short code on the phone',
-      'pairing.step4': 'The phone then gets a device certificate; revoke it here at any time.',
-      'pairing.step4Note': 'The certificate is stored in the phone secure enclave / keystore.',
+      'pairing.step4': 'After confirmation the phone registers its device public key and then accesses with short-lived tokens.',
+      'pairing.step4Note': 'The device private key stays in the phone\'s secure area; the host only stores the public key.',
       'pairing.hostFingerprint': 'Host fingerprint',
       'pairing.sas': 'Short code (SAS)',
       'pairing.expires': 'QR code expires in {time}',
@@ -437,13 +327,11 @@ window.__ModuleLoader__.load({
       'pairing.settingsNote': 'Click Pair new device to generate a one-time QR code valid for 2 minutes.',
       'pairing.settingsPendingNote': 'A device is waiting for confirmation here; click Pair new device to approve or deny it.',
       'pairing.requiresApproval': 'This pairing requires confirmation on this computer.',
-
       'devices.empty': 'No paired devices yet.',
       'devices.revoked': 'Revoked',
       'devices.active': 'Active',
       'devices.lastSeen': 'Last seen',
       'devices.never': 'Never connected',
-
       'audit.empty': 'No audit entries yet.',
       'audit.ok': 'OK',
       'audit.fail': 'Failed',
@@ -453,18 +341,14 @@ window.__ModuleLoader__.load({
       'audit.cancelled': 'Cancelled',
       'audit.expired': 'Expired',
       'audit.denied': 'Denied',
-
       'relative.justNow': 'just now',
       'relative.minutes': '{count} min ago',
       'relative.hours': '{count} h ago',
       'relative.days': '{count} d ago',
-
       'action.pairing': 'Device pairing',
       'action.pairRequest': 'Pairing request',
-      'action.deviceAuth': 'Device auth',
-      'action.wsAuth': 'WebSocket auth',
       'action.deviceRevoke': 'Device revoked',
-      'action.relayDisconnect': 'Relay disconnected',
+      'action.deviceDelete': 'Device record deleted',
       'action.proxyDeny': 'Remote request denied',
       'action.wsUpgrade': 'WebSocket upgrade',
       'action.pairStart': 'Pairing started',
@@ -472,9 +356,13 @@ window.__ModuleLoader__.load({
       'action.pairApprove': 'Pairing approved',
       'action.pairDeny': 'Pairing denied',
       'action.devicePair': 'Device paired',
-      'action.relayConnect': 'Relay connected',
-      'action.tunnelRequest': 'Remote request',
-      'action.configUpdate': 'Config updated',
+      'action.groupRegister': 'Group service registered',
+      'action.groupRefresh': 'Registration refreshed',
+      'action.groupReset': 'Registration reset',
+      'action.groupRetry': 'Tunnel retry',
+      'action.groupReconnect': 'Tunnel reconnected',
+      'action.groupDeviceSync': 'Devices synced',
+      'action.configUpdate': 'Config updated'
     };
 
     function makeTranslator(dicts) {
@@ -604,64 +492,26 @@ window.__ModuleLoader__.load({
       return false;
     }
 
-    /** status 里没有 config.relayDomain 时，从 <hostId>.<relayDomain> 反推。 */
-    function deriveRelayDomain(status) {
-      const host = status && status.host ? status.host : {};
-      const config = status && status.config ? status.config : {};
-      if (config.relayDomain !== undefined && config.relayDomain !== null) return String(config.relayDomain);
-      const domain = String(host.domain || '');
-      const hostId = String(host.id || '');
-      if (domain !== '' && hostId !== '' && domain.startsWith(`${hostId}.`)) return domain.slice(hostId.length + 1);
-      return '';
-    }
-
+    /**
+     * 设置页编辑草稿：只含群体服务版字段（服务地址 / 邀请码 / 主机名 / 桌面确认）。
+     * 群体版没有 TLS 证书、主机令牌、推送等 classic 字段。
+     */
     function draftFromStatus(status, previous) {
       const prev = previous || {};
       const host = status && status.host ? status.host : {};
-      const relay = status && status.relay ? status.relay : {};
-      const tls = host.tls ? host.tls : {};
+      const group = status && status.group ? status.group : {};
       const config = status && status.config ? status.config : {};
       const stringOrPrevious = (value, fallback) => (value === undefined || value === null ? fallback : String(value));
       const firstDefined = (first, second) => (first !== undefined && first !== null ? first : second);
-      // 密钥类字段 host 只回 'configured' / configured 布尔，不回明文：编辑框留空 + 占位提示。
-      const tlsCertFileConfigured = config.tlsCertFile === 'configured'
-        || config.tlsCertFileConfigured === true
-        || prev.tlsCertFileConfigured === true;
-      const tlsKeyFileConfigured = config.tlsKeyFileConfigured === true || prev.tlsKeyFileConfigured === true;
-      const hostTokenConfigured = config.hostTokenConfigured === true || prev.hostTokenConfigured === true;
-      const certValue = tlsCertFileConfigured ? '' : firstDefined(config.tlsCertFile, tls.certFile);
       return {
         enabled: config.enabled !== undefined ? config.enabled === true : (status ? status.enabled === true : false),
-        relayUrl: stringOrPrevious(firstDefined(config.relayUrl, relay.url), prev.relayUrl || ''),
-        hostId: stringOrPrevious(firstDefined(config.hostId, host.id), prev.hostId || ''),
-        publicPort: stringOrPrevious(firstDefined(config.publicPort, prev.publicPort), prev.publicPort !== undefined ? String(prev.publicPort) : '0'),
-        relayDomain: stringOrPrevious(deriveRelayDomain(status), prev.relayDomain || ''),
-        hostToken: '',
         hostName: stringOrPrevious(firstDefined(config.hostName, host.name), prev.hostName || ''),
-        tlsCertFile: stringOrPrevious(certValue, prev.tlsCertFile || ''),
-        tlsKeyFile: stringOrPrevious(firstDefined(config.tlsKeyFile, tls.keyFile), prev.tlsKeyFile || ''),
         requireApproval: pickRequireApproval(status),
-        restartHostEnabled: config.restartHostEnabled !== undefined
-          ? config.restartHostEnabled === true
-          : (status && status.restart && typeof status.restart.enabled === 'boolean'
-            ? status.restart.enabled
-            : (prev.restartHostEnabled === true)),
-        pushEnabled: config.pushEnabled !== undefined ? config.pushEnabled !== false : (prev.pushEnabled !== undefined ? prev.pushEnabled : true),
-        pushCooldownSeconds: stringOrPrevious(config.pushCooldownSeconds, prev.pushCooldownSeconds !== undefined ? String(prev.pushCooldownSeconds) : '30'),
-        pushProvider: config.pushProvider === 'expo' ? 'expo' : (config.pushProvider === 'apns' ? 'apns' : (prev.pushProvider === 'expo' ? 'expo' : 'apns')),
-        apnsKeyFile: stringOrPrevious(config.apnsKeyFile, prev.apnsKeyFile || ''),
-        apnsKeyId: stringOrPrevious(config.apnsKeyId, prev.apnsKeyId || ''),
-        apnsTeamId: stringOrPrevious(config.apnsTeamId, prev.apnsTeamId || ''),
-        apnsTopic: stringOrPrevious(config.apnsTopic, prev.apnsTopic || ''),
-        apnsEnvironment: stringOrPrevious(config.apnsEnvironment, prev.apnsEnvironment || 'auto'),
-        groupEnabled: config.groupEnabled !== undefined ? config.groupEnabled === true : prev.groupEnabled === true,
-        groupServiceUrl: stringOrPrevious(config.groupServiceUrl, prev.groupServiceUrl || ''),
+        groupServiceUrl: stringOrPrevious(firstDefined(config.groupServiceUrl, group.serviceUrl), prev.groupServiceUrl || ''),
+        // 邀请码一次性且只上行：永远不进入 draft 初始值（注册成功后立即清空）。
         groupInviteCode: '',
         groupPlainPort: stringOrPrevious(config.groupPlainPort, prev.groupPlainPort !== undefined ? String(prev.groupPlainPort) : '0'),
         groupInsecure: config.groupInsecure !== undefined ? config.groupInsecure === true : prev.groupInsecure === true,
-        tlsCertFileConfigured,
-        tlsKeyFileConfigured,
-        hostTokenConfigured,
       };
     }
 
@@ -676,10 +526,8 @@ window.__ModuleLoader__.load({
     const ACTION_KEYS = {
       pairing: 'action.pairing',
       'pair-request': 'action.pairRequest',
-      'device-auth': 'action.deviceAuth',
-      'ws-auth': 'action.wsAuth',
       'device-revoke': 'action.deviceRevoke',
-      'relay-disconnect': 'action.relayDisconnect',
+      'device-delete': 'action.deviceDelete',
       'proxy-deny': 'action.proxyDeny',
       'ws-upgrade': 'action.wsUpgrade',
       'pair.start': 'action.pairStart',
@@ -688,8 +536,12 @@ window.__ModuleLoader__.load({
       'pair.deny': 'action.pairDeny',
       'device.pair': 'action.devicePair',
       'device.revoke': 'action.deviceRevoke',
-      'relay.connect': 'action.relayConnect',
-      'tunnel.request': 'action.tunnelRequest',
+      'group-register': 'action.groupRegister',
+      'group-refresh': 'action.groupRefresh',
+      'group-reset': 'action.groupReset',
+      'group-retry': 'action.groupRetry',
+      'group-reconnect': 'action.groupReconnect',
+      'group-device-sync': 'action.groupDeviceSync',
       'config.update': 'action.configUpdate',
     };
 
@@ -712,7 +564,6 @@ window.__ModuleLoader__.load({
       rejected: 'audit.denied',
       'bad-secret': 'audit.fail',
       failed: 'audit.fail',
-      'relay-disconnected': 'audit.fail',
     };
 
     /** 审计结果 → 徽标文案与颜色；未知结果原样展示。 */
@@ -730,17 +581,17 @@ window.__ModuleLoader__.load({
     function statusTone(status) {
       if (!status) return 'muted';
       if (status.enabled !== true) return 'off';
-      const relayConnected = !!(status.relay && status.relay.connected === true);
+      const tunnelConnected = !!(status.group && status.group.connected === true);
       const pairingActive = !!(status.pairing && status.pairing.active === true);
-      if (relayConnected && pairingActive) return 'warn';
-      if (relayConnected) return 'good';
+      if (tunnelConnected && pairingActive) return 'warn';
+      if (tunnelConnected) return 'good';
       return 'bad';
     }
 
-    function toneKey(tone, groupMode = false) {
-      if (tone === 'good') return groupMode ? 'status.groupOnline' : 'status.online';
+    function toneKey(tone) {
+      if (tone === 'good') return 'status.groupOnline';
       if (tone === 'warn') return 'status.waiting';
-      if (tone === 'bad') return groupMode ? 'status.groupOffline' : 'status.offline';
+      if (tone === 'bad') return 'status.groupOffline';
       if (tone === 'off') return 'status.disabled';
       return 'status.loading';
     }
@@ -1091,12 +942,11 @@ window.__ModuleLoader__.load({
         return () => document.removeEventListener('visibilitychange', onVisibility);
       }, [load]);
 
-      const entryGroupMode = !!(status && status.config && status.config.groupEnabled);
       const tone = status === null ? (loadError === '' ? 'muted' : 'bad') : statusTone(status);
       let statusText;
       if (status === null) statusText = loadError === '' ? t('status.loading') : t('status.unknown');
-      else if (tone === 'good') statusText = `${t(toneKey('good', entryGroupMode))} · ${deviceCountText(t, activeDevices(status).length)}`;
-      else statusText = t(toneKey(tone, entryGroupMode));
+      else if (tone === 'good') statusText = `${t(toneKey('good'))} · ${deviceCountText(t, activeDevices(status).length)}`;
+      else statusText = t(toneKey(tone));
       const title = `${t('entry.label')} · ${statusText}`;
 
       return h('div', { 'data-ra-entry-wrap': '', 'data-wide': wide ? '1' : '0' },
@@ -1220,18 +1070,21 @@ window.__ModuleLoader__.load({
       }, [close]);
 
       const enabled = !!(status && status.enabled === true);
+      const registered = !!(status && status.group && status.group.registered === true);
+      // 群体版配对需要先完成服务注册（二维码 v2 依赖服务端下发的 hostId/域名/端口）。
+      const ready = enabled && registered;
       const pairing = status && status.pairing && status.pairing.active ? status.pairing : null;
       const active = pairing !== null;
 
       // 打开弹窗时若没有活跃配对 → 自动创建；过期后也自动续一张（最多连续两次）。
       // pending（等待桌面确认）/ 已确认 / 已拒绝时绝不自动续期。
       useEffect(() => {
-        if (status === null || !enabled || active) return;
+        if (status === null || !ready || active) return;
         if (handledRef.current || canceledRef.current || startingRef.current) return;
         if (autoTriesRef.current >= 2) return;
         autoTriesRef.current += 1;
         void startPairing(true);
-      }, [status, enabled, active, startPairing]);
+      }, [status, ready, active, startPairing]);
 
       const tone = status === null ? (loadError === '' ? 'muted' : 'bad') : statusTone(status);
       const expiresAt = pairing && Number.isFinite(Number(pairing.expiresAt)) ? Number(pairing.expiresAt) : 0;
@@ -1286,11 +1139,12 @@ window.__ModuleLoader__.load({
               ? h('div', { 'data-ra-note': '' },
                 loadError === '' ? t('msg.loading') : t('msg.loadFailed', { message: loadError }))
               : null,
-            status !== null && !enabled
+            status !== null && !ready
               ? h('div', { 'data-ra-disabled': '' },
-                h('div', { 'data-ra-step-title': '' }, t('pairing.disabledHint')))
+                h('div', { 'data-ra-step-title': '' },
+                  enabled ? t('pairing.needRegistration') : t('pairing.disabledHint')))
               : null,
-            status !== null && enabled && pending
+            status !== null && ready && pending
               ? h('div', { 'data-ra-pending': '' },
                 h('div', { 'data-ra-pending-head': '' },
                   h('span', { 'data-ra-pending-glyph': '' }, h(PhoneGlyph, { size: 20 })),
@@ -1323,7 +1177,7 @@ window.__ModuleLoader__.load({
                     onClick: () => { void approve(true); },
                   }, busy === 'approve' ? t('msg.loading') : t('btn.approvePairing'))))
               : null,
-            status !== null && enabled && !pending
+            status !== null && ready && !pending
               ? h('div', { 'data-ra-qr-col': '' },
                 h('div', { 'data-ra-qr-card': '' },
                   active && !qrFailed
@@ -1342,7 +1196,7 @@ window.__ModuleLoader__.load({
                     : (active && expiresAt > 0 ? t('pairing.expired') : t('pairing.inactive'))),
                 active ? h('div', { 'data-ra-qr-note': '' }, t('pairing.autoRefresh')) : null)
               : null,
-            status !== null && enabled && !pending
+            status !== null && ready && !pending
               ? h('div', { 'data-ra-pair-col': '' },
                 h('div', { 'data-ra-steps': '' },
                   h('div', { 'data-ra-step': '' },
@@ -1385,7 +1239,7 @@ window.__ModuleLoader__.load({
               ? null
               : h(Btn, {
                 primary: true,
-                disabled: !enabled || busy !== '',
+                disabled: !ready || busy !== '',
                 action: 'pair-regenerate',
                 onClick: () => {
                   setQrFailed(false);
@@ -1491,21 +1345,9 @@ window.__ModuleLoader__.load({
         if (!draft || !baseline || busy === 'save') return;
         const patch = {};
         if (draft.enabled !== baseline.enabled) patch.enabled = draft.enabled;
-        const relayUrl = draft.relayUrl.trim();
-        if (relayUrl !== baseline.relayUrl) patch.relayUrl = relayUrl;
-        const relayDomain = draft.relayDomain.trim();
-        if (relayDomain !== baseline.relayDomain) patch.relayDomain = relayDomain;
-        const hostId = draft.hostId.trim();
-        if (hostId !== '' && hostId !== baseline.hostId) patch.hostId = hostId;
-        const publicPortRaw = String(draft.publicPort ?? '').trim();
-        const publicPort = publicPortRaw === '' ? 0 : Number.parseInt(publicPortRaw, 10);
-        if (Number.isFinite(publicPort) && publicPort >= 0 && publicPort <= 65535
-          && String(publicPort) !== String(baseline.publicPort)) {
-          patch.publicPort = publicPort;
-        }
         const hostName = draft.hostName.trim();
         if (hostName !== baseline.hostName) patch.hostName = hostName;
-        if (draft.groupEnabled !== baseline.groupEnabled) patch.groupEnabled = draft.groupEnabled === true;
+        if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
         const groupServiceUrl = draft.groupServiceUrl.trim();
         if (groupServiceUrl !== baseline.groupServiceUrl) patch.groupServiceUrl = groupServiceUrl;
         const groupPlainPortRaw = String(draft.groupPlainPort ?? '').trim();
@@ -1515,29 +1357,6 @@ window.__ModuleLoader__.load({
           patch.groupPlainPort = groupPlainPort;
         }
         if (draft.groupInsecure !== baseline.groupInsecure) patch.groupInsecure = draft.groupInsecure === true;
-        const tlsCertFile = draft.tlsCertFile.trim();
-        if (tlsCertFile !== baseline.tlsCertFile) patch.tlsCertFile = tlsCertFile;
-        const tlsKeyFile = draft.tlsKeyFile.trim();
-        if (tlsKeyFile !== '' && tlsKeyFile !== baseline.tlsKeyFile) patch.tlsKeyFile = tlsKeyFile;
-        const hostToken = draft.hostToken.trim();
-        if (hostToken !== '') patch.hostToken = hostToken;
-        if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
-        if (draft.restartHostEnabled !== baseline.restartHostEnabled) patch.restartHostEnabled = draft.restartHostEnabled === true;
-        if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
-        const pushProvider = draft.pushProvider === 'expo' ? 'expo' : 'apns';
-        if (pushProvider !== baseline.pushProvider) patch.pushProvider = pushProvider;
-        const apnsKeyFile = draft.apnsKeyFile.trim();
-        if (apnsKeyFile !== baseline.apnsKeyFile) patch.apnsKeyFile = apnsKeyFile;
-        const apnsKeyId = draft.apnsKeyId.trim();
-        if (apnsKeyId !== baseline.apnsKeyId) patch.apnsKeyId = apnsKeyId;
-        const apnsTeamId = draft.apnsTeamId.trim();
-        if (apnsTeamId !== baseline.apnsTeamId) patch.apnsTeamId = apnsTeamId;
-        const apnsTopic = draft.apnsTopic.trim();
-        if (apnsTopic !== baseline.apnsTopic) patch.apnsTopic = apnsTopic;
-        const cooldown = Number.parseInt(String(draft.pushCooldownSeconds), 10);
-        if (Number.isFinite(cooldown) && cooldown >= 0 && String(cooldown) !== String(baseline.pushCooldownSeconds)) {
-          patch.pushCooldownSeconds = cooldown;
-        }
         if (Object.keys(patch).length === 0) {
           showFlash('good', t('msg.noChanges'));
           return;
@@ -1548,9 +1367,6 @@ window.__ModuleLoader__.load({
           if (!aliveRef.current) return;
           const next = response && typeof response === 'object' ? response : status;
           const fresh = draftFromStatus(next, draft);
-          if (hostToken !== '') fresh.hostTokenConfigured = true;
-          if (tlsCertFile !== '') fresh.tlsCertFileConfigured = true;
-          if (tlsKeyFile !== '') fresh.tlsKeyFileConfigured = true;
           setStatus(next);
           setDraft(fresh);
           setBaseline(fresh);
@@ -1727,85 +1543,29 @@ window.__ModuleLoader__.load({
         return h('div', { 'data-ra-page': '' }, h('div', { 'data-ra-note': '' }, t('msg.loading')));
       }
 
-      const relay = status.relay || {};
       const host = status.host || {};
-      const tls = host.tls || {};
+      const group = status.group || {};
       const pairing = status.pairing && status.pairing.active ? status.pairing : null;
       const pairingPending = Boolean(pairing && pairing.status === 'pending');
       const devices = Array.isArray(status.devices) ? status.devices : [];
       const enabled = status.enabled === true;
+      const groupRegistered = group.registered === true;
+      // 群体版：配对依赖服务端下发的 hostId/域名/端口，必须先注册；未注册时禁用配对入口。
+      const ready = enabled && groupRegistered;
       const tone = statusTone(status);
       const expiresAt = pairing && Number.isFinite(Number(pairing.expiresAt)) ? Number(pairing.expiresAt) : 0;
       const remaining = expiresAt > 0 ? Math.max(0, expiresAt - now) : 0;
       const fingerprint = host.fingerprint ? shortFingerprint(host.fingerprint) : '';
       const disabled = busy === 'save';
+      const tunnelValue = h('span', { 'data-ra-inline': '' },
+        h(Dot, { tone: group.connected ? 'good' : 'bad' }),
+        group.connected ? t('group.tunnelOn') : t('group.tunnelOff'));
 
-      const group = status.group || {};
-      const groupRegistered = group.registered === true;
-      // 群体模式：页面只展示群体服务的信息与功能，classic（单机版）字段全部隐藏以免歧义
-      const groupMode = draft.groupEnabled === true;
-      const groupSection = h(Section, { title: t('section.group') },
-        h(Row, {
-          label: t('sw.groupEnabled'),
-          note: t('sw.groupEnabledNote'),
-        }, h(Toggle, {
-          checked: draft.groupEnabled === true,
-          disabled,
-          label: t('sw.groupEnabled'),
-          onChange: (value) => setDraft({ ...draft, groupEnabled: value }),
-        })),
-        h('div', { 'data-ra-note': '' }, t('group.note')),
-        draft.groupEnabled
-          ? h('div', { 'data-ra-grid': '' },
-            h(Field, {
-              label: t('field.groupServiceUrl'),
-              value: draft.groupServiceUrl,
-              placeholder: t('field.groupServiceUrlHint'),
-              onChange: (value) => setDraft({ ...draft, groupServiceUrl: value }),
-            }),
-            h(Field, {
-              label: t('field.groupInviteCode'),
-              type: 'password',
-              value: draft.groupInviteCode,
-              placeholder: groupRegistered ? t('field.groupInviteCodeRegistered') : t('field.groupInviteCodeHint'),
-              autoComplete: 'new-password',
-              onChange: (value) => setDraft({ ...draft, groupInviteCode: value }),
-            }))
-          : null,
-        draft.groupEnabled
-          ? h('div', null,
-            h(InfoRow, { label: t('group.registered'), value: groupRegistered ? t('group.registered') : t('group.notRegistered') }),
-            h(InfoRow, { label: t('group.hostId'), value: group.hostId || '—' }),
-            h(InfoRow, { label: t('group.fqdn'), value: group.fqdn || '—' }),
-            h(InfoRow, { label: t('group.controlUrl'), value: group.controlUrl || '—' }),
-            h(InfoRow, {
-              label: t('group.connected'),
-              value: h('span', { 'data-ra-inline': '' },
-                h(Dot, { tone: group.connected ? 'good' : 'bad' }),
-                group.connected ? t('relay.connected') : t('relay.disconnected')),
-            }),
-            group.lastError
-              ? h(InfoRow, { label: t('group.lastError'), value: h('span', { style: { color: '#ef4444' } }, String(group.lastError)) })
-              : null)
-          : null,
-        draft.groupEnabled
-          ? h('div', { 'data-ra-actions': '' },
-            h(Btn, { onClick: () => { void registerGroup(); }, disabled: busy === 'group' || groupRegistered }, t('action.registerGroup')),
-            h(Btn, { onClick: () => { void retryGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.retryGroup')),
-            h(Btn, { onClick: () => { void resetGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.resetGroup')))
-          : null,
-        draft.groupEnabled ? h('div', { 'data-ra-note': '' }, t('group.tlsNote')) : null);
-
-      const groupStatusRows = [
+      const statusRows = [
         h(InfoRow, { label: t('field.groupServiceUrl'), value: group.serviceUrl || '—' }),
         h(InfoRow, { label: t('group.controlUrl'), value: group.controlUrl || '—' }),
         h(InfoRow, { label: t('group.registered'), value: groupRegistered ? t('group.registered') : t('group.notRegistered') }),
-        h(InfoRow, {
-          label: t('group.connected'),
-          value: h('span', { 'data-ra-inline': '' },
-            h(Dot, { tone: group.connected ? 'good' : 'bad' }),
-            group.connected ? t('relay.connected') : t('relay.disconnected')),
-        }),
+        h(InfoRow, { label: t('group.connected'), value: tunnelValue }),
         group.lastError
           ? h(InfoRow, { label: t('group.lastError'), value: h('span', { style: { color: '#ef4444' } }, String(group.lastError)) })
           : null,
@@ -1817,38 +1577,35 @@ window.__ModuleLoader__.load({
         h(InfoRow, { label: t('host.version'), value: status.version || '—' }),
       ].filter(Boolean);
 
-      const classicStatusRows = [
-        h(InfoRow, { label: t('field.relayUrl'), value: relay.url || '—' }),
-        h(InfoRow, {
-          label: t('relay.status'),
-          value: h('span', { 'data-ra-inline': '' },
-            h(Dot, { tone: relay.connected ? 'good' : 'bad' }),
-            relay.connected ? t('relay.connected') : t('relay.disconnected')),
-        }),
-        relay.lastError
-          ? h(InfoRow, { label: t('relay.lastError'), value: h('span', { style: { color: '#ef4444' } }, String(relay.lastError)) })
-          : null,
-        h(InfoRow, { label: t('host.id'), value: host.id || '—' }),
-        h(InfoRow, { label: t('host.name'), value: host.name || '—' }),
-        h(InfoRow, { label: t('host.domain'), value: host.domain || '—' }),
-        h(InfoRow, { label: t('host.address'), value: host.address || host.domain || '—' }),
-        h(InfoRow, { label: t('host.fingerprint'), value: fingerprint || '—' }),
-        h(InfoRow, {
-          label: t('host.cert'),
-          value: h('span', { 'data-ra-inline': '' },
-            h('span', null, tls.certFile || '—'),
-            enabled && tls.valid === false ? h('span', { 'data-ra-badge': '', 'data-tone': 'warn' }, t('host.certInvalid')) : null,
-            tls.dev ? h('span', { 'data-ra-badge': '', 'data-tone': '' }, t('host.certDev')) : null),
-        }),
-        h(InfoRow, { label: t('host.version'), value: status.version || '—' }),
-      ].filter(Boolean);
-
       const statusSection = h(Section, { title: t('section.status') },
         loadError !== '' ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('msg.loadFailed', { message: loadError })) : null,
-        ...(groupMode ? groupStatusRows : classicStatusRows));
+        ...statusRows);
 
-      const pushWarnings = status && status.push && Array.isArray(status.push.warnings) ? status.push.warnings : [];
-      const classicConnectionSection = h(Section, { title: t('section.connection') },
+      // 群体服务注册：服务地址 + 一次性邀请码 + 注册/重试/重置。
+      const groupSection = h(Section, { title: t('section.group') },
+        h('div', { 'data-ra-note': '' }, t('group.note')),
+        h('div', { 'data-ra-grid': '' },
+          h(Field, {
+            label: t('field.groupServiceUrl'),
+            value: draft.groupServiceUrl,
+            placeholder: t('field.groupServiceUrlHint'),
+            onChange: (value) => setDraft({ ...draft, groupServiceUrl: value }),
+          }),
+          h(Field, {
+            label: t('field.groupInviteCode'),
+            type: 'password',
+            value: draft.groupInviteCode,
+            placeholder: groupRegistered ? t('field.groupInviteCodeRegistered') : t('field.groupInviteCodeHint'),
+            autoComplete: 'new-password',
+            onChange: (value) => setDraft({ ...draft, groupInviteCode: value }),
+          })),
+        h('div', { 'data-ra-actions': '' },
+          h(Btn, { onClick: () => { void registerGroup(); }, disabled: busy === 'group' || groupRegistered }, t('action.registerGroup')),
+          h(Btn, { onClick: () => { void retryGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.retryGroup')),
+          h(Btn, { onClick: () => { void resetGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.resetGroup'))));
+
+      // 服务设置：开关 / 主机名 / 桌面确认。
+      const serviceSection = h(Section, { title: t('section.service') },
         h(Row, { label: t('sw.enabled'), note: t('sw.enabledNote') },
           h(Toggle, {
             checked: draft.enabled,
@@ -1858,130 +1615,6 @@ window.__ModuleLoader__.load({
           })),
         h('div', { 'data-ra-grid': '' },
           h(Field, {
-            label: t('field.relayUrl'),
-            value: draft.relayUrl,
-            placeholder: t('field.relayUrlHint'),
-            onChange: (value) => setDraft({ ...draft, relayUrl: value }),
-          }),
-          h(Field, {
-            label: t('field.relayDomain'),
-            value: draft.relayDomain,
-            placeholder: t('field.relayDomainHint'),
-            onChange: (value) => setDraft({ ...draft, relayDomain: value }),
-          })),
-        h('div', { 'data-ra-note': '' }, t('field.relayDomainNote')),
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
-            label: t('field.hostId'),
-            value: draft.hostId,
-            placeholder: t('field.hostIdHint'),
-            onChange: (value) => setDraft({ ...draft, hostId: value }),
-          }),
-          h(Field, {
-            label: t('field.hostName'),
-            value: draft.hostName,
-            placeholder: t('field.hostNameHint'),
-            onChange: (value) => setDraft({ ...draft, hostName: value }),
-          }),
-          h(Field, {
-            label: t('field.publicPort'),
-            value: draft.publicPort,
-            placeholder: t('field.publicPortHint'),
-            onChange: (value) => setDraft({ ...draft, publicPort: value }),
-          })),
-        h('div', { 'data-ra-note': '' }, t('field.publicPortNote')),
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
-            label: t('field.hostToken'),
-            type: 'password',
-            value: draft.hostToken,
-            placeholder: draft.hostTokenConfigured ? t('field.configuredPlaceholder') : t('field.hostTokenEmpty'),
-            autoComplete: 'new-password',
-            onChange: (value) => setDraft({ ...draft, hostToken: value }),
-          })),
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
-            label: t('field.tlsCertFile'),
-            value: draft.tlsCertFile,
-            placeholder: draft.tlsCertFileConfigured ? t('field.configuredPlaceholder') : '/path/fullchain.pem',
-            onChange: (value) => setDraft({ ...draft, tlsCertFile: value }),
-          }),
-          h(Field, {
-            label: t('field.tlsKeyFile'),
-            value: draft.tlsKeyFile,
-            placeholder: draft.tlsKeyFileConfigured ? t('field.configuredPlaceholder') : '/path/privkey.pem',
-            onChange: (value) => setDraft({ ...draft, tlsKeyFile: value }),
-          })),
-        h(Row, { label: t('sw.requireApproval'), note: t('sw.requireApprovalNote') },
-          h(Toggle, {
-            checked: draft.requireApproval,
-            disabled,
-            label: t('sw.requireApproval'),
-            onChange: (value) => setDraft({ ...draft, requireApproval: value }),
-          })),
-        h(Row, { label: t('sw.pushEnabled'), note: t('sw.pushEnabledNote') },
-          h(Toggle, {
-            checked: draft.pushEnabled,
-            disabled,
-            label: t('sw.pushEnabled'),
-            onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
-          })),
-        h(Row, { label: t('sw.pushSelfHosted'), note: t('sw.pushSelfHostedNote') },
-          h(Toggle, {
-            checked: draft.pushProvider === 'apns',
-            disabled,
-            label: t('sw.pushSelfHosted'),
-            onChange: (value) => setDraft({ ...draft, pushProvider: value ? 'apns' : 'expo' }),
-          })),
-        pushWarnings.length > 0 && draft.pushEnabled && draft.pushProvider === 'apns'
-          ? h('div', { 'data-ra-note': '' }, t('push.warnings', { errors: pushWarnings.join('；') }))
-          : null,
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
-            label: t('field.apnsKeyFile'),
-            value: draft.apnsKeyFile,
-            placeholder: t('field.apnsKeyFileHint'),
-            onChange: (value) => setDraft({ ...draft, apnsKeyFile: value }),
-          }),
-          h(Field, {
-            label: t('field.apnsKeyId'),
-            value: draft.apnsKeyId,
-            placeholder: 'ABC123DEF4',
-            onChange: (value) => setDraft({ ...draft, apnsKeyId: value }),
-          }),
-          h(Field, {
-            label: t('field.apnsTeamId'),
-            value: draft.apnsTeamId,
-            placeholder: 'TEAM123456',
-            onChange: (value) => setDraft({ ...draft, apnsTeamId: value }),
-          }),
-          h(Field, {
-            label: t('field.apnsTopic'),
-            value: draft.apnsTopic,
-            placeholder: t('field.apnsTopicHint'),
-            onChange: (value) => setDraft({ ...draft, apnsTopic: value }),
-          })),
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
-            label: t('field.pushCooldown'),
-            value: draft.pushCooldownSeconds,
-            placeholder: t('field.pushCooldownHint'),
-            onChange: (value) => setDraft({ ...draft, pushCooldownSeconds: value }),
-          })),
-        h('div', { 'data-ra-actions': '' },
-          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
-            busy === 'save' ? t('btn.saving') : t('btn.save'))));
-
-      const groupServiceSection = h(Section, { title: t('section.service') },
-        h(Row, { label: t('sw.enabled'), note: t('sw.enabledNoteGroup') },
-          h(Toggle, {
-            checked: draft.enabled,
-            disabled,
-            label: t('sw.enabled'),
-            onChange: (value) => setDraft({ ...draft, enabled: value }),
-          })),
-        h('div', { 'data-ra-grid': '' },
-          h(Field, {
             label: t('field.hostName'),
             value: draft.hostName,
             placeholder: t('field.hostNameHint'),
@@ -1994,35 +1627,21 @@ window.__ModuleLoader__.load({
             label: t('sw.requireApproval'),
             onChange: (value) => setDraft({ ...draft, requireApproval: value }),
           })),
-        h('div', { 'data-ra-note': '' }, t('group.pushNote')),
         h('div', { 'data-ra-actions': '' },
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
             busy === 'save' ? t('btn.saving') : t('btn.save'))));
 
-      const connectionSection = groupMode ? groupServiceSection : classicConnectionSection;
-
-      const componentsSection = h(Section, { title: t('section.components') },
-        h(Row, { label: t('sw.restartHost'), note: t('sw.restartHostNote') },
-          h(Toggle, {
-            checked: draft.restartHostEnabled,
-            disabled,
-            label: t('sw.restartHost'),
-            onChange: (value) => setDraft({ ...draft, restartHostEnabled: value }),
-          })),
-        h('div', { 'data-ra-actions': '' },
-          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
-            busy === 'save' ? t('btn.saving') : t('btn.save'))));
       const pairingSection = h(Section, { title: t('section.pairing') },
         h(Row, {
           label: pairing ? (pairingPending ? t('pairing.pendingPill') : t('pairing.active')) : t('pairing.inactive'),
-          note: enabled
-            ? (pairingPending ? t('pairing.settingsPendingNote') : t('pairing.settingsNote'))
-            : t('pairing.disabledHint'),
+          note: !enabled
+            ? t('pairing.disabledHint')
+            : (!groupRegistered ? t('pairing.needRegistration') : (pairingPending ? t('pairing.settingsPendingNote') : t('pairing.settingsNote'))),
         },
           h(Btn, {
             primary: true,
-            disabled: !enabled,
-            title: enabled ? undefined : t('pairing.disabledShort'),
+            disabled: !ready,
+            title: ready ? undefined : (!enabled ? t('pairing.disabledShort') : t('pairing.needRegistration')),
             onClick: () => setPairingOpen(true),
           }, t('btn.openPairing')),
           pairing
@@ -2090,12 +1709,11 @@ window.__ModuleLoader__.load({
             h('div', { 'data-ra-title-main': '' },
               h('div', { 'data-ra-title-text': '' }, t('page.title')),
               h('div', { 'data-ra-sub': '' }, t('page.subtitle'))),
-            h(StatusPill, { tone, label: t(toneKey(tone, groupMode)) }))),
+            h(StatusPill, { tone, label: t(toneKey(tone)) }))),
         pairingOpen ? null : h(Toast, { flash, onDismiss: dismissFlash }),
         statusSection,
         groupSection,
-        connectionSection,
-        componentsSection,
+        serviceSection,
         pairingSection,
         devicesSection,
         auditSection,
@@ -2606,14 +2224,14 @@ window.__ModuleLoader__.load({
     /**
      * 手机 WebView 的会话桥：
      *  - 订阅 `uiWorkspace.selection`，把当前会话（host + sessionId）通过原生 WebView 桥
-     *    报给 App（App 用于「当前会话不弹应用内通知」）；
+     *    报给 App（App 可用于「当前正在看的会话」等界面联动）；
      *  - 暴露 `window.__DSH_REMOTE_OPEN_SESSION__(id)` 与 `dsh-remote:open-session` 事件，
-     *    内部调用 `uiWorkspace.openSession(id)`，供 App 在点击推送后跳到对应会话；
+     *    内部调用 `uiWorkspace.openSession(id)`，供 App/页面跳转到指定会话；
      *  - 插件加载前收到的打开请求会暂存在 `__DSH_REMOTE_OPEN_SESSION_PENDING__`，
      *    安装完成后消费。
      *
-     * `uiWorkspace` 是 DSH 内部 service（提供 selection/openSession）；拿不到时静默降级，
-     * 通知仍可正常显示/打开主机，只是不会自动跳会话。
+     * 群体版主机不发送任何推送；这里只保留通用的「当前会话 / 打开会话」桥。
+     * `uiWorkspace` 是 DSH 内部 service（提供 selection/openSession）；拿不到时静默降级。
      *
      * @param {{inject?: Function}} ctx Client 上下文
      */
@@ -2809,7 +2427,7 @@ window.__ModuleLoader__.load({
         }
 
         // /api/remote-access/* 被代理 deny（403）正是安全边界；若显示入口，DSH 设置页
-        // 拉不到 status 会误导为「403 中继离线」。远程管理请用 App 自己的设备页。
+        // 拉不到 status 会误导为「403 群体服务离线」。远程管理请用 App 自己的设备页。
         if (!isRemoteWebView) {
           slots.inject('sidebar.footer.action', () => slots.register(entryOptions, EntrySeat));
           slots.inject('settings.section', () => slots.register(settingsOptions, SettingsSeat));

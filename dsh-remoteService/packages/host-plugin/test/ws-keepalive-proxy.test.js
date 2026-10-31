@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import http from 'node:http';
 import { WebSocketServer } from 'ws';
 import WebSocket from 'ws';
-import { withTempHome, makeCsr, tlsRequestNoClientCert } from './helpers.js';
+import { withTempHome } from './helpers.js';
 import { splitUpgradeResponseHead } from '../lib/proxy.js';
 
 /** 等一个谓词成立；超时抛错。 */
@@ -20,6 +20,24 @@ function waitFor(predicate, timeoutMs = 5000) {
     };
     tick();
   });
+}
+
+/** 起一个 plain HTTP 代理入口（群体版 loopback 明文代理也是这条路径）。 */
+async function startProxy(proxy) {
+  const server = http.createServer((req, res) => {
+    proxy.handle(req, res, { id: 'd_test01' }).catch(() => {
+      if (!res.headersSent) { res.writeHead(500); res.end(); }
+    });
+  });
+  server.on('upgrade', (req, socket, head) => {
+    proxy.handleUpgrade(req, socket, head, { id: 'd_test01' }).catch(() => socket.destroy());
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  return { server, port: server.address().port };
+}
+
+function closeServer(server) {
+  return new Promise((resolve) => { try { server?.close(() => resolve()); } catch { resolve(); } });
 }
 
 test('splitUpgradeResponseHead：头不完整返回 null，完整后切出 status/header/rest', () => {
@@ -39,15 +57,10 @@ test('splitUpgradeResponseHead：头不完整返回 null，完整后切出 statu
 test('WS 代理：101 响应头之后的帧扫描生效——客户端 autoPong=false 时也替链路回 Pong', async () => {
   const home = withTempHome();
   let upstream;
-  let wsServer;
-  let remote;
+  let proxyEntry;
   let client;
   try {
-    const { loadOrCreateHostIdentity, loadOrCreateDeviceCa, loadOrCreateDevServerCert, signDeviceCertificate } = await import('../lib/identity.js');
-    const { DeviceStore } = await import('../lib/devices.js');
-    const { PairingManager } = await import('../lib/pairing.js');
     const { DshProxy } = await import('../lib/proxy.js');
-    const { createRemoteServer } = await import('../lib/server.js');
 
     upstream = http.createServer((req, res) => {
       if (req.url.startsWith('/?token=')) {
@@ -57,7 +70,7 @@ test('WS 代理：101 响应头之后的帧扫描生效——客户端 autoPong=
       }
       res.writeHead(200); res.end('ok');
     });
-    wsServer = new WebSocketServer({ noServer: true });
+    const wsServer = new WebSocketServer({ noServer: true });
     let upstreamPongs = 0;
     let openedServerSocket;
     upstream.on('upgrade', (req, socket, head) => {
@@ -70,46 +83,17 @@ test('WS 代理：101 响应头之后的帧扫描生效——客户端 autoPong=
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     const upstreamPort = upstream.address().port;
 
-    const identity = loadOrCreateHostIdentity();
-    const ca = loadOrCreateDeviceCa();
-    const devices = new DeviceStore();
-    const fqdn = 'h_test.relay.test';
-    const devCert = loadOrCreateDevServerCert(fqdn);
-    const config = { hostId: 'h_test', relayDomain: 'relay.test', hostName: 'Test Mac', requireApproval: false };
-    const audit = { append() {} };
-    const pairing = new PairingManager({ identity, ca, devices, audit, getConfig: () => config });
     const proxy = new DshProxy({
       getUpstream: () => ({ protocol: 'http:', host: '127.0.0.1', port: upstreamPort }),
       authenticatedUrl: () => `http://127.0.0.1:${upstreamPort}/?token=test-token`,
       denyPrefixes: ['/connect', '/oauth', '/open-in-app', '/api/remote-access', '/__dsh_remote'],
       getMaxRequestBytes: () => 4 * 1024 * 1024,
-      audit,
+      audit: { append() {} },
     });
-    remote = createRemoteServer({
-      certPem: devCert.certPem,
-      keyPem: devCert.keyPem,
-      caCertPem: ca.certPem,
-      devices,
-      pairing,
-      proxy,
-      audit,
-      getConfig: () => config,
-      savePushToken: () => {},
-      getStatus: () => ({ tls: null, relayConnected: true, version: '0.1.0-test' }),
-    });
-    const { port } = await remote.listen(0, '127.0.0.1');
-
-    const deviceCsr = makeCsr('Test iPhone');
-    const signed = signDeviceCertificate({ ca, csrPem: deviceCsr.csrPem, deviceId: 'd_test01', commonName: 'Test iPhone' });
-    devices.add({ id: 'd_test01', name: 'Test iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
+    proxyEntry = await startProxy(proxy);
 
     const pingsSeenByClient = [];
-    client = new WebSocket(`wss://127.0.0.1:${port}/api/remote.mux`, [], {
-      servername: fqdn,
-      ca: devCert.certPem,
-      cert: signed.certPem,
-      key: deviceCsr.privateKeyPem,
-      rejectUnauthorized: true,
+    client = new WebSocket(`ws://127.0.0.1:${proxyEntry.port}/api/remote.mux`, [], {
       autoPong: false, // 关键：客户端不回 Pong，只有代理伪造的 Pong 能到达上游
     });
     client.on('ping', (payload) => pingsSeenByClient.push(payload.toString()));
@@ -135,12 +119,12 @@ test('WS 代理：101 响应头之后的帧扫描生效——客户端 autoPong=
     } finally {
       clearInterval(pingTimer);
     }
+    for (const c of wsServer.clients) { try { c.terminate(); } catch { /* ignore */ } }
+    await new Promise((resolve) => wsServer.close(() => resolve()));
   } finally {
     try { client?.terminate(); } catch { /* ignore */ }
-    for (const c of wsServer?.clients ?? []) { try { c.terminate(); } catch { /* ignore */ } }
-    if (wsServer) await new Promise((resolve) => wsServer.close(() => resolve()));
-    if (upstream) await new Promise((resolve) => upstream.close(resolve));
-    try { await remote?.close(); } catch { /* ignore */ }
+    await closeServer(proxyEntry?.server);
+    await closeServer(upstream);
     home.cleanup();
   }
 });
@@ -148,14 +132,10 @@ test('WS 代理：101 响应头之后的帧扫描生效——客户端 autoPong=
 test('WS 代理：上游拒绝升级（非 101）时原样转发响应、不启用心跳代答', async () => {
   const home = withTempHome();
   let upstream;
-  let remote;
+  let proxyEntry;
   let client;
   try {
-    const { loadOrCreateHostIdentity, loadOrCreateDeviceCa, loadOrCreateDevServerCert, signDeviceCertificate } = await import('../lib/identity.js');
-    const { DeviceStore } = await import('../lib/devices.js');
-    const { PairingManager } = await import('../lib/pairing.js');
     const { DshProxy } = await import('../lib/proxy.js');
-    const { createRemoteServer } = await import('../lib/server.js');
 
     upstream = http.createServer((req, res) => {
       if (req.url.startsWith('/?token=')) {
@@ -171,61 +151,27 @@ test('WS 代理：上游拒绝升级（非 101）时原样转发响应、不启�
     await new Promise((resolve) => upstream.listen(0, '127.0.0.1', resolve));
     const upstreamPort = upstream.address().port;
 
-    const identity = loadOrCreateHostIdentity();
-    const ca = loadOrCreateDeviceCa();
-    const devices = new DeviceStore();
-    const fqdn = 'h_test.relay.test';
-    const devCert = loadOrCreateDevServerCert(fqdn);
-    const config = { hostId: 'h_test', relayDomain: 'relay.test', hostName: 'Test Mac', requireApproval: false };
     const auditEntries = [];
-    const audit = { append: (entry) => auditEntries.push(entry) };
-    const pairing = new PairingManager({ identity, ca, devices, audit, getConfig: () => config });
     const proxy = new DshProxy({
       getUpstream: () => ({ protocol: 'http:', host: '127.0.0.1', port: upstreamPort }),
       authenticatedUrl: () => `http://127.0.0.1:${upstreamPort}/?token=test-token`,
       denyPrefixes: [],
       getMaxRequestBytes: () => 4 * 1024 * 1024,
-      audit,
+      audit: { append: (entry) => auditEntries.push(entry) },
     });
-    remote = createRemoteServer({
-      certPem: devCert.certPem,
-      keyPem: devCert.keyPem,
-      caCertPem: ca.certPem,
-      devices,
-      pairing,
-      proxy,
-      audit,
-      getConfig: () => config,
-      savePushToken: () => {},
-      getStatus: () => ({ tls: null, relayConnected: true, version: '0.1.0-test' }),
-    });
-    const { port } = await remote.listen(0, '127.0.0.1');
-
-    const deviceCsr = makeCsr('Test iPhone');
-    const signed = signDeviceCertificate({ ca, csrPem: deviceCsr.csrPem, deviceId: 'd_test01', commonName: 'Test iPhone' });
-    devices.add({ id: 'd_test01', name: 'Test iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
+    proxyEntry = await startProxy(proxy);
 
     let rejectedStatus = 0;
-    client = new WebSocket(`wss://127.0.0.1:${port}/api/remote.mux`, [], {
-      servername: fqdn,
-      ca: devCert.certPem,
-      cert: signed.certPem,
-      key: deviceCsr.privateKeyPem,
-      rejectUnauthorized: true,
-    });
+    client = new WebSocket(`ws://127.0.0.1:${proxyEntry.port}/api/remote.mux`);
     client.on('unexpected-response', (_req, res) => { rejectedStatus = res.statusCode; res.resume(); });
     client.on('error', () => {});
     await waitFor(() => rejectedStatus === 403, 5000);
     assert.equal(rejectedStatus, 403);
     await waitFor(() => auditEntries.find((entry) => entry.action === 'ws-upgrade-failed' && entry.result === 'upstream-403'), 2000);
-
-    // 顺带确认无证书仍然被 mTLS 拦住（代理未破坏原有安全语义）
-    const noCert = await tlsRequestNoClientCert({ port, servername: fqdn, caPem: devCert.certPem, path: '/' });
-    assert.equal(noCert.status, 403);
   } finally {
     try { client?.terminate(); } catch { /* ignore */ }
-    if (upstream) await new Promise((resolve) => upstream.close(resolve));
-    try { await remote?.close(); } catch { /* ignore */ }
+    await closeServer(proxyEntry?.server);
+    await closeServer(upstream);
     home.cleanup();
   }
 });
@@ -237,10 +183,7 @@ test('WS 代理：下行拥塞（代理暂停读上游）时主动定时 Pong，
   let upstream;
   let cookieServer;
   try {
-    const { loadOrCreateDeviceCa } = await import('../lib/identity.js');
-    const ca = loadOrCreateDeviceCa();
-
-    // 上游：token 交换 + WS 101 后静默；记录 101 之后收到的字节
+    // 上游：101 后静默；记录 101 之后收到的字节
     const afterUpgrade = [];
     let gotRequest = false;
     upstream = net.createServer((socket) => {
@@ -263,7 +206,7 @@ test('WS 代理：下行拥塞（代理暂停读上游）时主动定时 Pong，
     const upstreamPort = upstream.address().port;
 
     // cookie 交换端点
-    cookieServer = (await import('node:http')).createServer((req, res) => {
+    cookieServer = http.createServer((req, res) => {
       res.writeHead(303, { 'set-cookie': ['dsh-auth-test=ok; Path=/'], location: './' });
       res.end();
     });
@@ -323,8 +266,8 @@ test('WS 代理：下行拥塞（代理暂停读上游）时主动定时 Pong，
     clientSocket.destroy();
     await new Promise((r) => setTimeout(r, 20));
   } finally {
-    if (upstream) await new Promise((resolve) => upstream.close(resolve));
-    if (cookieServer) await new Promise((resolve) => cookieServer.close(resolve));
+    await closeServer(upstream);
+    await closeServer(cookieServer);
     home.cleanup();
   }
 });

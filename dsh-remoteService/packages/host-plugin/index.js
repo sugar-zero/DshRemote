@@ -1,8 +1,9 @@
 /**
- * dsh-remote-service —— Host 插件入口。
+ * dsh-remote-service —— Host 插件入口（群体服务版 / A 模式）。
  *
- * 功能：设备配对、mTLS 反向代理、自托管盲中继连接、管理 API（本机）。
- * Client 半在 client.js（账号行上方入口 + 配对/设备管理界面）。
+ * 功能：群体服务注册与隧道、loopback 明文反向代理（HTTP/WS）、token 验签、
+ * 群体版设备配对、本机管理 API。
+ * Client 半在 client.js（侧栏入口 + 设置页 + 手机 WebView 优化）。
  */
 import { ADMIN_BASE } from 'dsh-remote-protocol';
 import { RemoteService } from './lib/service.js';

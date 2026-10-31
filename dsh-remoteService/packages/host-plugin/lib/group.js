@@ -1,7 +1,6 @@
 /**
- * 群体服务版（A 模式）主机侧运行时。
+ * 群体服务版（A 模式）主机侧运行时（本分支唯一模式）。
  *
- * 与 main 的 B2 模式并存：
  *   - 主机先向部署方的 relay 自助注册（邀请码）→ 落盘 hostId / hostToken / relayDomain /
  *     mobilePort / relay token 公钥（0600，`$DSH_HOME/remote-access/group.json`）；
  *   - 主机主动连 relay 控制面（隧道），relay 边缘终止手机 TLS 后把明文流经隧道交给主机；
@@ -17,14 +16,11 @@
 import http from 'node:http';
 import https from 'node:https';
 import {
-  CONTROL_PATH,
   GROUP_REFRESH_PATH,
   GROUP_REGISTER_PATH,
   GROUP_SESSION_COOKIE,
   PAIR_PATH,
   PAIR_STATUS_PATH,
-  PUSH_TOKEN_PATH,
-  RESTART_PATH,
   STATUS_PATH,
   TUNNEL_BASE,
   isGroupHostId,
@@ -85,19 +81,6 @@ export function normalizeGroupControlUrl(raw, options = {}) {
   if (!url.hostname) throw new Error('控制面地址缺少主机名');
   if (!url.port) throw new Error('控制面地址缺少端口');
   return `${url.protocol}//${url.host}`;
-}
-
-/**
- * 基准服务地址 → relay 控制面 WebSocket URL。
- * @param {string} serviceUrl
- */
-export function groupControlUrl(serviceUrl) {
-  const url = new URL(String(serviceUrl));
-  if (url.protocol === 'https:') url.protocol = 'wss:';
-  else if (url.protocol === 'http:') url.protocol = 'ws:';
-  url.pathname = CONTROL_PATH;
-  url.search = '';
-  return url.href;
 }
 
 /**
@@ -522,7 +505,7 @@ export class GroupHostRuntime {
       return;
     }
     this.#touchDevice(payload.deviceId);
-    // —— 已鉴权的内部远程接口（群体版暂只支持 status；push/restart 后续接入）——
+    // —— 已鉴权的内部远程接口（群体版只提供 status）——
     if (pathname === STATUS_PATH) {
       if (req.method !== 'GET') {
         sendError(res, 405, 'method-not-allowed', '仅支持 GET');
@@ -537,14 +520,9 @@ export class GroupHostRuntime {
           domain: `${this.registration.hostId}.${this.registration.relayDomain}`,
           auth: 'token',
           relayConnected: Boolean(this.connector?.isConnected()),
-          restart: { enabled: false },
           devices: { total: devices.length, active: devices.filter((device) => !device.revokedAt).length },
         },
       });
-      return;
-    }
-    if (pathname === PUSH_TOKEN_PATH || pathname === RESTART_PATH) {
-      sendError(res, 501, 'group-feature-unavailable', '群体模式暂未接入该接口');
       return;
     }
     if (pathname.startsWith(`${TUNNEL_BASE}/`)) {

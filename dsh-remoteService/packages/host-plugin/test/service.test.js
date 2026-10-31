@@ -1,295 +1,124 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync } from 'node:fs';
-import forge from 'node-forge';
-import { WebSocketServer } from 'ws';
-import { RESTART_PATH } from 'dsh-remote-protocol';
-import { makeCsr, tlsRequest, withTempHome } from './helpers.js';
+import { readFileSync } from 'node:fs';
+import { withTempHome } from './helpers.js';
 
-function serial() {
-  return `01${forge.util.bytesToHex(forge.random.getBytesSync(15))}`;
-}
-
-function makeServerCert(fqdn, days) {
-  const keys = forge.pki.rsa.generateKeyPair(2048);
-  const cert = forge.pki.createCertificate();
-  cert.publicKey = keys.publicKey;
-  cert.serialNumber = serial();
-  cert.validity.notBefore = new Date(Date.now() - 60_000);
-  cert.validity.notAfter = new Date(Date.now() + days * 86_400_000);
-  cert.setSubject([{ name: 'commonName', value: fqdn }]);
-  cert.setIssuer([{ name: 'commonName', value: fqdn }]);
-  cert.setExtensions([
-    { name: 'basicConstraints', cA: false },
-    { name: 'keyUsage', digitalSignature: true, keyEncipherment: true },
-    { name: 'extKeyUsage', serverAuth: true },
-    { name: 'subjectAltName', altNames: [{ type: 2, value: fqdn }] },
-  ]);
-  cert.sign(keys.privateKey, forge.md.sha256.create());
-  return { certPem: forge.pki.certificateToPem(cert), keyPem: forge.pki.privateKeyToPem(keys.privateKey) };
-}
-
-test('RemoteService: TLS certificate rotation hot-reloads listener without restart', async () => {
+async function setup() {
   const home = withTempHome();
-  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  await new Promise((resolve) => wss.once('listening', resolve));
-  wss.on('connection', (ws) => {
-    ws.on('message', (data) => {
-      try {
-        const msg = JSON.parse(data.toString());
-        if (msg.t === 'host.hello') {
-          ws.send(JSON.stringify({ t: 'host.ready', protocolVersion: 1, hostId: msg.hostId, hostname: 'h_rotate.relay.test', domain: 'relay.test' }));
-        }
-      } catch { /* ignore */ }
-    });
-  });
-
-  const cert1 = makeServerCert('h_rotate.relay.test', 30);
-  const cert2 = makeServerCert('h_rotate.relay.test', 90);
-  const certPath = `${home.dir}/rotation.crt.pem`;
-  const keyPath = `${home.dir}/rotation.key.pem`;
-  writeFileSync(certPath, cert1.certPem, { mode: 0o600 });
-  writeFileSync(keyPath, cert1.keyPem, { mode: 0o600 });
-
   const { saveConfig } = await import('../lib/config.js');
   const { RemoteService } = await import('../lib/service.js');
-  saveConfig({
-    enabled: true,
-    relayUrl: `ws://127.0.0.1:${wss.address().port}`,
-    relayDomain: 'relay.test',
-    hostId: 'h_rotate',
-    hostToken: 'tok',
-    hostName: 'Rotate Host',
-    tlsCertFile: certPath,
-    tlsKeyFile: keyPath,
-    relayTlsInsecure: true,
-  });
-  const fakeCtx = {
+  saveConfig({ enabled: false });
+  const service = new RemoteService({
     webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
     connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
-    effect: (fn) => fn(),
-    on: () => () => {},
-  };
-  const service = new RemoteService(fakeCtx);
+  });
+  await service.ready;
+  return { home, service };
+}
+
+test('RemoteService：版本与管理 API 展示的版本一致（0.2.0）', async () => {
+  const { home, service } = await setup();
   try {
-    await service.ready;
-    const first = service.status();
-    assert.equal(first.host.tls.dev, false);
-    assert.equal(first.host.tls.certFile, certPath);
-    const firstNotAfter = first.host.tls.notAfter;
-    const firstPort = service.listenPort;
-    assert.ok(firstPort > 0);
-
-    // 模拟 acme.sh 续期后覆盖证书文件，再调用热加载
-    writeFileSync(certPath, cert2.certPem, { mode: 0o600 });
-    writeFileSync(keyPath, cert2.keyPem, { mode: 0o600 });
-    const rotated = await service.reloadTls();
-
-    assert.equal(rotated.host.tls.valid, true);
-    assert.notEqual(rotated.host.tls.notAfter, firstNotAfter, 'notAfter 应变为新证书');
-    assert.notEqual(service.listenPort, firstPort, '监听应重建（新端口）');
-    assert.equal(rotated.enabled, true);
-
-    // 热加载到「证书与私钥不匹配」：停止监听，且不能继续显示旧证书「有效」
-    writeFileSync(certPath, cert2.certPem, { mode: 0o600 });
-    writeFileSync(keyPath, cert1.keyPem, { mode: 0o600 });
-    const broken = await service.reloadTls();
-    assert.match(broken.relay.lastError, /证书与私钥不匹配/);
-    assert.equal(service.listenPort, 0);
-    assert.equal(broken.host.tls.valid, false);
-    assert.equal(broken.host.tls.certFile, certPath);
+    const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
+    assert.equal(service.status().version, pkgVersion);
+    assert.equal(pkgVersion, '0.2.0');
   } finally {
     await service.dispose();
-    await new Promise((resolve) => wss.close(resolve));
     home.cleanup();
   }
 });
 
-test('RemoteService: TLS 证书与私钥不匹配时给出可读错误，且不启动监听/中继', async () => {
-  const home = withTempHome();
+test('RemoteService：配置 schema 只保留群体字段，classic 字段不会写回磁盘', async () => {
+  const { home, service } = await setup();
   try {
-    const leaf = makeServerCert('h_badkey.relay.test', 30);
-    const other = makeServerCert('h_badkey.relay.test', 30);
-    const certPath = `${home.dir}/bad-cert.pem`;
-    const keyPath = `${home.dir}/bad-key.pem`;
-    writeFileSync(certPath, leaf.certPem, { mode: 0o600 });
-    writeFileSync(keyPath, other.keyPem, { mode: 0o600 });
-
-    const { saveConfig } = await import('../lib/config.js');
-    const { RemoteService } = await import('../lib/service.js');
-    saveConfig({
-      enabled: true,
-      relayUrl: 'ws://127.0.0.1:1',
-      relayDomain: 'relay.test',
-      hostId: 'h_badkey',
-      hostToken: 'tok',
-      hostName: 'Bad Key Host',
-      tlsCertFile: certPath,
-      tlsKeyFile: keyPath,
-      relayTlsInsecure: true,
-    });
-    const fakeCtx = {
-      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
-      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
-      effect: (fn) => fn(),
-      on: () => () => {},
-    };
-    const service = new RemoteService(fakeCtx);
-    try {
-      await service.ready;
-      const status = service.status();
-      assert.match(status.relay.lastError, /证书与私钥不匹配/);
-      assert.match(status.relay.lastError, /fullchain\.pem/);
-      assert.equal(status.relay.connected, false);
-      assert.equal(service.listenPort, 0);
-      assert.equal(status.host.tls.valid, false);
-    } finally {
-      await service.dispose();
-    }
-  } finally {
-    home.cleanup();
-  }
-});
-
-test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn，绝不真的重启）', async () => {
-  const home = withTempHome();
-  const spawnCalls = [];
-  const fakeSpawn = (command, args, options) => {
-    spawnCalls.push({ command, args, options });
-    return { pid: 1, unref: () => {} };
-  };
-  const restartEnv = {};
-  let service;
-  try {
-    const { saveConfig } = await import('../lib/config.js');
-    const { RemoteService } = await import('../lib/service.js');
+    const { loadConfig, saveConfig, DEFAULT_CONFIG } = await import('../lib/config.js');
     const { paths } = await import('../lib/paths.js');
+    // 旧版遗留字段：保存时被忽略，读取时被丢弃
     saveConfig({
-      enabled: true,
-      relayUrl: 'ws://127.0.0.1:1',
-      relayDomain: 'relay.test',
-      hostId: 'h_restart',
-      hostToken: 'tok',
-      hostName: 'Restart Host',
-      relayTlsInsecure: true,
+      relayUrl: 'wss://relay.example.com:8443',
+      relayDomain: 'relay.example.com',
+      hostId: 'h_classic',
+      hostToken: 'legacy-token',
+      tlsCertFile: '/path/fullchain.pem',
+      pushEnabled: true,
+      apnsKeyFile: '/path/AuthKey.p8',
       restartHostEnabled: true,
+      groupEnabled: true,
+      groupServiceUrl: 'https://relay.example.com:19443',
     });
-    const fakeCtx = {
-      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
-      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
-      effect: (fn) => fn(),
-      on: () => () => {},
-    };
-    // spawnHostRestart 注入 fake：若注入没生效，这里会真的去杀测试进程，测试直接炸掉暴露问题。
-    service = new RemoteService(fakeCtx, { spawnHostRestart: fakeSpawn, hostRestartEnv: restartEnv });
-    await service.ready;
-    assert.ok(service.listenPort > 0);
-    const { readFileSync: readPkg } = await import('node:fs');
-    const pkgVersion = JSON.parse(readPkg(new URL('../package.json', import.meta.url), 'utf8')).version;
-    assert.equal(service.status().version, pkgVersion, '管理 API 展示的版本应与 package.json 一致');
-    assert.equal(service.status().restart.enabled, true, '组件开启时 status.restart.enabled 应为 true');
-    assert.equal(service.status().config.restartHostEnabled, true, '管理 UI 应能读到组件开关');
-
-    // 签一台设备证书并加入注册表（相当于已完成配对）
-    const { signDeviceCertificate } = await import('../lib/identity.js');
-    const deviceCsr = makeCsr('Restart iPhone');
-    const signed = signDeviceCertificate({ ca: service.ca, csrPem: deviceCsr.csrPem, deviceId: 'd_restart', commonName: 'Restart iPhone' });
-    service.devices.add({ id: 'd_restart', name: 'Restart iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
-
-    const fqdn = 'h_restart.relay.test';
-    const devCertPem = readFileSync(paths.devTlsCert(), 'utf8');
-    const request = (options) => tlsRequest({
-      port: service.listenPort,
-      servername: fqdn,
-      caPem: devCertPem,
-      certPem: signed.certPem,
-      keyPem: deviceCsr.privateKeyPem,
-      ...options,
-    });
-
-    // 第一次：进入调度（spawn 为 fake，且断言 helper 脚本针对当前测试进程 pid）
-    const first = await request({ method: 'POST', path: RESTART_PATH });
-    assert.equal(first.status, 202);
-    assert.equal(JSON.parse(first.body).data.mode, 'node', '测试进程是 Node CLI，应为 node 模式');
-    assert.equal(spawnCalls.length, 1);
-    assert.equal(spawnCalls[0].command, '/bin/sh');
-    assert.equal(spawnCalls[0].args[0], '-c');
-    assert.ok(spawnCalls[0].args[1].includes(`kill -TERM ${process.pid}`));
-    assert.equal(spawnCalls[0].options.detached, true);
-
-    // 第二次（10s 去重窗口内）：仍 202，但不得再调度一次
-    const second = await request({ method: 'POST', path: RESTART_PATH });
-    assert.equal(second.status, 202);
-    assert.equal(JSON.parse(second.body).data.mode, 'node');
-    assert.equal(spawnCalls.length, 1, '去重窗口内不得再次调度');
-
-    // 审计：每次请求一条 host-restart（tail 是「最新在前」）
-    const entries = service.audit.tail(20).filter((entry) => entry.action === 'host-restart');
-    assert.equal(entries.length, 2);
-    assert.equal(entries[0].deviceId, 'd_restart');
-    assert.equal(entries[0].result, 'accepted');
-    assert.equal(entries[0].hash, 'deduped');
-    assert.equal(entries[1].hash, 'node');
+    const raw = JSON.parse(readFileSync(paths.config(), 'utf8'));
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'tlsCertFile', 'pushEnabled', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled']) {
+      assert.equal(key in raw, false, `classic 字段 ${key} 不应写回配置`);
+    }
+    const config = loadConfig();
+    assert.equal(config.groupServiceUrl, 'https://relay.example.com:19443');
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'publicPort', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'pushProvider', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled', 'listenPort', 'relayTlsInsecure']) {
+      assert.equal(key in DEFAULT_CONFIG, false, `${key} 不应出现在 DEFAULT_CONFIG`);
+      assert.equal(key in config, false, `${key} 不应出现在加载后的配置`);
+    }
+    assert.deepEqual(config.denyPrefixes, DEFAULT_CONFIG.denyPrefixes);
   } finally {
-    await service?.dispose();
+    await service.dispose();
     home.cleanup();
   }
 });
 
-
-test('RemoteService: 「重启主机」组件关闭时接口 501，且不调度任何进程', async () => {
-  const home = withTempHome();
-  const spawnCalls = [];
-  const fakeSpawn = (command, args, options) => {
-    spawnCalls.push({ command, args, options });
-    return { pid: 1, unref: () => {} };
-  };
-  let service;
+test('RemoteService：updateConfig 落到群体字段并重启运行时（未启用时不连接）', async () => {
+  const { home, service } = await setup();
   try {
-    const { saveConfig } = await import('../lib/config.js');
-    const { RemoteService } = await import('../lib/service.js');
-    const { paths } = await import('../lib/paths.js');
-    assert.equal((await import('../lib/config.js')).DEFAULT_CONFIG.restartHostEnabled, false, '组件默认关闭');
-    saveConfig({
-      enabled: true,
-      relayUrl: 'ws://127.0.0.1:1',
-      relayDomain: 'relay.test',
-      hostId: 'h_restart_off',
-      hostToken: 'tok',
-      relayTlsInsecure: true,
+    const result = await service.updateConfig({
+      enabled: false,
+      hostName: 'My Group Host',
+      requireApproval: false,
+      groupServiceUrl: 'https://relay.example.com:19443',
+      groupPlainPort: 34567,
     });
-    const fakeCtx = {
-      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
-      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
-      effect: (fn) => fn(),
-      on: () => () => {},
-    };
-    service = new RemoteService(fakeCtx, { spawnHostRestart: fakeSpawn, hostRestartEnv: {} });
-    await service.ready;
-    assert.equal(service.status().restart.enabled, false);
-    const { signDeviceCertificate } = await import('../lib/identity.js');
-    const deviceCsr = makeCsr('Restart iPhone');
-    const signed = signDeviceCertificate({ ca: service.ca, csrPem: deviceCsr.csrPem, deviceId: 'd_restart', commonName: 'Restart iPhone' });
-    service.devices.add({ id: 'd_restart', name: 'Restart iPhone', platform: 'ios', serial: signed.serial, notAfter: signed.notAfter });
-    const devCertPem = readFileSync(paths.devTlsCert(), 'utf8');
-    const response = await tlsRequest({
-      port: service.listenPort,
-      servername: 'h_restart_off.relay.test',
-      caPem: devCertPem,
-      certPem: signed.certPem,
-      keyPem: deviceCsr.privateKeyPem,
-      method: 'POST',
-      path: RESTART_PATH,
-    });
-    assert.equal(response.status, 501);
-    assert.equal(JSON.parse(response.body).error.code, 'host-restart-disabled');
-    assert.equal(spawnCalls.length, 0, '组件关闭时绝不能调度重启 helper');
-    const audit = service.audit.tail(20).filter((entry) => entry.action === 'host-restart');
-    assert.equal(audit.length, 1);
-    assert.equal(audit[0].result, 'failed');
-    assert.equal(audit[0].hash, 'disabled');
+    assert.deepEqual(result.errors, []);
+    assert.equal(result.config.hostName, 'My Group Host');
+    assert.equal(result.config.requireApproval, false);
+    assert.equal(result.config.groupServiceUrl, 'https://relay.example.com:19443');
+    assert.equal(result.config.groupPlainPort, 34567);
+    const status = service.status();
+    assert.equal(status.enabled, false);
+    assert.equal(status.group.connected, false);
+    assert.equal(status.config.hostName, 'My Group Host');
+    assert.equal(status.config.groupPlainPort, 34567);
+    assert.equal(status.group.registered, false);
   } finally {
-    await service?.dispose();
+    await service.dispose();
+    home.cleanup();
+  }
+});
+
+test('RemoteService：deleteDevice 只允许删除已撤销设备，并写审计', async () => {
+  const { home, service } = await setup();
+  try {
+    service.devices.add({ id: 'd_del', name: 'Old iPhone', platform: 'ios', groupPublicKey: 'pk-del' });
+    assert.throws(
+      () => service.deleteDevice('d_del'),
+      (error) => error.status === 409 && error.code === 'device-active',
+    );
+    service.devices.revoke('d_del');
+    const { device } = service.deleteDevice('d_del');
+    assert.equal(device.id, 'd_del');
+    assert.equal(service.devices.list().length, 0);
+    assert.ok(service.audit.tail(10).some((entry) => entry.action === 'device-delete' && entry.deviceId === 'd_del'));
+    assert.throws(() => service.deleteDevice('d_del'), (error) => error.status === 404 && error.code === 'device-not-found');
+  } finally {
+    await service.dispose();
+    home.cleanup();
+  }
+});
+
+test('RemoteService：未注册群体服务时重试连接返回 409（无需网络）', async () => {
+  const { home, service } = await setup();
+  try {
+    await assert.rejects(
+      service.retryGroup(),
+      (error) => error.status === 409 && error.code === 'group-not-registered',
+    );
+  } finally {
+    await service.dispose();
     home.cleanup();
   }
 });

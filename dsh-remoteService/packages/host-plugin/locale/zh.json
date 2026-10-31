@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "远程访问",
-    "description": "从手机 App 安全访问这台电脑上的 DSH：设备配对、中继状态、连接配置与审计记录。"
+    "description": "群体服务版主机插件：向部署方 relay 自助注册、出站隧道、loopback 反向代理、群体配对与设备管理。"
   }
 }

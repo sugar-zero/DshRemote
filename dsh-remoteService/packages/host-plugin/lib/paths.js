@@ -1,6 +1,6 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { mkdirSync, readFileSync, writeFileSync, renameSync, existsSync, chmodSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync, renameSync, chmodSync } from 'node:fs';
 
 /** DSH home（$DSH_HOME 或 ~/.dsh）。每次调用时读取，便于测试注入。 */
 export function dshHome() {
@@ -14,16 +14,12 @@ export function remoteDir() {
 export const paths = {
   dir: remoteDir,
   config: () => join(remoteDir(), 'config.json'),
+  /** 主机身份（Ed25519）：只用于稳定的主机指纹展示与配对 SAS。 */
   hostIdentity: () => join(remoteDir(), 'host-identity.json'),
-  deviceCaKey: () => join(remoteDir(), 'device-ca', 'key.pem'),
-  deviceCaCert: () => join(remoteDir(), 'device-ca', 'cert.pem'),
   devices: () => join(remoteDir(), 'devices.json'),
   audit: () => join(remoteDir(), 'audit.jsonl'),
-  devTlsCert: () => join(remoteDir(), 'dev-tls', 'cert.pem'),
-  devTlsKey: () => join(remoteDir(), 'dev-tls', 'key.pem'),
-  pushTokens: () => join(remoteDir(), 'push-tokens.json'),
+  /** 群体版注册结果（0600）：hostId / hostToken / relayDomain / mobilePort / token 公钥 / controlUrl。 */
   groupRegistration: () => join(remoteDir(), 'group.json'),
-  log: () => join(remoteDir(), 'plugin.log'),
 };
 
 export function ensureDir(dir, mode = 0o700) {
@@ -50,14 +46,4 @@ export function writeJson(file, value, mode = 0o600) {
   try { chmodSync(tmp, mode); } catch { /* ignore */ }
   renameSync(tmp, file);
   try { chmodSync(file, mode); } catch { /* ignore */ }
-}
-
-export function writeText(file, text, mode = 0o600) {
-  ensureParent(file);
-  writeFileSync(file, text, { mode });
-  try { chmodSync(file, mode); } catch { /* ignore */ }
-}
-
-export function fileExists(file) {
-  try { return existsSync(file); } catch { return false; }
 }

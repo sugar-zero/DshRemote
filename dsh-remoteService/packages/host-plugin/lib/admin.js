@@ -1,11 +1,13 @@
 import qrcode from 'qrcode-generator';
 import { ADMIN_BASE } from 'dsh-remote-protocol';
-import { pathnameOf, readJsonBody, sendError, sendJson, sendOk } from './http-utils.js';
+import { pathnameOf, readJsonBody, sendError, sendOk } from './http-utils.js';
 
 /**
  * 本机管理 API：/api/remote-access/*
  * 只允许本机已认证的 DSH 浏览器访问（ctx.connection.requestRejection）。
- * 远程代理必须 deny 该前缀。
+ * 远程代理必须 deny 该前缀（群体版 loopback 代理同样 deny）。
+ *
+ * 只提供群体服务版需要的路由：状态 / 配置 / 群体注册与隧道 / 群体配对 / 设备 / 审计。
  */
 export function createAdminHandler({ ctx, service, authDisabled = false }) {
   return async function adminHandler(req, res) {
@@ -89,7 +91,8 @@ export function createAdminHandler({ ctx, service, authDisabled = false }) {
         const device = service.devices.revoke(decodeURIComponent(revokeMatch[1]));
         if (!device) { sendError(res, 404, 'device-not-found', '设备不存在'); return; }
         service.audit.append({ deviceId: device.id, action: 'device-revoke', result: 'ok' });
-        service.disconnectDevice?.(device.id);
+        // 设备撤销后由 GroupHostRuntime 的 device.sync 通知 relay，边缘会话立即失效；
+        // 主机 loopback 代理也会拒绝该设备后续请求。
         sendOk(res, { device });
         return;
       }

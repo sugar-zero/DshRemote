@@ -451,7 +451,7 @@ test('pending 配对：渲染设备/SAS/允许拒绝，允许后 POST 正确 bod
   const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
   const pendingStatus = {
     enabled: true,
-    relay: { url: 'wss://relay.example.com:8443', connected: true },
+    group: { registered: true, connected: true },
     host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
     pairing: {
       active: true,
@@ -514,7 +514,7 @@ test('pending 配对：拒绝后 POST approve:false 并显示已拒绝', async (
         ok: true,
         status: 200,
         async json() {
-          return { ok: true, data: { enabled: true, relay: { connected: true }, pairing: { active: false }, devices: [] } };
+          return { ok: true, data: { enabled: true, group: { registered: true, connected: true }, pairing: { active: false }, devices: [] } };
         },
       };
     }
@@ -524,6 +524,7 @@ test('pending 配对：拒绝后 POST approve:false 并显示已拒绝', async (
   const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
   const pendingStatus = {
     enabled: true,
+    group: { registered: true, connected: true },
     host: { id: 'h_ab12cd34', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
     pairing: {
       active: true,
@@ -556,44 +557,39 @@ test('pending 配对：拒绝后 POST approve:false 并显示已拒绝', async (
   assert.match(collectText(renderer.render()), /已拒绝/);
 });
 
-test('设置页初值优先读 status.config（密钥字段只有 configured 布尔）', () => {
+test('设置页初值优先读 status.config（群体版字段，无 classic 密钥字段）', () => {
   const { clientModule } = setupClient();
   const draft = clientModule.__test.draftFromStatus({
     enabled: true, // 生效状态
-    relay: { url: 'wss://effective.example:8443', connected: true },
-    host: { id: 'h_effective', name: 'Effective Name', domain: 'h_effective.relay.example.com', tls: { certFile: '/dev/cert.pem', valid: true } },
+    host: { id: 'h_effective', name: 'Effective Name', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    group: { registered: true, connected: true, serviceUrl: 'https://effective.example:19443' },
     pairing: { active: true, requiresApproval: false },
     devices: [],
     config: {
       enabled: false,
-      relayUrl: 'wss://cfg.example:8443',
-      relayDomain: 'relay.example.com',
-      hostId: 'h_cfg',
       hostName: 'Cfg Name',
       requireApproval: true,
-      relayTlsInsecure: false,
-      listenPort: 0,
-      tlsCertFile: 'configured',
-      tlsKeyFileConfigured: true,
-      hostTokenConfigured: true,
+      groupServiceUrl: 'https://cfg.example:19443',
+      groupPlainPort: 34567,
+      groupInsecure: false,
     },
   });
 
   assert.equal(draft.enabled, false, 'enabled 以 config.enabled 为准');
-  assert.equal(draft.relayUrl, 'wss://cfg.example:8443');
-  assert.equal(draft.relayDomain, 'relay.example.com');
-  assert.equal(draft.hostId, 'h_cfg');
   assert.equal(draft.hostName, 'Cfg Name');
   assert.equal(draft.requireApproval, true);
-  assert.equal(draft.tlsCertFile, '', 'configured 哨兵不能当作路径回显');
-  assert.equal(draft.tlsCertFileConfigured, true);
-  assert.equal(draft.tlsKeyFileConfigured, true);
-  assert.equal(draft.hostTokenConfigured, true);
-  assert.equal(draft.hostToken, '', 'hostToken 永远不进入 draft 初始值');
+  assert.equal(draft.groupServiceUrl, 'https://cfg.example:19443');
+  assert.equal(draft.groupPlainPort, '34567');
+  assert.equal(draft.groupInsecure, false);
+  assert.equal(draft.groupInviteCode, '', '邀请码永远不进入 draft 初始值');
+  // classic 字段已从草稿中删除
+  for (const key of ['relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'apnsKeyFile', 'restartHostEnabled', 'groupEnabled']) {
+    assert.equal(key in draft, false, `draft 不应再有 ${key}`);
+  }
 
-  const legacy = clientModule.__test.draftFromStatus(null, { relayUrl: 'wss://typed.example' });
-  assert.equal(legacy.relayUrl, 'wss://typed.example', '无 status 时保留上次编辑值');
-  assert.equal(legacy.tlsCertFileConfigured, false);
+  const legacy = clientModule.__test.draftFromStatus(null, { groupServiceUrl: 'https://typed.example', hostName: 'Typed' });
+  assert.equal(legacy.groupServiceUrl, 'https://typed.example', '无 status 时保留上次编辑值');
+  assert.equal(legacy.hostName, 'Typed');
 });
 
 function createFakeConnection() {
@@ -1182,28 +1178,23 @@ test('手机端历史分片：重复安装幂等、配置解析兜底', () => {
   assert.equal(__test.isMobileHistoryJumpRequest(undefined), false, '非对象不算跳转');
 });
 
-test('设置页：「重启主机」组件开关默认关闭，切换后保存会提交 restartHostEnabled', async () => {
+test('设置页：只展示群体服务字段，切换到启用后保存提交 enabled', async () => {
   const baseStatus = {
-    enabled: true,
-    relay: { url: 'wss://relay.example.com:8443', connected: true },
-    host: { id: 'h_ab12cd34', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    enabled: false,
+    group: { registered: false, connected: false, serviceUrl: '', hostId: '', fqdn: '', mobilePort: 0, plainPort: 0, controlUrl: '', lastError: null },
+    host: { id: '', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
     pairing: { active: false },
     devices: [],
-    config: {},
-    restart: { enabled: false },
+    config: { enabled: false, hostName: 'Example Mac', requireApproval: true, groupServiceUrl: '', groupPlainPort: 0, groupInsecure: false },
   };
-  let restartHostEnabled = false;
+  let enabled = false;
   const calls = [];
   const fetchImpl = async (url, options = {}) => {
     calls.push({ url: String(url), options });
-    const data = {
-      ...baseStatus,
-      config: { restartHostEnabled },
-      restart: { enabled: restartHostEnabled },
-    };
+    const data = { ...baseStatus, enabled, config: { ...baseStatus.config, enabled } };
     if (String(url).includes('/config') && options.method === 'POST') {
       const patch = JSON.parse(String(options.body ?? '{}'));
-      if (patch.restartHostEnabled !== undefined) restartHostEnabled = patch.restartHostEnabled === true;
+      if (patch.enabled !== undefined) enabled = patch.enabled === true;
       return { ok: true, status: 200, async json() { return { ok: true, data }; } };
     }
     if (String(url).includes('/audit')) {
@@ -1217,21 +1208,28 @@ test('设置页：「重启主机」组件开关默认关闭，切换后保存�
   await flushAsync();
   tree = renderer.render();
 
-  // 1) 组件开关存在且默认关闭（关 = 不显示 ⏻ 的那一侧）
-  const restartToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
-    && String(element.props['aria-label'] ?? '').includes('重启主机'))[0];
-  assert.ok(restartToggle, '设置页应有「允许手机重启主机 DSH」开关');
-  assert.equal(restartToggle.props['aria-checked'], false, '组件默认关闭');
+  // 群体版设置页不出现 classic/推送/远程重启字段
+  const pageText = collectText(tree);
+  for (const banned of ['中继地址', '中继主机令牌', 'TLS 证书', '推送提醒', 'APNs', '重启主机']) {
+    assert.equal(pageText.includes(banned), false, `设置页不应再出现 classic 字段：${banned}`);
+  }
+  assert.match(pageText, /群体服务/);
+  assert.match(pageText, /服务地址/);
+  assert.match(pageText, /邀请码/);
 
-  // 2) 打开开关后保存 → POST /config { restartHostEnabled: true }
-  restartToggle.props.onClick();
+  // 打开「启用远程访问」开关后保存 → POST /config { enabled: true }
+  const enableToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '').includes('启用远程访问'))[0];
+  assert.ok(enableToggle, '应有「启用远程访问」开关');
+  assert.equal(enableToggle.props['aria-checked'], false, '初始应关闭');
+  enableToggle.props.onClick();
   await flushAsync();
   tree = renderer.render();
   const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
   assert.ok(saveButtons.length >= 1, '应有保存按钮');
-  saveButtons[saveButtons.length - 1].props.onClick();
+  saveButtons.at(-1).props.onClick();
   await flushAsync();
   const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
   assert.ok(configCall, '保存应 POST /config');
-  assert.deepEqual(JSON.parse(String(configCall.options.body)), { restartHostEnabled: true });
+  assert.deepEqual(JSON.parse(String(configCall.options.body)), { enabled: true });
 });

@@ -143,17 +143,16 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
   try {
     relay = await createRelay({
       domain: 'relay.test',
-      dataPort: 0,
       controlPort: 0,
       httpPort: 0,
-      dataHost: '127.0.0.1',
+      listenHost: '127.0.0.1',
       dev: true,
       logger: SILENT,
       mode: 'group',
       group: {
         file: groupFile,
         mobilePort: 11443,
-        // P1 切片 9：注册 API / 后台独立监听，控制面只做 WSS
+        // 注册 API / 后台独立监听，控制面只做 WSS
         apiPort: 0,
         adminPort: 0,
         edge: { enabled: true, port: 0, tls: { cert: cert.cert, key: cert.key }, allowUnauthenticated: false },
@@ -353,14 +352,23 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
   }
 });
 
-test('群体版主机配置校验：group 模式只需要服务地址（classic 字段不再必填）', async () => {
-  const { validateConfig } = await import('../lib/config.js');
-  assert.deepEqual(validateConfig({ enabled: true, groupEnabled: true, groupServiceUrl: 'https://relay.example.com:8443' }), []);
-  assert.match(validateConfig({ enabled: true, groupEnabled: true, groupServiceUrl: '' }).join(';'), /groupServiceUrl/);
-  assert.match(validateConfig({ enabled: true, groupEnabled: true, groupServiceUrl: 'ftp://x' }).join(';'), /https/);
+test('群体版主机配置校验：只需要服务地址（classic 字段已删除）', async () => {
+  const { validateConfig, DEFAULT_CONFIG } = await import('../lib/config.js');
+  assert.deepEqual(validateConfig({ enabled: true, groupServiceUrl: 'https://relay.example.com:8443' }), []);
+  assert.match(validateConfig({ enabled: true, groupServiceUrl: '' }).join(';'), /groupServiceUrl/);
+  assert.match(validateConfig({ enabled: true, groupServiceUrl: 'ftp://x' }).join(';'), /https/);
   assert.deepEqual(
-    validateConfig({ enabled: true, groupEnabled: true, groupServiceUrl: 'http://127.0.0.1:1', groupInsecure: true }),
+    validateConfig({ enabled: true, groupServiceUrl: 'http://127.0.0.1:1', groupInsecure: true }),
     [],
   );
-  assert.match(validateConfig({ enabled: true, relayUrl: '' }).join(';'), /relayUrl/);
+  assert.deepEqual(validateConfig({ enabled: false }), [], '未启用时不做字段校验');
+  // classic/单体配置字段不再存在（relayUrl/hostId/hostToken/证书/推送/远程重启...）
+  for (const key of [
+    'relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'relayTlsInsecure',
+    'tlsCertFile', 'tlsKeyFile', 'listenPort', 'restartHostEnabled',
+    'pushEnabled', 'pushCooldownSeconds', 'pushProvider', 'apnsKeyFile', 'apnsKeyId',
+    'apnsTeamId', 'apnsTopic', 'apnsEnvironment', 'groupEnabled',
+  ]) {
+    assert.equal(key in DEFAULT_CONFIG, false, `${key} 不应再是群体版配置字段`);
+  }
 });

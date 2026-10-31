@@ -48,8 +48,9 @@ export function splitUpgradeResponseHead(buffer, maxBytes = MAX_UPGRADE_RESPONSE
 }
 
 /**
- * DSH 本机 Web 服务的反向代理：
- * - 远程设备只面对主机插件的 TLS 监听；本类只负责把已认证请求转给 127.0.0.1。
+ * DSH 本机 Web 服务的反向代理（群体版 loopback 明文代理复用本类）：
+ * - 上游只可能是 127.0.0.1 的 DSH Web；调用方（GroupHostRuntime）已完成 Host/token/
+ *   设备在册校验，本类只负责把已鉴权请求转给本机 DSH。
  * - 不信任任何客户端 Host/Origin/Forwarded 头；统一重写 Host 并注入本机浏览器 cookie。
  * - deny 前缀（/connect、/oauth、/api/remote-access、/__dsh_remote 等）绝不外发。
  */

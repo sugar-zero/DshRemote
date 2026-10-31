@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "Remote access",
-    "description": "Access DSH on this computer safely from the mobile app: device pairing, relay status, connection settings, and audit log."
+    "description": "Group service host plugin: self-register with your deployment relay, outbound tunnel, loopback reverse proxy, group pairing and device management."
   }
 }

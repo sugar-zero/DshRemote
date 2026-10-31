@@ -1,6 +1,11 @@
 import { paths, readJson, writeJson } from './paths.js';
 
-/** 已配对设备注册表（devices.json，0600）。 */
+/**
+ * 群体版已配对设备注册表（devices.json，0600）。
+ *
+ * 设备身份 = 配对时登记的 P-256 未压缩点公钥（base64url）。没有 mTLS 证书，
+ * 因此没有证书 serial / notAfter 等 classic 字段；访问鉴权用服务端签发的短时 token。
+ */
 export class DeviceStore {
   constructor(file = paths.devices()) {
     this.file = file;
@@ -27,26 +32,41 @@ export class DeviceStore {
     return this.state.devices.find((d) => d.id === id);
   }
 
-  findBySerial(serial) {
-    const wanted = String(serial ?? '').toUpperCase();
-    return this.state.devices.find((d) => d.serial.toUpperCase() === wanted);
+  findByPublicKey(groupPublicKey) {
+    const wanted = String(groupPublicKey ?? '');
+    if (wanted === '') return undefined;
+    return this.state.devices.find((d) => d.groupPublicKey === wanted);
   }
 
+  /**
+   * 登记一台已配对设备。
+   *
+   * 同一把 P-256 公钥重复配对（例如撤销后重新扫码，App 复用同一设备密钥）时，
+   * 复用原记录并重新激活，避免出现两条指向同一密钥的设备记录。
+   *
+   * @param {{id: string, name?: string, platform?: string, groupPublicKey: string, publicKeyFingerprint?: string}} device
+   * @returns {object} 设备记录
+   */
   add(device) {
-    if (!device?.id || !device?.serial) throw new Error('device 需要 id 与 serial');
-    if (this.findBySerial(device.serial)) throw new Error('serial 已存在');
+    const groupPublicKey = typeof device?.groupPublicKey === 'string' ? device.groupPublicKey : '';
+    if (!device?.id || groupPublicKey === '') throw new Error('device 需要 id 与 groupPublicKey');
+    const existing = this.findByPublicKey(groupPublicKey);
+    if (existing) {
+      existing.name = device.name || existing.name;
+      existing.platform = device.platform || existing.platform;
+      existing.revokedAt = null;
+      existing.lastSeenAt = null;
+      this.save();
+      return { ...existing };
+    }
     const record = {
       id: device.id,
       name: device.name || device.id,
       platform: device.platform || 'unknown',
-      serial: String(device.serial).toUpperCase(),
-      publicKeyFingerprint: device.publicKeyFingerprint || '',
       // 群体版设备：P-256 未压缩点公钥（base64url），用于同步给 relay / 本机逐请求鉴权
-      ...(typeof device.groupPublicKey === 'string' && device.groupPublicKey !== ''
-        ? { groupPublicKey: device.groupPublicKey }
-        : {}),
+      groupPublicKey,
+      publicKeyFingerprint: device.publicKeyFingerprint || '',
       createdAt: Date.now(),
-      notAfter: device.notAfter ?? null,
       lastSeenAt: null,
       revokedAt: null,
     };
@@ -55,15 +75,7 @@ export class DeviceStore {
     return record;
   }
 
-  touch(serial) {
-    const device = this.findBySerial(serial);
-    if (!device) return undefined;
-    device.lastSeenAt = Date.now();
-    this.save(); // POC 简单直接写盘；MVP 可节流
-    return device;
-  }
-
-  /** 群体版：按设备 ID 更新 lastSeenAt（无 mTLS 证书可 touch）。 */
+  /** 群体版：按设备 ID 更新 lastSeenAt（没有 mTLS 证书可 touch）。 */
   touchById(id) {
     const device = this.get(id);
     if (!device) return undefined;
@@ -93,10 +105,5 @@ export class DeviceStore {
     const [removed] = this.state.devices.splice(index, 1);
     this.save();
     return removed ? { ...removed } : undefined;
-  }
-
-  isActive(serial) {
-    const device = this.findBySerial(serial);
-    return Boolean(device) && !device.revokedAt && (device.notAfter === null || device.notAfter > Date.now());
   }
 }

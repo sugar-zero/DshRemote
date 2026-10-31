@@ -36,6 +36,7 @@ test('relay connector: hello -> ready -> host.open -> opened -> data frames', as
     getLocalPort: () => echoPort,
     audit: { append() {} },
   });
+  assert.equal(connector.registerPushToken, undefined, '群体版 connector 不应再有推送注册接口');
   connector.start();
 
   // 等 hello
@@ -54,11 +55,63 @@ test('relay connector: hello -> ready -> host.open -> opened -> data frames', as
   assert.equal(dataEvent.frame.payload.toString(), 'ping');
 
   relaySocket.send(new Uint8Array(encodeFrame(FRAME_TYPE.CLOSE, 7)));
-  await waitFor(() => connector.requestCount === undefined ? true : true, 50); // 让 close 处理
+  await new Promise((resolve) => setTimeout(resolve, 50));
   connector.stop();
   wss.close();
   await new Promise((resolve) => httpServer.close(resolve));
   await new Promise((resolve) => echo.close(resolve));
+});
+
+test('relay connector: reconnects after relay drops the socket and re-sends hello', async () => {
+  const { WebSocketServer } = await import('ws');
+  const { RELAY_MSG } = await import('dsh-remote-protocol');
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const port = wss.address().port;
+  const helloHosts = [];
+  let connections = 0;
+  wss.on('connection', (ws) => {
+    connections += 1;
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      const message = JSON.parse(data.toString());
+      if (message.t === RELAY_MSG.HOST_HELLO) {
+        helloHosts.push(message.hostId);
+        ws.send(JSON.stringify({
+          t: RELAY_MSG.HOST_READY,
+          protocolVersion: 1,
+          hostId: message.hostId,
+          hostname: `${message.hostId}.relay.test`,
+          domain: 'relay.test',
+        }));
+        // 第一次连接后主动断开，验证客户端会自动重连并重新握手。
+        if (connections === 1) setTimeout(() => ws.close(), 50);
+      }
+    });
+  });
+
+  const { RelayConnector } = await import('../lib/connector.js');
+  const connector = new RelayConnector({
+    relayUrl: `ws://127.0.0.1:${port}`,
+    hostId: 'h_reconnect',
+    hostToken: 'tok',
+    hostName: 'Test',
+    getLocalPort: () => 1,
+    audit: { append() {} },
+  });
+  connector.start();
+  try {
+    const deadline = Date.now() + 8000;
+    while (!(connections >= 2 && helloHosts.length >= 2) && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 30));
+    }
+    assert.ok(connections >= 2, `应至少重连一次（connections=${connections}）`);
+    assert.ok(helloHosts.length >= 2, '重连后应再次发送 host.hello');
+    assert.equal(helloHosts[0], 'h_reconnect');
+  } finally {
+    connector.stop();
+    await new Promise((resolve) => wss.close(resolve));
+  }
 });
 
 function waitFor(predicate, timeoutMs = 4000) {
@@ -75,59 +128,3 @@ function waitFor(predicate, timeoutMs = 4000) {
     tick();
   });
 }
-
-test('relay connector: reconnects after relay drops the socket and re-registers push tokens', async () => {
-  const { WebSocketServer } = await import('ws');
-  const { RELAY_MSG } = await import('dsh-remote-protocol');
-  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  await new Promise((resolve) => wss.once('listening', resolve));
-  const port = wss.address().port;
-  const helloHosts = [];
-  const registrations = [];
-  let connections = 0;
-  wss.on('connection', (ws) => {
-    connections += 1;
-    ws.on('message', (data, isBinary) => {
-      if (isBinary) return;
-      const message = JSON.parse(data.toString());
-      if (message.t === RELAY_MSG.HOST_HELLO) {
-        helloHosts.push(message.hostId);
-        ws.send(JSON.stringify({
-          t: RELAY_MSG.HOST_READY,
-          protocolVersion: 1,
-          hostId: message.hostId,
-          hostname: `${message.hostId}.relay.test`,
-          domain: 'relay.test',
-        }));
-        // 第一次连接后主动断开，验证客户端会自动重连并重新注册 push token。
-        if (connections === 1) setTimeout(() => ws.close(), 50);
-      }
-      if (message.t === RELAY_MSG.PUSH_REGISTER) registrations.push(message.deviceId);
-    });
-  });
-
-  const { RelayConnector } = await import('../lib/connector.js');
-  const connector = new RelayConnector({
-    relayUrl: `ws://127.0.0.1:${port}`,
-    hostId: 'h_reconnect',
-    hostToken: 'tok',
-    hostName: 'Test',
-    getLocalPort: () => 1,
-    audit: { append() {} },
-  });
-  connector.registerPushToken({ deviceId: 'd_reconnect', provider: 'expo', token: 'ExponentPushToken[rrrrrrrr]' });
-  connector.start();
-  try {
-    const deadline = Date.now() + 8000;
-    while (!(connections >= 2 && registrations.length >= 2) && Date.now() < deadline) {
-      await new Promise((r) => setTimeout(r, 30));
-    }
-    assert.ok(connections >= 2, `应至少重连一次（connections=${connections}）`);
-    assert.ok(helloHosts.length >= 2, '重连后应再次发送 host.hello');
-    assert.ok(registrations.length >= 2, '重连后应重新发送 push.register');
-    assert.equal(helloHosts[0], 'h_reconnect');
-  } finally {
-    connector.stop();
-    await new Promise((resolve) => wss.close(resolve));
-  }
-});

@@ -1,8 +1,8 @@
 /**
- * 本机管理 API：设备记录删除（POST /api/remote-access/devices/:id/delete）。
+ * 本机管理 API（群体版）：设备撤销 / 已撤销设备记录删除。
  *
- * 规则：只允许删除**已撤销**设备；有效设备必须先在设备列表撤销。
- * 用真实 RemoteService（enabled=false，不启动监听）+ 假 req/res 驱动 adminHandler。
+ * 规则：只能删除**已撤销**设备；有效设备必须先撤销。
+ * 用真实 RemoteService（enabled=false，不启动隧道）+ 假 req/res 驱动 adminHandler。
  */
 import test from 'node:test';
 import assert from 'node:assert/strict';
@@ -39,29 +39,35 @@ async function setup() {
   return { home, service, handler };
 }
 
-test('设备删除：已撤销设备可删除，记录消失并写审计', async () => {
+test('管理 API：设备列表 / 撤销 / 删除（已撤销设备）', async () => {
   const { home, service, handler } = await setup();
   try {
-    service.devices.add({ id: 'd_revoked', serial: 'AB01', name: 'Old iPhone', platform: 'ios' });
-    service.devices.revoke('d_revoked');
+    service.devices.add({ id: 'd_test01', name: 'Old iPhone', platform: 'ios', groupPublicKey: 'pk-1' });
+    const list = await request(handler, { method: 'GET', path: '/api/remote-access/devices' });
+    assert.equal(list.status, 200);
+    assert.equal(list.json.data.devices.length, 1);
+    assert.equal(list.json.data.devices[0].groupPublicKey, 'pk-1');
 
-    const result = await request(handler, { method: 'POST', path: '/api/remote-access/devices/d_revoked/delete' });
-    assert.equal(result.status, 200);
-    assert.equal(result.json.ok, true);
-    assert.equal(result.json.data.device.id, 'd_revoked');
-    assert.equal(service.devices.list().length, 0, '设备记录应被删除');
-    assert.ok(service.audit.tail(10).some((entry) => entry.action === 'device-delete' && entry.deviceId === 'd_revoked'));
+    const revoke = await request(handler, { method: 'POST', path: '/api/remote-access/devices/d_test01/revoke' });
+    assert.equal(revoke.status, 200);
+    assert.ok(revoke.json.data.device.revokedAt > 0);
+    assert.ok(service.audit.tail(10).some((entry) => entry.action === 'device-revoke' && entry.deviceId === 'd_test01'));
+
+    const remove = await request(handler, { method: 'POST', path: '/api/remote-access/devices/d_test01/delete' });
+    assert.equal(remove.status, 200);
+    assert.equal(remove.json.data.device.id, 'd_test01');
+    assert.equal(service.devices.list().length, 0);
+    assert.ok(service.audit.tail(10).some((entry) => entry.action === 'device-delete' && entry.deviceId === 'd_test01'));
   } finally {
     await service.dispose();
     home.cleanup();
   }
 });
 
-test('设备删除：有效设备必须拒绝（409），未知设备 404', async () => {
+test('管理 API：有效设备不能删除（409），未知设备 404', async () => {
   const { home, service, handler } = await setup();
   try {
-    service.devices.add({ id: 'd_active', serial: 'AB02', name: 'Active iPhone', platform: 'ios' });
-
+    service.devices.add({ id: 'd_active', name: 'Active iPhone', platform: 'ios', groupPublicKey: 'pk-2' });
     const active = await request(handler, { method: 'POST', path: '/api/remote-access/devices/d_active/delete' });
     assert.equal(active.status, 409);
     assert.equal(active.json.error.code, 'device-active');
@@ -76,16 +82,25 @@ test('设备删除：有效设备必须拒绝（409），未知设备 404', asyn
   }
 });
 
-test('设备删除：同时清理该设备的推送 token', async () => {
+test('管理 API：群体版状态只暴露群字段（不再有推送 / TLS / 中继字段）', async () => {
   const { home, service, handler } = await setup();
   try {
-    service.devices.add({ id: 'd_push', serial: 'AB03', name: 'Push iPhone', platform: 'ios' });
-    service.pushTokens.set('d_push', { deviceId: 'd_push', provider: 'apns', token: 'tok', updatedAt: Date.now() });
-    service.devices.revoke('d_push');
-
-    const result = await request(handler, { method: 'POST', path: '/api/remote-access/devices/d_push/delete' });
+    const result = await request(handler, { method: 'GET', path: '/api/remote-access/status' });
     assert.equal(result.status, 200);
-    assert.equal(service.pushTokens.has('d_push'), false, '删除设备应清理推送 token');
+    const data = result.json.data;
+    assert.equal(typeof data.version, 'string');
+    assert.equal(data.enabled, false);
+    assert.equal(typeof data.group, 'object');
+    assert.equal(data.group.registered, false);
+    assert.equal(typeof data.host.fingerprint, 'string');
+    assert.equal(data.push, undefined, 'status 不应再有 push 字段');
+    assert.equal(data.restart, undefined, 'status 不应再有 restart 字段');
+    assert.equal(data.config.pushEnabled, undefined);
+    assert.equal(data.config.apnsKeyFile, undefined);
+    assert.equal(data.config.relayUrl, undefined);
+    assert.equal(data.config.tlsCertFile, undefined);
+    assert.equal(data.config.groupServiceUrl, '');
+    assert.equal(data.config.requireApproval, true);
   } finally {
     await service.dispose();
     home.cleanup();

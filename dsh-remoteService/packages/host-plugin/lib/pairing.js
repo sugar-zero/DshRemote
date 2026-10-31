@@ -2,17 +2,13 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { hostname } from 'node:os';
 import {
   buildGroupPairingUri,
-  buildPairingUri,
   groupDevicePublicKeyObject,
-  hostFqdn,
   newPairingSecret,
   pairingCode,
   pairingSas,
   safeEqualStrings,
   sha256Base64Url,
 } from 'dsh-remote-protocol';
-import { parseDeviceCsr, signDeviceCertificate } from './identity.js';
-import { hostAddress } from './config.js';
 
 export const PAIRING_TTL_MS = 120_000;
 export const PAIRING_MAX_ATTEMPTS_PER_IP = 10;
@@ -27,15 +23,19 @@ export class PairingError extends Error {
   }
 }
 
-/** 配对会话状态机：创建 → 等待扫码 → pending（桌面确认）/ paired。 */
+/**
+ * 群体版设备配对：桌面生成 QR v2（服务端下发的 hostId/relayDomain/mobilePort）→
+ * 手机提交 P-256 公钥（不再签 CSR/证书）→ 桌面确认后写入设备表（groupPublicKey）。
+ *
+ * 设备身份只来自配对登记的设备公钥；配对密钥一次性且短时有效。
+ */
 export class PairingManager {
-  constructor({ identity, ca, devices, audit, getConfig, getGroupInfo, log = () => {} }) {
+  constructor({ identity, devices, audit, getConfig, getGroupInfo, log = () => {} }) {
     this.identity = identity;
-    this.ca = ca;
     this.devices = devices;
     this.audit = audit;
     this.getConfig = getConfig;
-    /** 群体模式：返回 {hostId, relayDomain, mobilePort}；classic 模式返回 undefined。 */
+    /** 群体模式：返回 {hostId, relayDomain, mobilePort}；未注册时返回 undefined。 */
     this.getGroupInfo = typeof getGroupInfo === 'function' ? getGroupInfo : () => undefined;
     this.log = log;
     this.session = undefined;
@@ -60,7 +60,7 @@ export class PairingManager {
     }
   }
 
-  /** 群体版信息（group 模式已注册时才有）。 */
+  /** 群体版注册信息（未注册时 undefined）。 */
   groupInfo() {
     const info = this.getGroupInfo();
     return info && info.hostId && info.relayDomain ? info : undefined;
@@ -71,31 +71,20 @@ export class PairingManager {
     this.cleanup();
     const config = this.getConfig();
     const groupInfo = this.groupInfo();
+    if (!groupInfo) {
+      throw new PairingError('not-registered', '请先完成群体服务注册，再配对设备', 409);
+    }
     const secret = newPairingSecret();
     const expiresAt = this.now() + PAIRING_TTL_MS;
-    let uri;
-    if (groupInfo) {
-      uri = buildGroupPairingUri({
-        host: `${groupInfo.hostId}.${groupInfo.relayDomain}`,
-        port: groupInfo.mobilePort,
-        secret,
-        hostFingerprint: this.identity.fingerprint,
-        expiresAt,
-        relayDomain: groupInfo.relayDomain,
-        hostId: groupInfo.hostId,
-      });
-    } else {
-      if (!config.hostId || !config.relayDomain) {
-        throw new PairingError('not-configured', '请先配置 hostId / relayDomain 并启用远程访问', 409);
-      }
-      uri = buildPairingUri({
-        host: hostAddress(config),
-        secret,
-        hostFingerprint: this.identity.fingerprint,
-        expiresAt,
-        relayDomain: config.relayDomain,
-      });
-    }
+    const uri = buildGroupPairingUri({
+      host: `${groupInfo.hostId}.${groupInfo.relayDomain}`,
+      port: groupInfo.mobilePort,
+      secret,
+      hostFingerprint: this.identity.fingerprint,
+      expiresAt,
+      relayDomain: groupInfo.relayDomain,
+      hostId: groupInfo.hostId,
+    });
     const session = {
       pairingId: `p_${randomUUID().replace(/-/g, '').slice(0, 10)}`,
       secret,
@@ -158,10 +147,10 @@ export class PairingManager {
   }
 
   /**
-   * App 侧提交配对请求：classic 带一次性密钥 + CSR；group 带一次性密钥 + P-256 公钥（base64url）。
+   * 手机侧提交配对请求：一次性密钥 + P-256 公钥（base64url，未压缩点 65 字节）。
    * @returns {{status:'paired'|'pending', ...}}
    */
-  handlePairRequest({ secret, csrPem, publicKey, deviceName, platform, remoteAddress }) {
+  handlePairRequest({ secret, publicKey, deviceName, platform, remoteAddress }) {
     this.cleanup();
     this.rateLimit(remoteAddress);
     const s = this.session;
@@ -177,47 +166,11 @@ export class PairingManager {
       if (s.attempts >= PAIRING_MAX_ATTEMPTS_PER_IP) this.cancel();
       throw new PairingError('invalid-secret', '配对密钥不正确', 403);
     }
-    if (this.groupInfo()) return this.requestGroupPairing(s, { publicKey, deviceName, platform });
-    const parsed = parseDeviceCsr(csrPem);
-    if (parsed.engine === 'js') {
-      this.log('openssl 不可用，已回退纯 JS 校验 EC 设备 CSR（Windows 无需安装 openssl）');
-    }
-    const sas = pairingSas(s.secret, this.identity.publicKeyDerB64, parsed.publicKeyFingerprint);
-    const temp = {
-      deviceId: `d_${randomBytes(6).toString('hex')}`,
-      name: String(deviceName || '新设备').slice(0, 80),
-      platform: String(platform || 'unknown').slice(0, 20),
-      csrPem,
-      publicKeyFingerprint: parsed.publicKeyFingerprint,
-    };
-    if (!s.requiresApproval) return this.issue(s, temp);
-
-    s.status = 'pending';
-    s.sas = sas;
-    s.temp = temp;
-    s.ticket = randomUUID();
-    this.audit.append({ action: 'pairing', resource: s.pairingId, result: 'pending-approval' });
-    return { status: 'pending', ticket: s.ticket, sas, expiresAt: s.expiresAt, hostName: this.hostName(), hostFingerprint: this.identity.fingerprint };
-  }
-
-  /** 桌面端确认/拒绝。 */
-  approve({ pairingId, ticket, approve }) {
-    this.cleanup();
-    const s = this.session;
-    if (!s || s.pairingId !== pairingId) throw new PairingError('no-such-pairing', '配对会话不存在或已过期', 404);
-    if (s.status !== 'pending' || !s.temp) throw new PairingError('not-pending', '没有等待确认的配对请求', 409);
-    if (ticket && s.ticket !== ticket) throw new PairingError('bad-ticket', '配对确认票据不正确', 403);
-    if (approve === false) {
-      s.status = 'denied';
-      s.resultKeptUntil = this.now() + PAIRING_TTL_MS;
-      this.audit.append({ action: 'pairing', resource: s.pairingId, result: 'denied' });
-      return { status: 'denied' };
-    }
-    return this.issue(s, s.temp);
+    return this.requestGroupPairing(s, { publicKey, deviceName, platform });
   }
 
   /**
-   * 群体版配对：登记设备 P-256 公钥（不签证书）；需要桌面确认时同 classic 流程。
+   * 登记设备 P-256 公钥（不签证书）；需要桌面确认时进入 pending。
    * @param {any} session
    * @param {{publicKey?: string, deviceName?: string, platform?: string}} input
    */
@@ -237,7 +190,7 @@ export class PairingManager {
       publicKeyFingerprint: fingerprint,
     };
     const sas = pairingSas(session.secret, this.identity.publicKeyDerB64, key);
-    if (!session.requiresApproval) return this.issue(session, temp);
+    if (!session.requiresApproval) return this.issueGroup(session, temp);
     session.status = 'pending';
     session.sas = sas;
     session.temp = temp;
@@ -253,41 +206,20 @@ export class PairingManager {
     };
   }
 
-  issue(session, temp) {
-    if (this.groupInfo() && temp.publicKey) return this.issueGroup(session, temp);
-    const signed = signDeviceCertificate({
-      ca: this.ca,
-      csrPem: temp.csrPem,
-      deviceId: temp.deviceId,
-      commonName: temp.name,
-      days: 30,
-    });
-    if (signed.engine === 'js') {
-      this.log('openssl 不可用或签发失败，已回退纯 JS 签发 EC 设备证书');
+  /** 桌面端确认/拒绝。 */
+  approve({ pairingId, ticket, approve }) {
+    this.cleanup();
+    const s = this.session;
+    if (!s || s.pairingId !== pairingId) throw new PairingError('no-such-pairing', '配对会话不存在或已过期', 404);
+    if (s.status !== 'pending' || !s.temp) throw new PairingError('not-pending', '没有等待确认的配对请求', 409);
+    if (ticket && s.ticket !== ticket) throw new PairingError('bad-ticket', '配对确认票据不正确', 403);
+    if (approve === false) {
+      s.status = 'denied';
+      s.resultKeptUntil = this.now() + PAIRING_TTL_MS;
+      this.audit.append({ action: 'pairing', resource: s.pairingId, result: 'denied' });
+      return { status: 'denied' };
     }
-    const device = this.devices.add({
-      id: temp.deviceId,
-      name: temp.name,
-      platform: temp.platform,
-      serial: signed.serial,
-      publicKeyFingerprint: signed.devicePublicKeyFingerprint,
-      notAfter: signed.notAfter,
-    });
-    session.status = 'paired';
-    session.result = {
-      status: 'paired',
-      deviceId: device.id,
-      deviceName: device.name,
-      serial: device.serial,
-      certPem: signed.certPem,
-      caPem: this.ca.certPem,
-      notAfter: signed.notAfter,
-      hostName: this.hostName(),
-      hostFingerprint: this.identity.fingerprint,
-    };
-    session.resultKeptUntil = this.now() + 5 * 60 * 1000;
-    this.audit.append({ deviceId: device.id, action: 'pairing', resource: session.pairingId, result: 'paired', hash: signed.devicePublicKeyFingerprint });
-    return session.result;
+    return this.issueGroup(s, s.temp);
   }
 
   /** 群体版签发：把 P-256 公钥写成设备记录（无证书），并标记配对完成。 */
@@ -297,10 +229,8 @@ export class PairingManager {
       id: temp.deviceId,
       name: temp.name,
       platform: temp.platform,
-      serial: temp.publicKeyFingerprint.toUpperCase(),
-      publicKeyFingerprint: temp.publicKeyFingerprint,
       groupPublicKey: temp.publicKey,
-      notAfter: null,
+      publicKeyFingerprint: temp.publicKeyFingerprint,
     });
     session.status = 'paired';
     session.result = {
