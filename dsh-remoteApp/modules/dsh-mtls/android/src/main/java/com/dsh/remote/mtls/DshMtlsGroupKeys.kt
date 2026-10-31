@@ -1,14 +1,11 @@
 // DshMtlsGroupKeys.kt
 // DSH Remote — 群体服务版（A 模式）设备密钥：AndroidKeyStore P-256 + challenge 签名。
 //
-// 与主线 mTLS 身份（DshMtlsCsr，用于 B2 形态）**并存**：
-//   - 群体版不签设备证书，只把 P-256 **公钥**（未压缩点 65B）登记到主机/relay；
-//   - 之后用私钥签 relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
+// 群体版不签设备证书，只把 P-256 **公钥**（未压缩点 65B）登记到主机/relay，
+// 之后用私钥签 relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
 //
 // AndroidKeyStore 不能导出私钥；公钥不是秘密，因此以 base64url(65B) 缓存在本机
 // SharedPreferences（按 alias），供 getGroupDevicePublicKey 读取。
-//
-// ⚠️ 本机无 Android SDK，未编译验证；需 `npx expo run:android` 在设备上验证。
 
 package com.dsh.remote.mtls
 

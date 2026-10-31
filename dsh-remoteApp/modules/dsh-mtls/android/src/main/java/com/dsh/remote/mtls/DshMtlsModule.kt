@@ -1,37 +1,25 @@
 // DshMtlsModule.kt
-// DSH Remote — POC Expo Module entry point: mTLS WebView + Keystore identity.
+// DSH Remote — 原生模块入口（群体服务版 / A 模式，token 鉴权）。
 //
-// ⚠️ STATUS: POC / NOT COMPILED on this machine (no Android SDK/Xcode).
-// Reviewed only; build on the user's Mac with `npx expo run:android`.
+// 历史原因保留模块名 `DSHMTLS`（减少工程改动），但模块内部只保留群体版能力：
+//   generateGroupDeviceKey / getGroupDevicePublicKey / signGroupChallenge /
+//   clearGroupDeviceKey / setSessionCookie / groupHttpFetch / clearWebCache
 //
-// JS surface (modules/dsh-mtls/src/index.ts) is identical to iOS:
-//   setClientIdentity / getClientIdentity / clearClientIdentity
-//   importP12 / generateCsr (AndroidKeyStore P-256 + PKCS#10) / installCertificate
-//   requestWithClientCert (push token / device list) / getDiagnostics
-//   <DshMtlsWebView url clientIdentityLabel ... />
-//
-// Android realities the next milestone must handle (documented, not hidden):
-//   - AndroidKeyStore cannot import externally generated private keys. The final
-//     design generates the key pair INSIDE AndroidKeyStore (KeyGenParameterSpec,
-//     PURPOSE_SIGN, EC P-256) and installs the host-signed certificate through
-//     the system KeyChain installer (user confirmation), then presents the
-//     AndroidKeyStore key + certificate chain in onReceivedClientCertRequest.
-//   - This POC supports KeyChain-imported identities (PKCS#12 via the system
-//     installer) as a dev path; see DshMtlsIdentityStore.
+// classic/单体 mTLS 原生能力（CSR / PKCS#12 / 设备证书安装 / 原生 mTLS WebView /
+// HttpsURLConnection 客户端证书请求）已从 App 删除：群体版设备身份只来自
+// AndroidKeyStore 里的 P-256 设备密钥 + relay 签发的短时 token。
 
 package com.dsh.remote.mtls
 
-import android.content.Intent
 import android.webkit.CookieManager
 import android.webkit.WebStorage
-import android.webkit.WebView
 import android.webkit.WebViewDatabase
 import expo.modules.kotlin.exception.CodedException
 import expo.modules.kotlin.modules.Module
 import expo.modules.kotlin.modules.ModuleDefinition
 
-/** Thrown when the POC cannot import/install a client identity. */
-class DshMtlsIdentityException(message: String) : CodedException(message)
+/** Thrown when the native group-key/cookie API gets invalid input or is unavailable. */
+class DshMtlsGroupException(message: String) : CodedException(message)
 
 class DshMtlsModule : Module() {
   override fun definition() = ModuleDefinition {
@@ -39,73 +27,14 @@ class DshMtlsModule : Module() {
 
     OnCreate {
       appContext.reactContext?.let {
-        DshMtlsIdentityStore.initialize(it)
         DshMtlsGroupKeys.initialize(it)
       }
     }
 
-    // MARK: - Identity configuration
-
-    Function("setClientIdentity") { label: String ->
-      DshMtlsIdentityStore.configuredLabel = label
-    }
-
-    Function("clearClientIdentity") {
-      DshMtlsIdentityStore.configuredLabel = null
-    }
-
-    AsyncFunction("getClientIdentity") {
-      DshMtlsIdentityStore.configuredLabel
-    }
-
-    // MARK: - POC identity import (dev helper)
-
-    AsyncFunction("importP12") { p12Base64: String, _password: String, label: String? ->
-      val context = appContext.reactContext
-        ?: throw DshMtlsIdentityException("POC: React context 不可用，无法导入设备身份。")
-      val resolvedLabel = label ?: DshMtlsIdentityStore.configuredLabel
-      // The system KeyChain installer prompts the user for the PKCS#12 password,
-      // so `password` is currently only validated for presence.
-      val intent: Intent = DshMtlsIdentityStore.createP12InstallIntent(context, p12Base64)
-      val activity = appContext.currentActivity
-        ?: throw DshMtlsIdentityException("POC: 当前没有 Activity，无法打开证书安装界面。")
-
-      activity.runOnUiThread {
-        activity.startActivity(intent)
-      }
-      if (resolvedLabel != null) {
-        DshMtlsIdentityStore.configuredLabel = resolvedLabel
-      }
-      mapOf(
-        "imported" to false,
-        "pendingUserConfirmation" to true,
-        "configuredIdentityLabel" to (resolvedLabel ?: DshMtlsIdentityStore.configuredLabel),
-        "identityPresent" to false,
-        "subject" to null,
-        "notAfter" to null,
-        "nativeBuild" to DshMtlsIdentityStore.nativeBuild
-      )
-    }
-
-    // MARK: - Device identity: AndroidKeyStore key + CSR + certificate install
-
-    AsyncFunction("generateCsr") { commonName: String ->
-      val result = DshMtlsCsr.generate(commonName)
-      mapOf("csrPem" to result.csrPem, "label" to result.alias)
-    }
-
-    AsyncFunction("installCertificate") { certPem: String, label: String? ->
-      val context = appContext.reactContext
-        ?: throw DshMtlsIdentityException("React context 不可用，无法安装设备证书。")
-      val alias = label ?: DshMtlsIdentityStore.configuredLabel
-        ?: throw DshMtlsIdentityException("没有可用的设备身份 alias。")
-      DshMtlsIdentityStore.installCertificate(context, certPem, alias)
-    }
-
     // MARK: - 群体服务版（A 模式）：P-256 设备密钥 / challenge 签名 / 会话 cookie
     //
-    // 与主线 mTLS 身份并存：群体版不签设备证书，只登记 P-256 公钥，之后用私钥签
-    // relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
+    // 群体版不签设备证书，只登记 P-256 公钥，之后用私钥签 relay challenge 换短时
+    // token（docs/group-service-design.zh.md §7）。
 
     /// 生成或复用群体版 P-256 设备密钥；返回 base64url 未压缩点公钥（65B）。
     AsyncFunction("generateGroupDeviceKey") { label: String? ->
@@ -113,6 +42,7 @@ class DshMtlsModule : Module() {
       mapOf(
         "publicKey" to result.publicKey,
         "label" to result.label,
+        "secureEnclave" to false,
         "reused" to result.reused
       )
     }
@@ -136,12 +66,12 @@ class DshMtlsModule : Module() {
     /// 不设置 Domain 即 host-only；Secure / HttpOnly / SameSite=Strict 由 CookieManager 字符串写入。
     AsyncFunction("setSessionCookie") { options: Map<String, Any?> ->
       val url = options["url"] as? String
-        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
+        ?: throw DshMtlsGroupException("setSessionCookie 需要 { url, name, value }")
       val name = options["name"] as? String
-        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
+        ?: throw DshMtlsGroupException("setSessionCookie 需要 { url, name, value }")
       val value = options["value"] as? String
-        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
-      if (name.isEmpty()) throw DshMtlsIdentityException("setSessionCookie 的 name 不能为空")
+        ?: throw DshMtlsGroupException("setSessionCookie 需要 { url, name, value }")
+      if (name.isEmpty()) throw DshMtlsGroupException("setSessionCookie 的 name 不能为空")
       val maxAgeSeconds = (options["maxAgeSeconds"] as? Number)?.toLong() ?: (15 * 60L)
       val cookie = buildString {
         append(name)
@@ -155,37 +85,65 @@ class DshMtlsModule : Module() {
       true
     }
 
-    // MARK: - Authenticated HTTPS (client certificate)
-
-    AsyncFunction("requestWithClientCert") { options: Map<String, Any?> ->
-      val context = appContext.reactContext
-        ?: throw DshMtlsIdentityException("React context 不可用，无法发起 mTLS 请求。")
-      DshMtlsNetwork.request(context, options)
-    }
-
-    // MARK: - Diagnostics
-
-    AsyncFunction("getDiagnostics") {
-      DshMtlsIdentityStore.diagnostics(appContext.reactContext)
-    }
-
-    // MARK: - WebView bridge / cache
-
-    /// 在 UI 线程执行一段 JS（App 点击推送后用它打开对应会话）。
-    AsyncFunction("evaluateJavaScript") { script: String ->
-      val view = DshMtlsWebView.activeView?.get()
-      if (view == null) {
-        false
-      } else {
-        view.evaluateJavaScript(script)
-        true
+    /// 带 `__Host-dsh_session` 会话 cookie 的 HTTPS 请求（群体版隧道内的已鉴权内部接口）。
+    ///
+    /// relay 边缘对普通隧道流量只校验 `__Host-dsh_session` cookie；JS `fetch` 不会带上
+    /// WebView CookieManager 里的 cookie，所以由原生显式设置 Cookie 头发请求。
+    /// 只允许 https；返回 `{ status, body }`（body 为原始文本，JSON 解析交给 JS）。
+    AsyncFunction("groupHttpFetch") { options: Map<String, Any?> ->
+      val urlString = options["url"] as? String
+        ?: throw DshMtlsGroupException("groupHttpFetch 需要 { url, token, method? }")
+      val parsed = java.net.URL(urlString)
+      if (!parsed.protocol.equals("https", ignoreCase = true)) {
+        throw DshMtlsGroupException("groupHttpFetch 只允许 https 地址")
+      }
+      if (parsed.host.isNullOrEmpty()) {
+        throw DshMtlsGroupException("groupHttpFetch 的 url 缺少主机名")
+      }
+      val token = options["token"] as? String
+      if (token.isNullOrEmpty()) {
+        throw DshMtlsGroupException("groupHttpFetch 需要有效的会话 token")
+      }
+      // token 会进入 Cookie / Authorization 头：只允许 base64url 安全字符（防头注入）。
+      if (!Regex("^[A-Za-z0-9._~+/=-]+$").matches(token)) {
+        throw DshMtlsGroupException("groupHttpFetch 的 token 含非法字符")
+      }
+      val method = ((options["method"] as? String) ?: "GET").uppercase()
+      if (method != "GET" && method != "POST") {
+        throw DshMtlsGroupException("groupHttpFetch 只支持 GET / POST")
+      }
+      val timeoutMs = (options["timeoutMs"] as? Number)?.toInt() ?: 15_000
+      val connection = parsed.openConnection() as javax.net.ssl.HttpsURLConnection
+      try {
+        connection.requestMethod = method
+        connection.connectTimeout = timeoutMs
+        connection.readTimeout = timeoutMs
+        connection.instanceFollowRedirects = false
+        connection.setRequestProperty("Accept", "application/json")
+        connection.setRequestProperty("Accept-Encoding", "identity")
+        connection.setRequestProperty("Authorization", "Bearer $token")
+        // relay 边缘按 cookie 放行（HttpOnly 只对浏览器有意义；这里与 Bearer 同一 token）。
+        connection.setRequestProperty("Cookie", "__Host-dsh_session=$token")
+        val body = options["body"] as? String
+        if (body != null && body.isNotEmpty()) {
+          connection.doOutput = true
+          connection.setRequestProperty("Content-Type", "application/json")
+          connection.outputStream.use { it.write(body.toByteArray(Charsets.UTF_8)) }
+        }
+        val status = connection.responseCode
+        val stream = if (status in 200..299) connection.inputStream else connection.errorStream
+        val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() } ?: ""
+        mapOf("status" to status, "body" to text)
+      } finally {
+        connection.disconnect()
       }
     }
 
-    /// 清理 WebView 的 Cookie / 本地存储 / 表单数据 / HTTP 认证缓存，并清空 HTTP 缓存
-    /// （磁盘 + 内存）。`WebView.clearCache(true)` 是 app 级 API（清除所有 WebView 实例的缓存），
-    /// 但必须在 UI 线程调用，所以这里 post 到活跃 WebView 的主线程队列。
-    /// 没有活跃 WebView 时也能清理 Cookie/存储（返回 true）。
+    // MARK: - WebView cache
+
+    /// 清理 WebView 的 Cookie / 本地存储 / 表单数据 / HTTP 认证缓存。
+    /// HTTP 磁盘缓存与 Cookie 的清理由 CookieManager/WebStorage/WebViewDatabase 完成；
+    /// 没有活跃 WebView 实例时无法调用 app 级 clearCache，下次页面重建即可生效。
     AsyncFunction("clearWebCache") {
       CookieManager.getInstance().removeAllCookies(null)
       CookieManager.getInstance().flush()
@@ -193,42 +151,7 @@ class DshMtlsModule : Module() {
       appContext.reactContext?.let { context ->
         WebViewDatabase.getInstance(context).clearHttpAuthUsernamePassword()
       }
-      // DshMtlsWebView（ExpoView）内部持有唯一的 android.webkit.WebView 子 View；
-      // 拿到它只为在 UI 线程调用 app 级的 clearCache/clearFormData（两者都作用于全部 WebView）。
-      // 包一层 try/catch：渲染进程已回收/WebView 不可用时不要把异常抛到 UI 线程。
-      DshMtlsWebView.activeView?.get()?.let { hostView ->
-        hostView.post {
-          for (index in 0 until hostView.childCount) {
-            val child = hostView.getChildAt(index)
-            if (child is WebView) {
-              try {
-                child.clearCache(true)
-                child.clearFormData()
-              } catch (_: Exception) {
-                /* WebView 已不可用：Cookie/存储已清理，HTTP 缓存下次重建即可 */
-              }
-              break
-            }
-          }
-        }
-      }
       true
-    }
-
-    // MARK: - Custom mTLS-aware WebView
-
-    View(DshMtlsWebView::class) {
-      Prop("url") { view: DshMtlsWebView, url: String? ->
-        view.applyUrl(url)
-      }
-      Prop("clientIdentityLabel") { view: DshMtlsWebView, label: String? ->
-        view.clientIdentityLabel = label
-      }
-      Prop("injectedJavaScript") { view: DshMtlsWebView, script: String? ->
-        view.applyInjectedJavaScript(script)
-      }
-
-      Events("onMessage", "onLoadingStart", "onLoadingFinish", "onLoadingError")
     }
   }
 }

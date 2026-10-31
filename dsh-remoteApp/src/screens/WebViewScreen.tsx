@@ -1,43 +1,35 @@
 /**
- * WebViewScreen — the main DSH UI surface over the relay tunnel.
+ * WebViewScreen — 群体服务版主界面：通过 relay 隧道加载 DSH Web UI。
  *
- * Loads `https://<host>/?dsh_mobile=1` (evaluation §4.6: the host's client
- * plugin injects the mobile layout; no app update needed).
+ * Loads `https://<hostId>.<relayDomain>:<port>/?dsh_mobile=1`：host 端 client plugin
+ * 注入手机布局（mobileWebShell 也会注入，见 src/lib/mobileWebShell.ts）。
  *
- * ┌─────────────────────────────────────────────────────────────────────────┐
- * │ TODO(mTLS): react-native-webview CANNOT present a TLS client certificate │
- * │ on iOS, and only rarely on Android. After pairing, the host requires mTLS │
- * │ on every path except /__dsh_remote/pair, so this WebView will receive 403 │
- * │ until it is replaced by the custom native view.                           │
- * │                                                                          │
- * │ Integration point (modules/dsh-mtls):                                    │
- * │   1. Side-effect-import the module and configure the identity label:     │
- * │        setClientIdentity(connection.certRef)                             │
- * │   2. Use the native view instead of react-native-webview:                │
- * │        const NativeView = getDshMtlsWebView()                            │
- * │        <NativeView url={webUiUrl(host)}                                  │
- * │                   clientIdentityLabel={connection.certRef} />            │
- * │   3. The Swift side implements                                     │
- * │        webView(_:didReceive:completionHandler:) for                  │
- * │        NSURLAuthenticationMethodClientCertificate and answers with  │
- * │        URLCredential(identity: certificates: persistence:).          │
- * │   4. The Kotlin side implements                                     │
- * │        WebViewClient.onReceivedClientCertRequest →                    │
- * │        request.proceed(privateKey, certChain) from the Keystore.      │
- * │                                                                          │
- * │ Until step 2 lands, this screen runs react-native-webview and shows a    │
- * │ warning banner so the POC failure mode is explicit.                      │
- * └─────────────────────────────────────────────────────────────────────────┘
+ * 认证（群体服务版 / A 模式）：
+ *   1. challenge → 原生用 P-256 设备密钥签名 → 短时 token（15–30 分钟）；
+ *   2. token 由原生模块写成 `__Host-dsh_session` cookie（host-only / Secure /
+ *      SameSite=Strict），WebView 请求自动携带；
+ *   3. 进入主机 / 回前台 / 每 30s 续期；缓存有效时只重放 cookie，不重复请求。
+ *
+ * 本屏只包含群体版能力（无原生 mTLS WebView / 设备证书 / 推送跳会话）。
+ *
+ * 「重启主机 DSH」：进入主机后经原生 `groupHttpFetch` 拉 `GET /__dsh_remote/status`
+ * （带 `__Host-dsh_session` cookie，relay 边缘按 cookie 放行），`restart.enabled === true`
+ * 时顶栏显示 ⏻；点击二次确认 → `POST /__dsh_remote/restart` → 202 后轮询 status 探活
+ * （每 1.5s、单次 3s、最多 30s）→ 主机恢复后自动 reload。全程不使用设备证书 / mTLS。
+ *
+ * WebSocket 断线自动恢复：`mobileWebShell` 对每个 WebSocket 各上报 `dsh-ws-close`，
+ * host 保存设置/短暂断开 Upgrade 时同一瞬间可能来多个 close —— 必须去抖（同一波只算
+ * 一次恢复尝试，预算只在自动 reload 后仍未恢复时累加），否则会被多个 close 一次性
+ * 耗尽预算而不再自动重连。见下方 `WsRecoveryState` / `WS_*` 常量。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState, type ComponentType, type Ref } from 'react';
+import { useCallback, useEffect, useRef, useState, type ComponentType, type Ref } from 'react';
 import {
   ActivityIndicator,
   Alert,
   AppState,
   Linking,
   Platform,
-  Pressable,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -46,37 +38,26 @@ import {
 import { WebView, type WebViewNavigation, type WebViewProps } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { groupOrigin, groupWebUiUrl, restartHostUrl, webUiUrl } from '../lib/protocol';
+import { groupOrigin, groupRestartUrl, groupStatusUrl, groupWebUiUrl } from '../lib/protocol';
 import { MOBILE_WEB_SHELL_JS } from '../lib/mobileWebShell';
-import { connectionAuthMode, connectionPort, type StoredConnection } from '../lib/store';
-import { ensureGroupSessionIfNeeded, GroupPairingError, hasValidGroupSession } from '../lib/group';
+import type { StoredConnection } from '../lib/store';
 import {
-  DshMtlsUnavailableError,
-  evaluateJavaScript,
-  getDshMtlsWebView,
-  requestWithClientCert,
-  setClientIdentity,
-  type DshMtlsWebViewErrorEvent,
-  type DshMtlsWebViewLoadingEvent,
-  type DshMtlsWebViewMessageEvent,
-} from '../../modules/dsh-mtls/src';
-import { colors, radii, sharedStyles, spacing, typography } from '../theme';
+  ensureGroupSessionIfNeeded,
+  GroupPairingError,
+  groupAuthorizedFetch,
+  hasValidGroupSession,
+} from '../lib/group';
+import { colors, radii, spacing, typography } from '../theme';
 
 interface WebViewScreenProps {
   connection: StoredConnection;
   onClose: () => void;
-  /** 打开 App 设置页（版本/通知/缓存/设备与安全入口）。 */
+  /** 打开 App 设置页（版本/缓存/设备与安全入口）。 */
   onOpenSettings: () => void;
   /** 设置页清理缓存后递增，触发 WebView 重新加载。 */
   reloadToken?: number;
   /** 当前 WebView 是否在屏幕上可见（隐藏时常驻，用于判断何时重连）。 */
   isVisible?: boolean;
-  /** 点击推送后要打开的会话（由 App 传入；WebView 加载完成后注入 JS 执行）。 */
-  openSessionRequest?: { sessionId: string; nonce: number } | null;
-  /** 已尝试注入打开会话脚本（App 用来清空请求，避免重复执行）。 */
-  onOpenSessionHandled?: (nonce: number) => void;
-  /** DSH 页面上报的当前会话（host + sessionId，用于前台通知的“当前会话抑制”）。 */
-  onCurrentSession?: (info: { host: string; sessionId: string } | null) => void;
   /**
    * DSH 页面里的外链（target=_blank / window.open）：由 App 决定打开方式。
    * 传入时用 App 内嵌浏览器打开；不传时退回系统浏览器（Linking.openURL）。
@@ -99,20 +80,35 @@ const STATUS_COLORS: Record<ConnectionStatus, string> = {
 };
 
 // ---------------------------------------------------------------------------
-// 「重启主机 DSH」：请求 + 等待恢复
+// 「重启主机 DSH」：请求 + 等待恢复（群体版：带 cookie 的原生请求，不用 mTLS）
 // ---------------------------------------------------------------------------
 
 /** 重启请求被接受后，轮询状态探活的节奏：每 1.5s 一次、单次 3s 超时、最多等 30s。 */
 const HOST_RESTART_POLL_INTERVAL_MS = 1500;
 const HOST_RESTART_PROBE_TIMEOUT_MS = 3000;
 const HOST_RESTART_POLL_TIMEOUT_MS = 30_000;
+/** 组件开关动态刷新：进入主机后每 10s 拉一次 status（Host 设置变化无需退出重进）。 */
+const HOST_STATUS_REFRESH_INTERVAL_MS = 10_000;
 /** 发起重启请求本身的最长等待（主机应尽快回 202；等不到就按失败提示）。 */
 const HOST_RESTART_REQUEST_TIMEOUT_MS = 10_000;
+/** 读取「重启主机」组件开关的 status 请求超时（进入主机时探一次，失败保持隐藏）。 */
+const HOST_STATUS_REQUEST_TIMEOUT_MS = 4000;
 
-/** `/__dsh_remote/status`（设备 mTLS）：进入主机时的探活与重启恢复探测共用。 */
-function hostStatusUrl(host: string): string {
-  return `https://${host}/__dsh_remote/status`;
-}
+// ---------------------------------------------------------------------------
+// WebSocket 断开后的自动恢复（去抖 + 预算）
+// ---------------------------------------------------------------------------
+
+/**
+ * 同一波 close 去抖：host 保存设置/短暂断开 Upgrade 时可能在同一瞬间断开多个
+ * WebSocket（mobileWebShell 对每个 socket 各上报一次 `dsh-ws-close`），
+ * 2s 内的多个 close 只算一次恢复尝试（配合 `pending` 忽略排队期间的后续 close）。
+ */
+const WS_CLOSE_DEBOUNCE_MS = 2000;
+/** 自动恢复预算：60s 窗口内最多自动 reload 2 次；只有 reload 后仍未恢复才累加。 */
+const WS_RECOVERY_WINDOW_MS = 60_000;
+const WS_RECOVERY_MAX_RELOADS = 2;
+/** 收到 close 后先等一小段让 DSH 自己重连；仍未恢复再 reload 页面。 */
+const WS_RECOVERY_DELAY_MS = 600;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
@@ -120,74 +116,94 @@ function sleep(ms: number): Promise<void> {
   });
 }
 
+function isRecordValue(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
 /**
- * 给原生 mTLS 请求加超时。原生 `requestWithClientCert` 没有 Abort 通道：超时后
- * 只是不再等待结果，请求会在原生侧自行结束（不影响后续探测）。
+ * WebSocket 自动恢复的预算状态（用 ref 保存，close 事件可能同一 tick 连续到达，
+ * 只看 React state 会读到旧值）。
  */
-function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message: string): Promise<T> {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const timeout = new Promise<never>((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
-  });
-  return Promise.race([promise, timeout]).finally(() => {
-    if (timer) clearTimeout(timer);
-  });
+interface WsRecoveryState {
+  /** 已排队的恢复 reload（true 时忽略同一波后续 close）。 */
+  pending: boolean;
+  /** 当前这次 reload 是否由自动恢复触发（loadEnd 据此决定是否保留预算）。 */
+  recoveryReload: boolean;
+  /** 自上次 close 之后已经自动 reload 过：下一次 close = reload 后仍未恢复。 */
+  reloadedSinceClose: boolean;
+  /** 60s 窗口内已消耗的自动 reload 次数。 */
+  reloads: number;
+  /** 预算窗口起点（0 = 未开始）。 */
+  windowStart: number;
+  /** 上一次处理 close 的时间（同一波去抖）。 */
+  lastCloseAt: number;
+}
+
+/**
+ * `/__dsh_remote/status` 的 `data.restart.enabled`：只有明确返回 `true` 才显示顶栏 ⏻。
+ * （Host 设置 → 远程访问 → 组件 → 允许手机重启主机 DSH，默认关闭。）
+ */
+function restartEnabledFromStatusBody(body: unknown): boolean {
+  const envelope = isRecordValue(body) ? body : null;
+  const data = envelope && envelope.ok === true && isRecordValue(envelope.data) ? envelope.data : null;
+  const restart = data && isRecordValue(data.restart) ? data.restart : null;
+  return restart !== null && restart.enabled === true;
 }
 
 /** 从重启失败的响应体里取主机返回的错误信息（`{ok:false,error:{code,message}}`）。 */
-function restartFailureDetail(body: string): string {
-  try {
-    const parsed = JSON.parse(body) as { error?: { code?: unknown; message?: unknown } };
-    if (typeof parsed.error?.message === 'string' && parsed.error.message) return parsed.error.message;
-    if (typeof parsed.error?.code === 'string' && parsed.error.code) return `错误码：${parsed.error.code}`;
-  } catch {
-    // 非 JSON（如中继/网关错误页）：不附带原文。
-  }
-  return '';
+function restartFailureError(body: unknown): { code: string; message: string } {
+  if (!isRecordValue(body)) return { code: '', message: '' };
+  const error = isRecordValue(body.error) ? body.error : null;
+  return {
+    code: error && typeof error.code === 'string' ? error.code : '',
+    message: error && typeof error.message === 'string' ? error.message : '',
+  };
 }
 
-/** 把重启请求的非 2xx 响应翻译成用户可读的失败原因。 */
-function describeRestartFailure(status: number, body: string): string {
-  const detail = restartFailureDetail(body);
-  const suffix = detail ? `\n\n${detail}` : '';
+/**
+ * 把重启请求的非 2xx 响应翻译成用户可读的失败原因。
+ * 群体版不再出现「设备证书 / mTLS / 证书已失效」措辞。
+ */
+function describeRestartFailure(status: number, body: unknown): string {
+  const error = restartFailureError(body);
+  const suffix = error.message ? `\n\n${error.message}` : '';
   if (status === 401 || status === 403) {
-    return `主机拒绝了连接（HTTP ${status}）：设备证书可能已失效或已被撤销，请检查配对状态。${suffix}`;
+    return `主机拒绝了请求（HTTP ${status}）：访问令牌可能已失效，请点右上角刷新重试。${suffix}`;
   }
   if (status === 405) {
     return `主机不支持该重启请求（HTTP 405）：主机端插件可能版本过旧，没有提供重启接口。${suffix}`;
   }
   if (status === 501) {
+    if (error.code === 'host-restart-disabled') {
+      return '主机未允许手机重启 DSH：请先在主机「设置 → 远程访问 → 组件」里打开「允许手机重启主机 DSH」。'
+        + suffix;
+    }
+    if (error.code === 'host-restart-unavailable') {
+      return `主机当前环境不支持重启 DSH（HTTP 501）。${suffix}`;
+    }
     return `主机不支持重启 DSH（HTTP 501）：重启入口可能被禁用，或当前环境不支持。${suffix}`;
+  }
+  if (status === 502 || status === 503) {
+    return `主机暂时不可达（HTTP ${status}），可能正在重启或离线，请稍后重试。${suffix}`;
   }
   return `重启请求失败（HTTP ${status}）。${suffix}`;
 }
 
-/** 请求没有拿到响应（原生模块缺失 / 网络错误 / 超时）时的用户提示。 */
+/** 请求没有拿到响应（原生请求失败 / 网络错误 / 超时）时的用户提示。 */
 function describeRestartError(error: unknown): string {
-  if (error instanceof DshMtlsUnavailableError) {
-    return '当前构建不支持 mTLS 请求（原生模块未链接），无法重启主机。请使用包含 dsh-mtls 模块的构建。';
+  if (error instanceof GroupPairingError) {
+    if (error.code === 'native_unavailable') {
+      return '当前构建不支持主机请求能力（原生模块未链接），无法重启主机。请使用包含 dsh-mtls 模块的原生构建。';
+    }
+    return error.message;
   }
   if (error instanceof Error && error.message) return error.message;
   return '重启请求失败，请稍后重试。';
 }
 
-/** `/__dsh_remote/status` 的 `data.restart.enabled`：判断「重启主机」组件是否启用。
- *  旧版 Host 的 status 里没有该字段（能力一直存在），此时按启用处理，保持原行为。 */
-function restartAvailabilityFromStatusBody(body: string): boolean | null {
-  try {
-    const parsed = JSON.parse(body) as { data?: { restart?: { enabled?: unknown } } };
-    const enabled = parsed.data?.restart?.enabled;
-    if (enabled === false) return false;
-    if (enabled === true) return true;
-    return null;
-  } catch {
-    return null;
-  }
-}
-
 /**
- * 顶栏副标题只展示「主机 ID」：从 connection.host（<hostId>.<relayDomain>[:port]）
- * 里去掉端口和 relay 域名；直连 IP/自定义地址保留原值。
+ * 顶栏副标题只展示「主机 ID」：从 connection.host（<hostId>.<relayDomain>）
+ * 里取第一段；直连 IP/自定义地址保留原值。
  */
 function hostIdOf(host: string): string {
   let hostname = host;
@@ -201,11 +217,8 @@ function hostIdOf(host: string): string {
   return firstLabel || hostname;
 }
 
-/** The host's relay domain is the only origin this WebView may navigate to. */
+/** The host's tunnel hostname is the only origin this WebView may navigate to. */
 function isTunnelUrl(url: string, host: string): boolean {
-  // 群体版/ token 模式的地址带显式端口（https://<fqdn>:<mobilePort>/），而 classic 是
-  // 默认 443，不能再用 `https://${host}/` 前缀比较（否则所有页面内导航会被当成外链，
-  // 被塞进内嵌浏览器 → 出现「跳新网址、返回上一页、手机端侧栏逻辑消失」）。
   try {
     const target = new URL(url);
     if (target.protocol !== 'https:' && target.protocol !== 'http:') return false;
@@ -235,116 +248,96 @@ export function WebViewScreen({
   onOpenSettings,
   reloadToken = 0,
   isVisible = true,
-  openSessionRequest = null,
-  onOpenSessionHandled,
-  onCurrentSession,
   onOpenExternal,
 }: WebViewScreenProps) {
   const insets = useSafeAreaInsets();
-  // 群体服务版（A 模式）：token 认证 + 服务端下发端口；旧记录/classic 一律按 mTLS 处理。
-  const authMode = connectionAuthMode(connection);
-  const isTokenAuth = authMode === 'token';
-  const tunnelPort = isTokenAuth ? connectionPort(connection) : 443;
-  const pageUrl = isTokenAuth ? groupWebUiUrl(connection.host, tunnelPort) : webUiUrl(connection.host);
-  const pageOrigin = isTokenAuth ? groupOrigin(connection.host, tunnelPort) : `https://${connection.host}`;
+  const tunnelPort = connection.port;
+  const pageUrl = groupWebUiUrl(connection.host, tunnelPort);
+  const pageOrigin = groupOrigin(connection.host, tunnelPort);
   const webViewRef = useRef<WebView | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [pageTitle, setPageTitle] = useState<string>('DSH');
   const [currentUrl, setCurrentUrl] = useState(() => pageUrl);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const [reloadKey, setReloadKey] = useState(0);
   // 群体版会话：token 只在内存 + 注入 __Host- cookie（不持久化、不打印）。
-  const [groupSessionReady, setGroupSessionReady] = useState(() => !isTokenAuth);
+  const [groupSessionReady, setGroupSessionReady] = useState(false);
   const [groupSessionError, setGroupSessionError] = useState<string | null>(null);
   const groupSessionRef = useRef<{ token: string; expiresAt: number } | null>(null);
 
-  // WebSocket 断开后的自动恢复；隐藏时先记下，等页面重新可见再 reload。
-  const [wsRecoveryPending, setWsRecoveryPending] = useState(false);
   // 「重启主机」进行中：从发请求到等待主机恢复为止，按钮禁用并显示 spinner。
   const [restarting, setRestarting] = useState(false);
-  // 60s 内最多自动重连 2 次，避免「主机一直拒绝 WS → reload → 又断开」的死循环。
-  const wsRecoveryRef = useRef({ count: 0, since: 0 });
-  // 重启请求进行中 / 当前等待恢复会话（可取消：卸载后轮询不再 reload）。
+  /**
+   * 「重启主机」组件是否启用（Host 设置 → 远程访问 → 组件，默认关闭）。
+   * 只有 `GET /__dsh_remote/status` 明确返回 `restart.enabled === true` 才显示顶栏 ⏻；
+   * 默认 false，避免主机没开组件时出现一个必然失败的按钮。
+   */
+  const [restartAvailable, setRestartAvailable] = useState(false);
   const restartInFlightRef = useRef(false);
+  // 当前等待主机恢复的轮询会话（卸载/切主机时置 cancelled，轮询下一拍退出）。
   const restartSessionRef = useRef<{ cancelled: boolean } | null>(null);
-
-  // 「重启主机」组件是否启用（Host 设置 → 远程访问 → 组件，默认关闭）：
-  // null = 还不知道（先不显示按钮）；旧版 Host 没有该字段时按启用处理（保持原行为）。
-  const [restartAvailable, setRestartAvailable] = useState<boolean | null>(null);
   const restartAvailabilitySeq = useRef(0);
-  // refreshRestartAvailability 在 reload/onLoadEnd/WS 桥消息之后才定义；用 ref 让这些早定义的
-  // 回调也能在「刷新 / 重连 / 页面加载完成」时触发组件状态刷新（不必等切后台再回来）。
+  // refreshRestartAvailability 在 reload / onLoadEnd / WS 桥消息之后才定义；
+  // 用 ref 让这些早定义的回调也能在「刷新 / 重连 / 页面加载完成」时刷新组件状态。
   const refreshRestartAvailabilityRef = useRef<() => void>(() => {});
-  // 最近一次健康检查的序号 / 是否在途，避免 AppState + 可见性双触发时重复 reload。
-  const healthCheckRef = useRef({ inFlight: false, lastStartedAt: 0 });
-  const healthCheckSeq = useRef(0);
+
+  // WebSocket 断开后的自动恢复；隐藏时先记下，等页面重新可见再 reload。
+  const [wsRecoveryPending, setWsRecoveryPending] = useState(false);
+  /**
+   * WS 自动恢复预算（60s 内最多自动 reload 2 次）。
+   *
+   * 注意：不能按「收到的 close 事件数」累加——host 保存设置时会同时断开多个
+   * Upgrade/WebSocket，mobileWebShell 对每个 socket 各上报一次 close，
+   * 同一瞬间的多个 close 必须去抖成一次尝试；预算只在「自动 reload 后仍未恢复
+   * （再次 close）」时累加，ws-open / 普通页面加载成功时清零。
+   */
+  const wsRecoveryRef = useRef<WsRecoveryState>({
+    pending: false,
+    recoveryReload: false,
+    reloadedSinceClose: false,
+    reloads: 0,
+    windowStart: 0,
+    lastCloseAt: 0,
+  });
+  /** 是否正在显示「正在自动重连…」提示（close 回调里即时判断用；ws-open 时恢复页面状态）。 */
+  const wsRecoveryNoticeRef = useRef(false);
   const statusRef = useRef<ConnectionStatus>('connecting');
-  const wasVisibleRef = useRef(false);
   // 页面重新加载期间忽略旧页面 WebSocket 的 close 事件，避免“reload → 旧 socket close
   // → 又排队 reload”的循环。
   const loadingRef = useRef(false);
-  // 页面是否至少加载完成过一次（推送跳转要等页面 DOM 就绪再注入）。
-  const loadedRef = useRef(false);
-  // 待注入的打开会话请求；加载完成后再执行，避免在旧文档上注入后随导航丢失。
-  const pendingOpenSessionRef = useRef<{ sessionId: string; nonce: number } | null>(null);
-  const lastOpenSessionNonceRef = useRef(0);
-  // 最近一次上报的当前会话：离开 WebView 后 App 会清空该状态，重新可见时用它补报。
-  const currentSessionRef = useRef<{ host: string; sessionId: string } | null>(null);
+  /** 群体版：页面首次加载偶发 401（主机重连、relay 设备表瞬时为空）时自动重试一次。 */
+  const groupHttpAuthRetryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
 
   useEffect(() => {
     statusRef.current = status;
   }, [status]);
 
-  // 原生 WebView 崩溃 / 被系统回收后的自动重建预算：60s 内最多 2 次，
-  // 避免“重建 → 又崩溃 → 再重建”的死循环（超出后保留错误条，交给用户手动重试）。
-  const nativeRecoveryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
-  /** 群体版：页面首次加载偶发 401（主机重连、relay 设备表瞬时为空）时自动重试一次。 */
-  const groupHttpAuthRetryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
-
-  const NativeMtlsWebView = useMemo(() => getDshMtlsWebView(), []);
-  /**
-   * Use the native mTLS web view only when both the native module and a device
-   * identity label exist. Without a cert the native view would behave like a
-   * plain WebView; plain RN WebView is better for the POC until then.
-   */
-  const useNativeMtlsView = !isTokenAuth && NativeMtlsWebView !== null && Boolean(connection.certRef);
-
   const performReload = useCallback(() => {
     // 「刷新」也是重新读取 Host 组件开关的时机：改了设置后不用退出主机再进。
     refreshRestartAvailabilityRef.current();
-    // 重新加载期间旧文档即将被替换：打开会话的注入必须等新页面加载完成。
-    loadedRef.current = false;
+    // 重新加载期间旧文档即将被替换。
     loadingRef.current = true;
     statusRef.current = 'connecting';
     setErrorMessage(null);
     setStatus('connecting');
+    wsRecoveryRef.current.pending = false;
+    wsRecoveryNoticeRef.current = false;
     setWsRecoveryPending(false);
-    healthCheckSeq.current += 1;
-    // 用户主动重试时重新给自动恢复预算（否则 60s 内再被回收只能一直手点）。
-    nativeRecoveryRef.current.count = 0;
-    nativeRecoveryRef.current.since = 0;
-    if (useNativeMtlsView) {
-      // Native view has no ref API in the POC skeleton; remount to reload.
-      setReloadKey((key) => key + 1);
-      return;
-    }
     webViewRef.current?.reload();
-  }, [useNativeMtlsView]);
+  }, []);
 
   /**
    * 群体版会话保活：challenge → 原生签名 → 短时 token → `__Host-dsh_session` cookie。
    * 进入主机/回前台/每 30s 调一次；缓存有效时只重放 cookie，不重复请求。
    */
   const ensureGroupSessionForConnection = useCallback(async (forceRefresh = false): Promise<boolean> => {
-    if (!isTokenAuth) return true;
     try {
       const session = await ensureGroupSessionIfNeeded(
         {
           host: connection.host,
           port: tunnelPort,
-          hostId: connection.hostId ?? '',
+          hostId: connection.hostId,
           deviceId: connection.deviceId,
-          label: connection.certRef ?? '',
+          label: connection.deviceKeyLabel,
         },
         { forceRefresh },
       );
@@ -360,22 +353,18 @@ export function WebViewScreen({
       const deviceGone = pairingError?.code === 'http'
         && (pairingError.status === 404 || /not registered|unknown device/i.test(rawMessage));
       const message = deviceGone
-        ? '这台设备已在主机侧失效（被删除或重置）。\n请返回主机列表删除该主机，然后用 DSH「远程访问」里的新二维码重新配对。'
+        ? '这台设备已在主机侧失效（被删除或重置）。\n请返回主机列表删除该主机，然后重新扫码配对。'
         : rawMessage;
       setGroupSessionError(`无法获取访问令牌：${message}`);
       setGroupSessionReady(false);
       return false;
     }
-  }, [connection.certRef, connection.deviceId, connection.host, connection.hostId, isTokenAuth, tunnelPort]);
+  }, [connection.deviceId, connection.deviceKeyLabel, connection.host, connection.hostId, tunnelPort]);
 
   /**
-   * 刷新前先确保群体版 token 有效（classic 路径保持原样，直接 reload）。
+   * 刷新前先确保群体版 token 有效，再重新加载页面。
    */
   const reload = useCallback(() => {
-    if (!isTokenAuth) {
-      performReload();
-      return;
-    }
     const valid = hasValidGroupSession({
       host: connection.host,
       port: tunnelPort,
@@ -388,77 +377,111 @@ export function WebViewScreen({
     void ensureGroupSessionForConnection().then((ok) => {
       if (ok) performReload();
     });
-  }, [connection.deviceId, connection.host, ensureGroupSessionForConnection, isTokenAuth, performReload, tunnelPort]);
+  }, [
+    connection.deviceId,
+    connection.host,
+    ensureGroupSessionForConnection,
+    performReload,
+    tunnelPort,
+  ]);
+
+  /** 重置 WS 自动恢复预算（普通页面加载成功 / ws-open / 用户手动刷新时调用）。 */
+  const resetWsRecovery = useCallback(() => {
+    const ws = wsRecoveryRef.current;
+    ws.pending = false;
+    ws.recoveryReload = false;
+    ws.reloadedSinceClose = false;
+    ws.reloads = 0;
+    ws.windowStart = 0;
+    ws.lastCloseAt = 0;
+    wsRecoveryNoticeRef.current = false;
+    setWsRecoveryPending(false);
+  }, []);
+
+  /**
+   * 用户主动刷新/重试：重置自动恢复预算后再 reload（手动操作重新给足预算）。
+   * 自动恢复本身走 `reload()`，不经过这里。
+   */
+  const handleManualReload = useCallback(() => {
+    resetWsRecovery();
+    reload();
+  }, [reload, resetWsRecovery]);
+
+  /**
+   * 读取「重启主机」组件状态：`GET /__dsh_remote/status`（带 `__Host-dsh_session` cookie
+   * 的原生请求，relay 边缘按 cookie 放行）。
+   *
+   * - 只有 `data.restart.enabled === true` 才显示顶栏 ⏻（组件默认关闭）；
+   * - 请求失败 / 未就绪（主机重启中、网络抖动）：保持上一次已知状态，不误显示/误隐藏；
+   * - 401/403 已由 groupAuthorizedFetch 强制续期 token 重试过一次。
+   */
+  const refreshRestartAvailability = useCallback(async () => {
+    // 请求序号：并发触发（进入主机 + 加载完成 + 回前台）时只认最后一次结果。
+    const seq = ++restartAvailabilitySeq.current;
+    try {
+      const response = await groupAuthorizedFetch({
+        host: connection.host,
+        port: tunnelPort,
+        hostId: connection.hostId,
+        deviceId: connection.deviceId,
+        label: connection.deviceKeyLabel,
+        method: 'GET',
+        url: groupStatusUrl(connection.host, tunnelPort),
+        timeoutMs: HOST_STATUS_REQUEST_TIMEOUT_MS,
+      });
+      if (seq !== restartAvailabilitySeq.current) return;
+      if (response.status !== 200) return; // 异常状态交给页面错误态；组件状态保持上一次值
+      setRestartAvailable(restartEnabledFromStatusBody(response.body));
+    } catch {
+      // 网络抖动 / 主机重启中：保持上一次已知状态；页面加载完成 / WS 重连后会再刷新。
+    }
+  }, [
+    connection.deviceId,
+    connection.deviceKeyLabel,
+    connection.host,
+    connection.hostId,
+    tunnelPort,
+  ]);
+
+  refreshRestartAvailabilityRef.current = refreshRestartAvailability;
 
   // 群体版：首次进入 / 重新可见 / 回前台 / 定时续期前确保 token 有效。
   useEffect(() => {
-    if (!isTokenAuth) return undefined;
     void ensureGroupSessionForConnection();
     const timer = setInterval(() => {
       void ensureGroupSessionForConnection();
     }, 30_000);
     return () => clearInterval(timer);
-  }, [ensureGroupSessionForConnection, isTokenAuth]);
+  }, [ensureGroupSessionForConnection]);
 
   useEffect(() => {
-    if (!isTokenAuth || !isVisible) return undefined;
+    if (!isVisible) return undefined;
     void ensureGroupSessionForConnection();
+    // 重新进入主机时刷新组件开关：Host 侧刚改设置不用退到主机列表再进。
+    refreshRestartAvailabilityRef.current();
     return undefined;
-  }, [ensureGroupSessionForConnection, isTokenAuth, isVisible]);
+  }, [ensureGroupSessionForConnection, isVisible]);
 
   useEffect(() => {
-    if (!isTokenAuth) return undefined;
     const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') void ensureGroupSessionForConnection();
+      if (nextState !== 'active') return;
+      void ensureGroupSessionForConnection();
+      // 后台期间 Host 可能改过组件开关：回前台且页面可见时刷新一次。
+      if (isVisible) refreshRestartAvailabilityRef.current();
     });
     return () => subscription.remove();
-  }, [ensureGroupSessionForConnection, isTokenAuth]);
+  }, [ensureGroupSessionForConnection, isVisible]);
 
-  /**
-   * 执行「打开推送对应会话」的注入脚本。
-   *
-   * 优先直接调用 host 插件暴露的 window.__DSH_REMOTE_OPEN_SESSION__；插件还没加载时
-   * 把 id 暂存到 __DSH_REMOTE_OPEN_SESSION_PENDING__，host 插件安装时会消费。
-   * 必须等页面加载完成后再注入，否则脚本会落在即将被导航替换的旧文档上。
-   */
-  const flushOpenSession = useCallback(() => {
-    const request = pendingOpenSessionRef.current;
-    if (!request || lastOpenSessionNonceRef.current === request.nonce) return;
-    // 页面尚未就绪（首次加载 / 正在 reload / 错误页）时不要注入：否则脚本会落到
-    // 即将销毁的文档上，而 App 会误以为已处理并清空请求。
-    if (!loadedRef.current) return;
-    const sessionIdLiteral = JSON.stringify(request.sessionId);
-    const script =
-      `(function(){try{var id=${sessionIdLiteral};` +
-      'window.__DSH_REMOTE_OPEN_SESSION_PENDING__=id;' +
-      'var f=window.__DSH_REMOTE_OPEN_SESSION__;' +
-      'if(typeof f==="function"){f(id);window.__DSH_REMOTE_OPEN_SESSION_PENDING__=null;}' +
-      '}catch(e){}})();void 0;';
-    if (useNativeMtlsView) {
-      void evaluateJavaScript(script).then((ok) => {
-        if (!ok) return; // 旧构建没有 evaluateJavaScript：保持 pending，等下次加载再试
-        pendingOpenSessionRef.current = null;
-        lastOpenSessionNonceRef.current = request.nonce;
-        onOpenSessionHandled?.(request.nonce);
-      }).catch(() => {});
-      return;
-    }
-    try {
-      webViewRef.current?.injectJavaScript(script);
-      pendingOpenSessionRef.current = null;
-      lastOpenSessionNonceRef.current = request.nonce;
-      onOpenSessionHandled?.(request.nonce);
-    } catch {
-      // 注入失败：保留 pending，加载完成/再次可见时重试
-    }
-  }, [onOpenSessionHandled, useNativeMtlsView]);
-
-  // 推送点击后 App 传入 openSessionRequest：先记录，等页面就绪后注入。
+  // 组件开关动态刷新：单机版可在主机改设置后 App 动态出现/消失 ⏻；群体版补充定时刷新，
+  // 这样 Host 侧保存「允许手机重启主机」后，App 无需手动点刷新或退出重进即可生效。
   useEffect(() => {
-    if (!openSessionRequest) return;
-    pendingOpenSessionRef.current = openSessionRequest;
-    if (loadedRef.current) flushOpenSession();
-  }, [openSessionRequest, flushOpenSession]);
+    if (!isVisible) return undefined;
+    const timer = setInterval(() => {
+      if (restartInFlightRef.current) return;
+      refreshRestartAvailabilityRef.current();
+    }, HOST_STATUS_REFRESH_INTERVAL_MS);
+    return () => clearInterval(timer);
+  }, [isVisible]);
 
   const openExternal = useCallback(async (url: string) => {
     try {
@@ -495,10 +518,14 @@ export function WebViewScreen({
     [connection.host, openLink, openExternal],
   );
 
-  // 设置页「清理缓存」后递增 reloadToken：重新加载当前页面（旧缓存已被原生清空）。
+  // 设置页「清理缓存」后递增 reloadToken：缓存清理会一并清掉 `__Host-` cookie，
+  // 所以先强制续期一次 token（重新注入 cookie），再重新加载页面。
   useEffect(() => {
-    if (reloadToken > 0) reload();
-  }, [reloadToken, reload]);
+    if (reloadToken <= 0) return;
+    void ensureGroupSessionForConnection(true).then((ok) => {
+      if (ok) performReload();
+    });
+  }, [ensureGroupSessionForConnection, performReload, reloadToken]);
 
   const handleNavigationStateChange = useCallback((navigation: WebViewNavigation) => {
     // 底部连接信息只在 Debug 构建显示（Release 下这块空间留给主界面）。
@@ -509,86 +536,43 @@ export function WebViewScreen({
 
   const handleLoadStart = useCallback(() => {
     loadingRef.current = true;
-    loadedRef.current = false;
     statusRef.current = 'connecting';
     setStatus('connecting');
   }, []);
 
   const handleLoadEnd = useCallback(() => {
     loadingRef.current = false;
-    loadedRef.current = true;
     statusRef.current = 'online';
     groupHttpAuthRetryRef.current = { count: 0, since: 0 };
     setStatus('online');
     setErrorMessage(null);
-    flushOpenSession();
-    // 页面加载完成 = Host 可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
+    const ws = wsRecoveryRef.current;
+    if (ws.recoveryReload) {
+      // 这次加载来自自动恢复 reload：预算保留，等 ws-open 或下一次 close 判断是否真恢复。
+      ws.recoveryReload = false;
+      ws.reloadedSinceClose = true;
+      ws.pending = false;
+      ws.lastCloseAt = 0;
+      setWsRecoveryPending(false);
+    } else {
+      // 普通加载（首次进入 / 用户刷新 / 清理缓存 / 重启恢复）：重置自动恢复预算。
+      resetWsRecovery();
+    }
+    // 页面加载完成 = 主机可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
     refreshRestartAvailabilityRef.current();
-  }, [flushOpenSession]);
+  }, [resetWsRecovery]);
 
   const handleError = useCallback((description?: string) => {
-    loadedRef.current = false;
     loadingRef.current = false;
     statusRef.current = 'error';
     setStatus('error');
     setErrorMessage(description ?? '无法加载 DSH 页面。');
   }, []);
 
-  /**
-   * Rebuild the native WebView after its renderer died.
-   *
-   * Android kills the WebView renderer under memory pressure (`onRenderProcessGone`);
-   * the instance cannot be reused afterwards, so the only recovery is remounting the
-   * native view (`key={reloadKey}`) — the Swift/Kotlin module then allocates a fresh
-   * WKWebView/WebView. Guarded so a crash loop cannot turn into a reload loop.
-   */
-  const recoverNativeView = useCallback(() => {
-    const now = Date.now();
-    const state = nativeRecoveryRef.current;
-    if (state.since === 0 || now - state.since > 60_000) {
-      state.count = 0;
-      state.since = now;
-    }
-    if (state.count >= 2) return;
-    state.count += 1;
-    loadedRef.current = false;
-    loadingRef.current = true;
-    statusRef.current = 'connecting';
-    setStatus('connecting');
-    setReloadKey((key) => key + 1);
-  }, []);
-
-  const handleNativeLoadingFinish = useCallback(() => {
-    // 与 react-native-webview 路径对齐：加载成功后清掉上一次的（自动恢复）错误条，
-    // 否则一次进程回收/自动 reload 之后错误条会永久留在页面上，挤压 WebView 布局。
-    loadingRef.current = false;
-    loadedRef.current = true;
-    statusRef.current = 'online';
-    groupHttpAuthRetryRef.current = { count: 0, since: 0 };
-    setStatus('online');
-    setErrorMessage(null);
-    flushOpenSession();
-    // 页面加载完成 = Host 可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
-    refreshRestartAvailabilityRef.current();
-  }, [flushOpenSession]);
-
-  const handleNativeError = useCallback(
-    (event: DshMtlsWebViewErrorEvent) => {
-      const { description, reason } = event.nativeEvent;
-      loadedRef.current = false;
-      handleError(description);
-      if (reason === 'render-process-gone') {
-        // iOS 的 content-process-terminated 由原生侧自己 reload；Android 必须重建视图。
-        recoverNativeView();
-      }
-    },
-    [handleError, recoverNativeView],
-  );
-
   const handleHttpError = useCallback((statusCode: number) => {
     loadingRef.current = false;
     statusRef.current = 'error';
-    if (isTokenAuth && (statusCode === 401 || statusCode === 403)) {
+    if (statusCode === 401 || statusCode === 403) {
       // 首次进入/主机重连时偶发：token 刚签发但 relay 设备表/隧道还在恢复，页面请求 401。
       // 自动刷新一次会话再 reload，避免用户必须「返回再进」。
       const now = Date.now();
@@ -608,47 +592,33 @@ export function WebViewScreen({
         }, 800);
         return;
       }
-    }
-    if (statusCode === 401 || statusCode === 403) {
       setStatus('error');
       setErrorMessage(
-        isTokenAuth
-          ? `主机拒绝了连接（HTTP ${statusCode}）。会话可能已失效，请点「重试」重新获取访问令牌。`
-          : '主机拒绝了连接（HTTP 403）：这通常意味着请求没有携带有效的设备证书。' +
-              '请确认已完成配对，并使用包含原生 mTLS WebView 的构建（见 README）。',
+        `主机拒绝了连接（HTTP ${statusCode}）。会话可能已失效，请点「重试」重新获取访问令牌。`,
       );
       return;
     }
     setStatus('error');
     setErrorMessage(`主机返回 HTTP ${statusCode}。`);
-  }, [ensureGroupSessionForConnection, isTokenAuth, performReload]);
+  }, [ensureGroupSessionForConnection, performReload]);
 
   /**
    * 收到注入层 / host 插件的桥消息：
-   *  - dsh-ws-open/close：WebSocket 状态，主机重启时触发自动 reload；
-   *  - dsh-remote/current-session：当前会话（host+sessionId），供 App 判断前台通知是否是当前会话；
+   *  - dsh-ws-open/close：WebSocket 状态，主机重连时触发自动 reload；
    *  - dsh-remote/open-external：DSH 页面里的外链（target=_blank / window.open），
-   *    原生 WebView 打不开新窗口，交给系统浏览器。
+   *    原生 WebView 打不开新窗口，交给 App 内嵌浏览器/系统浏览器。
    */
   const handleBridgeMessage = useCallback((raw: string) => {
-    let payload: { type?: unknown; url?: unknown; host?: unknown; sessionId?: unknown } | null = null;
+    let payload: { type?: unknown; url?: unknown } | null = null;
     try {
-      payload = JSON.parse(raw) as { type?: unknown; url?: unknown; host?: unknown; sessionId?: unknown };
+      payload = JSON.parse(raw) as { type?: unknown; url?: unknown } | null;
     } catch {
       return;
     }
     if (!payload || typeof payload.type !== 'string') return;
-    if (payload.type === 'dsh-remote/current-session') {
-      const host = typeof payload.host === 'string' ? payload.host : '';
-      const sessionId = typeof payload.sessionId === 'string' ? payload.sessionId : '';
-      const info = sessionId ? { host, sessionId } : null;
-      currentSessionRef.current = info;
-      onCurrentSession?.(info);
-      return;
-    }
     if (payload.type === 'dsh-remote/open-external') {
       const externalUrl = typeof payload.url === 'string' ? payload.url : '';
-      // 只允许 http(s)；隧道主机要设备证书，不能交给系统浏览器（否则只会打不开）。
+      // 只允许 http(s)；隧道主机不能交给外部浏览器（否则只会打不开）。
       if (!/^https?:\/\//i.test(externalUrl)) return;
       let externalHost = '';
       let tunnelHost = '';
@@ -664,213 +634,134 @@ export function WebViewScreen({
     }
     const url = typeof payload.url === 'string' ? payload.url : '';
     if (url && !url.includes('remote.mux')) return;
-    if (loadingRef.current) return;
+    const ws = wsRecoveryRef.current;
     if (payload.type === 'dsh-ws-open') {
+      // 实时连接恢复：预算清零、取消排队中的恢复，并刷新组件状态
+      // （Host 侧刚改开关时无需重进主机；断线自动恢复成功后也在这里立即刷新）。
+      // 注意：ws-open 不受 loadingRef 限制——加载期间恢复的实时连接也应该算恢复。
+      ws.pending = false;
+      ws.recoveryReload = false;
+      ws.reloadedSinceClose = false;
+      ws.reloads = 0;
+      ws.windowStart = 0;
+      ws.lastCloseAt = 0;
       setWsRecoveryPending(false);
-      // 实时连接恢复 = Host 可达：刷新组件状态，Host 侧刚改开关时无需重进主机。
+      if (wsRecoveryNoticeRef.current) {
+        // DSH 在自动 reload 之前自己重连成功：撤掉「正在自动重连…」提示并回到已连接。
+        wsRecoveryNoticeRef.current = false;
+        statusRef.current = 'online';
+        setStatus('online');
+        setErrorMessage(null);
+      }
       refreshRestartAvailabilityRef.current();
       return;
     }
+    // 页面重新加载期间旧页面的 close 事件不算数（避免「reload → 旧 socket close → 又 reload」）。
+    if (loadingRef.current) return;
     if (payload.type === 'dsh-ws-close' && statusRef.current === 'online') {
+      // 重启流程自己会等主机恢复并 reload；不要让 WS close 的自动恢复插一脚。
+      if (restartInFlightRef.current) return;
+      // 同一波 close：已排队恢复时忽略后续 close（host 保存设置可能同时断多个 socket）。
+      if (ws.pending) return;
       const now = Date.now();
-      const budget = wsRecoveryRef.current;
-      if (budget.since === 0 || now - budget.since > 60_000) {
-        budget.count = 0;
-        budget.since = now;
+      // 短时去抖：2s 内的多个 close 只算一次恢复尝试。
+      if (ws.lastCloseAt !== 0 && now - ws.lastCloseAt < WS_CLOSE_DEBOUNCE_MS) return;
+      ws.lastCloseAt = now;
+      if (ws.windowStart === 0 || now - ws.windowStart > WS_RECOVERY_WINDOW_MS) {
+        ws.reloads = 0;
+        ws.windowStart = now;
       }
-      if (budget.count >= 2) {
+      // 预算只在「自动 reload 后仍未恢复（再次 close）」时累加；首次 close 先尝试恢复。
+      if (ws.reloadedSinceClose) {
+        ws.reloads += 1;
+        ws.reloadedSinceClose = false;
+      }
+      if (ws.reloads >= WS_RECOVERY_MAX_RELOADS) {
+        // 自动恢复确实连续失败：显示错误 + 重试按钮，不再无限 reload。
+        wsRecoveryNoticeRef.current = false;
+        setWsRecoveryPending(false);
         setStatus('error');
         setErrorMessage('与主机的实时连接已断开，自动重连未恢复，请点击刷新重试。');
         return;
       }
-      budget.count += 1;
+      // 预算未耗尽：显示「正在自动重连…」，600ms 后自动 reload（走 reload() 会先续期 token）。
+      ws.pending = true;
+      wsRecoveryNoticeRef.current = true;
       setWsRecoveryPending(true);
+      setStatus('connecting');
+      setErrorMessage('与主机的实时连接已断开，正在自动重连…');
     }
-  }, [connection.host, onCurrentSession, openLink]);
-
-  const handleNativeMessage = useCallback((event: DshMtlsWebViewMessageEvent) => {
-    handleBridgeMessage(event.nativeEvent.data);
-  }, [handleBridgeMessage]);
+  }, [connection.host, openLink]);
 
   // 页面可见且检测到 WebSocket 已断开：稍等一小段时间让 DSH 自己重连；
-  // 若仍未恢复（主机重启通常如此），重新挂载 WebView 并走缓存加载。
+  // 若仍未恢复（主机重连通常如此），重新加载页面并走缓存加载。
   useEffect(() => {
     if (!isVisible || !wsRecoveryPending) return undefined;
     const timer = setTimeout(() => {
+      const ws = wsRecoveryRef.current;
+      // loadEnd 据此判断「这次加载来自自动恢复 reload」→ 保留预算、等 ws-open 或下一次 close。
+      ws.recoveryReload = true;
+      ws.pending = false;
       setWsRecoveryPending(false);
       reload();
-    }, 600);
+    }, WS_RECOVERY_DELAY_MS);
     return () => clearTimeout(timer);
   }, [isVisible, wsRecoveryPending, reload]);
 
   /**
-   * 读取「重启主机」组件状态（GET /__dsh_remote/status，设备 mTLS）。
-   *
-   * - Host 设置里关闭组件后返回 `data.restart.enabled=false` → 顶栏不显示 ⏻；
-   * - 旧版 Host 没有该字段 → 按启用处理（兼容）；
-   * - 请求失败 / 未就绪 → 先按启用处理（旧行为），避免网络抖动把按钮永久藏掉。
-   */
-  const refreshRestartAvailability = useCallback(async () => {
-    if (isTokenAuth) {
-      // 群体版目前不支持远程「重启主机」组件（Host 侧返回 501）。
-      setRestartAvailable(false);
-      return;
-    }
-    if (!useNativeMtlsView || !connection.certRef) {
-      setRestartAvailable(null);
-      return;
-    }
-    const seq = ++restartAvailabilitySeq.current;
-    try {
-      await setClientIdentity(connection.certRef);
-    } catch {
-      // 原生模块未链接时下面的请求会失败，交给 catch 兜底。
-    }
-    try {
-      const response = await withTimeout(
-        requestWithClientCert({ url: hostStatusUrl(connection.host), method: 'GET' }),
-        4000,
-        'restart-availability-timeout',
-      );
-      if (seq !== restartAvailabilitySeq.current) return;
-      // 401/403 等异常状态交给页面错误态处理；组件状态保持上一次已知值（避免误显示）。
-      if (response.status !== 200) return;
-      setRestartAvailable(restartAvailabilityFromStatusBody(response.body) ?? true);
-    } catch {
-      // 网络抖动/主机重启中：保持上一次已知状态；页面加载完成/WS 重连后会再刷新。
-    }
-  }, [connection.certRef, connection.host, isTokenAuth, useNativeMtlsView]);
-
-  refreshRestartAvailabilityRef.current = refreshRestartAvailability;
-  // 进入主机 / 回到前台时刷新组件状态：Host 侧刚关闭时，重新进入主机即可隐藏按钮。
-  useEffect(() => {
-    if (!isVisible) return;
-    void refreshRestartAvailability();
-  }, [isVisible, refreshRestartAvailability]);
-
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') void refreshRestartAvailability();
-    });
-    return () => subscription.remove();
-  }, [refreshRestartAvailability]);
-
-  /**
-   * App 回到前台 / 再次进入主机时，用设备证书探活。
-   * 只做一次短超时 GET；失败就 reload，避免用户面对一个已经死掉的旧页面。
-   * WebSocket 关闭导致的黑屏由上面的 monitor 处理；HTTP 探活覆盖主机重启后
-   * 连 TLS/HTTP 都不通的情况。
-   */
-  const checkHostHealth = useCallback(async () => {
-    if (!isVisible || !useNativeMtlsView || wsRecoveryPending) return;
-    if (loadingRef.current || statusRef.current !== 'online') return;
-    if (healthCheckRef.current.inFlight) return;
-    const now = Date.now();
-    if (now - healthCheckRef.current.lastStartedAt < 1500) return;
-    healthCheckRef.current.inFlight = true;
-    healthCheckRef.current.lastStartedAt = now;
-    const seq = ++healthCheckSeq.current;
-    if (connection.certRef) {
-      try {
-        // requestWithClientCert 使用全局 configuredLabel；切主机时先对齐当前设备身份。
-        await setClientIdentity(connection.certRef);
-      } catch {
-        // 原生模块未链接时 requestWithClientCert 也会失败，交给 catch 统一 reload。
-      }
-    }
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    const timeout = new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new Error('health-check-timeout')), 4000);
-    });
-    try {
-      const response = await Promise.race([
-        requestWithClientCert({
-          url: hostStatusUrl(connection.host),
-          method: 'GET',
-        }),
-        timeout,
-      ]);
-      if (seq !== healthCheckSeq.current) return;
-      if (response.status === 200) {
-        // 探活顺便刷新「重启主机」组件状态（Host 设置可能刚被改过）。
-        setRestartAvailable(restartAvailabilityFromStatusBody(response.body) ?? true);
-        return;
-      }
-      if (response.status === 401 || response.status === 403) {
-        setStatus('error');
-        setErrorMessage(
-          '主机拒绝了连接（HTTP 403）：设备证书可能已失效或已被撤销，请检查配对状态。',
-        );
-        return;
-      }
-      throw new Error(`host health check HTTP ${response.status}`);
-    } catch {
-      if (seq !== healthCheckSeq.current) return;
-      if (statusRef.current !== 'online') return;
-      reload();
-    } finally {
-      if (timer) clearTimeout(timer);
-      healthCheckRef.current.inFlight = false;
-    }
-  }, [connection.host, isVisible, reload, useNativeMtlsView, wsRecoveryPending]);
-
-  // 从 Home / 设置页重新进入主机时探活；初次加载（status=connecting）不重复请求。
-  useEffect(() => {
-    const becameVisible = isVisible && !wasVisibleRef.current;
-    wasVisibleRef.current = isVisible;
-    if (becameVisible) void checkHostHealth();
-  }, [checkHostHealth, isVisible]);
-
-  // 重新进入主机时把缓存的当前会话补报一次：App 在离开 WebView 时会清掉该状态
-  // （避免旧会话抑制前台推送），回到页面后再恢复，这样“当前会话不弹卡片”仍然生效。
-  useEffect(() => {
-    if (!isVisible) return;
-    onCurrentSession?.(currentSessionRef.current);
-  }, [isVisible, onCurrentSession]);
-
-  // App 从后台回到前台：后台期间主机可能重启过，重新探活。
-  useEffect(() => {
-    const subscription = AppState.addEventListener('change', (nextState) => {
-      if (nextState === 'active') void checkHostHealth();
-    });
-    return () => subscription.remove();
-  }, [checkHostHealth]);
-
-  /**
-   * 重启请求被接受后等待主机恢复：轮询 GET /__dsh_remote/status（设备 mTLS）。
+   * 重启请求被接受后等待主机恢复：轮询 `GET /__dsh_remote/status`
+   * （原生请求自带 `__Host-dsh_session` cookie；主机重启期间 relay/host 不可达是预期）。
    *
    * - 每 1.5s 探一次、单次 3s 超时、总时长最多 30s；
-   * - 主机重启期间连接被拒 / TLS 握手失败 / 502/503 都是预期错误，继续等；
    * - 只有 200 才算恢复；`session.cancelled` 由调用方在卸载/切主机时置位，
    *   轮询下一拍立即退出。
    */
-  const waitForHostRecovery = useCallback(async (session: { cancelled: boolean }): Promise<boolean> => {
-    const deadline = Date.now() + HOST_RESTART_POLL_TIMEOUT_MS;
-    while (!session.cancelled) {
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) return false;
-      await sleep(Math.min(HOST_RESTART_POLL_INTERVAL_MS, remaining));
-      if (session.cancelled) return false;
-      try {
-        const response = await withTimeout(
-          requestWithClientCert({ url: hostStatusUrl(connection.host), method: 'GET' }),
-          HOST_RESTART_PROBE_TIMEOUT_MS,
-          'restart-probe-timeout',
-        );
+  const waitForHostRecovery = useCallback(
+    async (session: { cancelled: boolean }): Promise<boolean> => {
+      const deadline = Date.now() + HOST_RESTART_POLL_TIMEOUT_MS;
+      while (!session.cancelled) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) return false;
+        await sleep(Math.min(HOST_RESTART_POLL_INTERVAL_MS, remaining));
         if (session.cancelled) return false;
-        if (response.status === 200) return true;
-      } catch {
-        // 主机还在重启（连接被拒/超时）：继续下一轮。
+        try {
+          const response = await groupAuthorizedFetch({
+            host: connection.host,
+            port: tunnelPort,
+            hostId: connection.hostId,
+            deviceId: connection.deviceId,
+            label: connection.deviceKeyLabel,
+            method: 'GET',
+            url: groupStatusUrl(connection.host, tunnelPort),
+            timeoutMs: HOST_RESTART_PROBE_TIMEOUT_MS,
+          });
+          if (session.cancelled) return false;
+          if (response.status === 200) {
+            // 探活顺便刷新组件状态（Host 设置可能在重启后被改过）。
+            setRestartAvailable(restartEnabledFromStatusBody(response.body));
+            return true;
+          }
+        } catch {
+          // 主机还在重启（连接被拒/超时/502/503）：继续下一轮。
+        }
       }
-    }
-    return false;
-  }, [connection.host]);
+      return false;
+    },
+    [
+      connection.deviceId,
+      connection.deviceKeyLabel,
+      connection.host,
+      connection.hostId,
+      tunnelPort,
+    ],
+  );
 
   /**
-   * 重启主机 DSH：POST /__dsh_remote/restart（设备 mTLS）→ 轮询状态等待恢复 → reload。
+   * 重启主机 DSH：`POST /__dsh_remote/restart`（原生请求带 cookie）→
+   * 轮询 status 等待恢复 → reload。
    *
    * 主机接受重启后可能先返回 202 再断开 WebSocket；这里先把 status 切到 connecting
-   * 并清掉 wsRecoveryPending，避免 WS close 的自动恢复和本流程互相触发多次 reload。
+   * 并清掉 wsRecoveryPending，同时用 restartInFlightRef 拦掉 WS 自动恢复的多余 reload。
    */
   const restartHost = useCallback(async () => {
     if (restartInFlightRef.current) return;
@@ -878,40 +769,30 @@ export function WebViewScreen({
     const session = { cancelled: false };
     restartSessionRef.current = session;
     setRestarting(true);
-    // 在途健康检查立即失效：否则它会把重启造成的失败再转成一次 reload。
-    healthCheckSeq.current += 1;
-    setWsRecoveryPending(false);
+    // 显式重启是用户主动恢复：清掉 WS 自动恢复的排队与预算，避免两套恢复互相打架。
+    resetWsRecovery();
     try {
-      if (connection.certRef) {
-        try {
-          // requestWithClientCert 使用全局 configuredLabel；切主机后先对齐当前设备身份。
-          await setClientIdentity(connection.certRef);
-        } catch {
-          // 原生模块未链接时，下面的 requestWithClientCert 会给出更明确的错误。
-        }
-      }
-      const response = await withTimeout(
-        requestWithClientCert({
-          url: restartHostUrl(connection.host),
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: '{}',
-        }),
-        HOST_RESTART_REQUEST_TIMEOUT_MS,
-        '重启请求超时：主机没有响应。',
-      );
+      const response = await groupAuthorizedFetch({
+        host: connection.host,
+        port: tunnelPort,
+        hostId: connection.hostId,
+        deviceId: connection.deviceId,
+        label: connection.deviceKeyLabel,
+        method: 'POST',
+        url: groupRestartUrl(connection.host, tunnelPort),
+        body: {},
+        timeoutMs: HOST_RESTART_REQUEST_TIMEOUT_MS,
+      });
       if (session.cancelled) return;
       if (response.status !== 200 && response.status !== 202) {
         Alert.alert('重启主机失败', describeRestartFailure(response.status, response.body));
         return;
       }
       // 主机已接受重启：先进入「连接中」，让进度条显示并拦掉 WS 自动恢复。
-      // 202 与 WebSocket 断开几乎同时发生：POST 期间到达的 ws-close 可能已排了
-      // 600ms 自动 reload，这里再清一次，避免它在主机还没恢复时 reload 出错误页。
       statusRef.current = 'connecting';
       setStatus('connecting');
       setErrorMessage(null);
-      setWsRecoveryPending(false);
+      resetWsRecovery();
       Alert.alert('已请求重启', '等待主机恢复中，恢复后会自动重新加载页面。', [{ text: '好' }]);
       const recovered = await waitForHostRecovery(session);
       if (session.cancelled) return;
@@ -921,7 +802,8 @@ export function WebViewScreen({
       }
       Alert.alert(
         '主机重启超时',
-        `等待主机恢复超过 ${Math.round(HOST_RESTART_POLL_TIMEOUT_MS / 1000)} 秒。主机可能仍在重启，请稍后点击右上角刷新重试。`,
+        `等待主机恢复超过 ${Math.round(HOST_RESTART_POLL_TIMEOUT_MS / 1000)} 秒。`
+          + '主机可能仍在重启，请稍后点击右上角刷新重试。',
       );
     } catch (error) {
       if (session.cancelled) return;
@@ -931,14 +813,24 @@ export function WebViewScreen({
       if (restartSessionRef.current === session) restartSessionRef.current = null;
       if (!session.cancelled) setRestarting(false);
     }
-  }, [connection.certRef, connection.host, reload, waitForHostRecovery]);
+  }, [
+    connection.deviceId,
+    connection.deviceKeyLabel,
+    connection.host,
+    connection.hostId,
+    reload,
+    resetWsRecovery,
+    tunnelPort,
+    waitForHostRecovery,
+  ]);
 
   /** 「重启主机」按钮：先二次确认（会短暂断开），确认后才发重启请求。 */
   const confirmRestartHost = useCallback(() => {
     if (restarting) return;
     Alert.alert(
       '重启主机 DSH',
-      '将请求主机重启 DSH 客户端。重启期间连接会短暂断开，恢复后页面会自动重新加载；若等待超时，可点右上角刷新重试。',
+      '将请求主机重启 DSH 客户端。重启期间连接会短暂断开，恢复后页面会自动重新加载；'
+        + '若等待超时，可点右上角刷新重试。',
       [
         { text: '取消', style: 'cancel' },
         { text: '重启', style: 'destructive', onPress: () => { void restartHost(); } },
@@ -968,7 +860,9 @@ export function WebViewScreen({
             </Text>
             <View style={styles.statusRow}>
               {/* 重启流程期间状态文案优先显示「重启中」，避免和普通连接中混淆。 */}
-              <View style={[styles.statusDot, { backgroundColor: STATUS_COLORS[restarting ? 'connecting' : status] }]} />
+              <View
+                style={[styles.statusDot, { backgroundColor: STATUS_COLORS[restarting ? 'connecting' : status] }]}
+              />
               <Text style={styles.statusText} numberOfLines={1}>
                 {restarting ? '重启中' : STATUS_LABELS[status]} · {hostIdOf(connection.host)}
               </Text>
@@ -978,58 +872,42 @@ export function WebViewScreen({
             <Text style={styles.iconGlyphSmall}>⚙︎</Text>
           </TouchableOpacity>
           {/*
-            * 重启主机 DSH：只在该组件启用时显示（Host 设置 → 远程访问 → 组件，默认关闭）。
-            * 请求经 mTLS 隧道发给主机插件，主机重启客户端；App 等到
-            * /__dsh_remote/status 恢复后自动 reload。进行中禁用按钮并显示 spinner，
-            * 避免重复点出多轮轮询。
+            * 重启主机 DSH：只在主机组件启用（status.restart.enabled === true）时显示。
+            * 请求经群体版隧道（原生请求带 __Host-dsh_session cookie）发给主机插件，
+            * 主机重启 DSH 客户端；App 等到 /__dsh_remote/status 恢复后自动 reload。
+            * 进行中禁用按钮并显示 spinner，避免重复点出多轮轮询。
             */}
-          {restartAvailable === true ? (
-          <TouchableOpacity
-            accessibilityLabel="重启主机"
-            accessibilityHint="向主机发送重启请求，主机恢复后自动重新加载页面"
-            accessibilityState={{ disabled: restarting, busy: restarting }}
-            disabled={restarting}
-            onPress={confirmRestartHost}
-            style={[styles.iconButton, restarting ? styles.iconButtonBusy : null]}
-          >
-            {restarting ? (
-              <ActivityIndicator color={colors.text} size="small" />
-            ) : (
-              <Text style={styles.iconGlyphSmall}>⏻</Text>
-            )}
-          </TouchableOpacity>
+          {restartAvailable ? (
+            <TouchableOpacity
+              accessibilityLabel="重启主机"
+              accessibilityHint="向主机发送重启请求，主机恢复后自动重新加载页面"
+              accessibilityState={{ disabled: restarting, busy: restarting }}
+              disabled={restarting}
+              onPress={confirmRestartHost}
+              style={[styles.iconButton, restarting ? styles.iconButtonBusy : null]}
+            >
+              {restarting ? (
+                <ActivityIndicator color={colors.text} size="small" />
+              ) : (
+                <Text style={styles.iconGlyphSmall}>⏻</Text>
+              )}
+            </TouchableOpacity>
           ) : null}
-          <TouchableOpacity accessibilityLabel="刷新" onPress={reload} style={styles.iconButton}>
+          <TouchableOpacity accessibilityLabel="刷新" onPress={handleManualReload} style={styles.iconButton}>
             <Text style={styles.iconGlyphSmall}>↻</Text>
           </TouchableOpacity>
         </View>
 
         {/*
-          * 进度条槽位常驻（只改 opacity）：之前是条件渲染，每次「开始加载/加载完成」
-          * 都会让 topBar 高度变化 10px，WebView 随之上下跳一下。常驻后布局稳定。
+          * 进度条槽位常驻（只改 opacity）：条件渲染会让 topBar 高度变化，WebView 上下跳。
           */}
         <View style={[styles.progressTrack, { opacity: status === 'connecting' ? 1 : 0 }]}>
           <View style={[styles.progressFill, { width: '45%' }]} />
         </View>
       </View>
 
-      {useNativeMtlsView ? (
-        __DEV__ ? (
-          <Text style={styles.nativeHint}>
-            正在使用原生 mTLS WebView（Keychain 身份：{connection.certRef}）
-          </Text>
-        ) : null
-      ) : isTokenAuth ? null : (
-        <Pressable style={styles.warningBar} onPress={reload}>
-          <Text style={styles.warningText}>
-            ⚠️ POC：当前使用 react-native-webview，不会出示设备证书；主机要求 mTLS 时页面会显示
-            403。请应用原生模块后重试（README「mTLS 验收」）。
-          </Text>
-        </Pressable>
-      )}
-
       <View style={styles.webviewWrap}>
-        {isTokenAuth && !groupSessionReady ? (
+        {!groupSessionReady ? (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color={colors.accent} size="large" />
             <Text style={styles.loadingText}>{groupSessionError ?? '正在获取访问令牌…'}</Text>
@@ -1042,38 +920,19 @@ export function WebViewScreen({
               </TouchableOpacity>
             ) : null}
           </View>
-        ) : useNativeMtlsView && NativeMtlsWebView ? (
-          <NativeMtlsWebView
-            key={reloadKey}
-            url={webUiUrl(connection.host)}
-            clientIdentityLabel={connection.certRef}
-            injectedJavaScript={MOBILE_WEB_SHELL_JS}
-            style={styles.webview}
-            onLoadingStart={(_event: DshMtlsWebViewLoadingEvent) => {
-              loadedRef.current = false;
-              loadingRef.current = true;
-              statusRef.current = 'connecting';
-              setWsRecoveryPending(false);
-              setStatus('connecting');
-            }}
-            onLoadingFinish={handleNativeLoadingFinish}
-            onLoadingError={handleNativeError}
-            onMessage={handleNativeMessage}
-          />
         ) : (
           <DshWebView
-            key={reloadKey}
             ref={webViewRef}
             source={{ uri: pageUrl }}
             injectedJavaScript={MOBILE_WEB_SHELL_JS}
             style={styles.webview}
-            // classic：不共享 cookie（主机代持会话）；群体版：必须共享以带上 __Host- token cookie。
-            sharedCookiesEnabled={isTokenAuth}
+            // 群体版：必须共享 cookie，WebView 请求才会带上 __Host-dsh_session token。
+            sharedCookiesEnabled
             thirdPartyCookiesEnabled={false}
             javaScriptEnabled
             domStorageEnabled
             allowsBackForwardNavigationGestures
-            pullToRefreshEnabled // Android only; iOS uses the refresh button (see TODO above).
+            pullToRefreshEnabled // Android only; iOS uses the refresh button.
             startInLoadingState
             onLoadStart={handleLoadStart}
             onLoadEnd={handleLoadEnd}
@@ -1092,25 +951,32 @@ export function WebViewScreen({
             mixedContentMode="never"
             setSupportMultipleWindows={false}
             onMessage={(event) => handleBridgeMessage(event.nativeEvent.data)}
-            applicationNameForUserAgent="DSHRemote/0.1 (Expo)"
+            applicationNameForUserAgent="DSHRemote/0.1.5 (Expo)"
           />
         )}
 
         {/*
-          * 错误条做成 WebView 上方的覆盖层（absolute，且在 WebView 之后渲染以盖住它）。
-          * 之前它插在 WebView 上方，出现/消失会把 WebView 高度挤掉/还回 ~50px——
-          * 一次进程回收/自动恢复、或一次瞬时导航失败就会让整屏“跳一下”。
+          * 错误条做成 WebView 上方的覆盖层（absolute，且在 WebView 之后渲染以盖住它），
+          * 避免出现/消失时把 WebView 高度挤掉让整屏“跳一下”。
+          * 自动恢复进行中（wsRecoveryPending）不是错误：用警告色 + spinner，
+          * 且不显示「重试」按钮，避免用户误以为需要手动操作。
           */}
         {errorMessage ? (
-          <View style={styles.errorBarOverlay}>
-            <Text style={styles.errorText}>{errorMessage}</Text>
-            <TouchableOpacity style={styles.retryButton} onPress={reload}>
-              <Text style={styles.retryText}>重试</Text>
-            </TouchableOpacity>
+          <View style={[styles.errorBarOverlay, wsRecoveryPending ? styles.errorBarOverlayRecovering : null]}>
+            <Text style={[styles.errorText, wsRecoveryPending ? styles.errorTextRecovering : null]}>
+              {errorMessage}
+            </Text>
+            {wsRecoveryPending ? (
+              <ActivityIndicator color={colors.warning} size="small" />
+            ) : (
+              <TouchableOpacity style={styles.retryButton} onPress={handleManualReload}>
+                <Text style={styles.retryText}>重试</Text>
+              </TouchableOpacity>
+            )}
           </View>
         ) : null}
 
-        {isTokenAuth && groupSessionError && groupSessionReady ? (
+        {groupSessionError && groupSessionReady ? (
           <View style={styles.errorBarOverlay}>
             <Text style={styles.errorText}>{groupSessionError}</Text>
             <TouchableOpacity
@@ -1126,9 +992,6 @@ export function WebViewScreen({
       {/*
         * 底部连接信息（页面标题 + 当前 URL）只在 Debug 构建显示，方便排查
         * 导航/加载问题；Release 构建去掉这条，把高度让给主界面 WebView。
-        * Release 下 WebView 铺到屏幕底部（含 home indicator 区域），底部安全区
-        * 由注入手机壳在 DSH 页面容器内用 env(safe-area-inset-bottom) 预留，
-        * 背景跟随 DSH 主题，不会出现 App 背景色的黑边。
         */}
       {__DEV__ ? (
         <View style={[styles.bottomBar, { paddingBottom: insets.bottom + spacing.xs }]}>
@@ -1216,23 +1079,6 @@ const styles = StyleSheet.create({
     height: 2,
     backgroundColor: colors.accent,
   },
-  nativeHint: {
-    color: colors.success,
-    fontSize: 11,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    backgroundColor: 'rgba(63, 212, 140, 0.08)',
-  },
-  warningBar: {
-    backgroundColor: 'rgba(245, 184, 76, 0.12)',
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  warningText: {
-    color: colors.warning,
-    fontSize: 11,
-    lineHeight: 16,
-  },
   errorBarOverlay: {
     position: 'absolute',
     top: 0,
@@ -1254,6 +1100,13 @@ const styles = StyleSheet.create({
     color: colors.danger,
     fontSize: 12,
     lineHeight: 17,
+  },
+  /** 自动恢复进行中：警告色（不是错误），配合 spinner 提示「正在自动重连…」。 */
+  errorBarOverlayRecovering: {
+    borderBottomColor: colors.warning,
+  },
+  errorTextRecovering: {
+    color: colors.warning,
   },
   retryButton: {
     paddingHorizontal: spacing.md,

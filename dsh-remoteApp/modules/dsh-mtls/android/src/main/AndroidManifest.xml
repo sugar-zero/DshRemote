@@ -1,4 +1,4 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
-  <!-- The mTLS WebView only loads https://<hostId>.<relayDomain>/. The app
-       manifest already holds INTERNET; no extra permissions are required here. -->
+  <!-- 群体服务版 App 通过 relay 隧道加载 https://<hostId>.<relayDomain>:<port>/。
+       app manifest 已有 INTERNET 权限；这里不需要额外权限。 -->
 </manifest>

@@ -1,7 +1,7 @@
 /**
  * Group service (A mode) — JS side of the token-auth flow.
  *
- * Group mode replaces the device mTLS certificate with:
+ * 群体版 App 只使用 token 鉴权（classic/单体 mTLS 模式已删除）：
  *   - pairing: native P-256 key pair → POST /__dsh_remote/pair {secret, publicKey}
  *   - session: POST /__group/auth/challenge → native ECDSA signature →
  *     POST /__group/auth/token → short-lived token → `__Host-dsh_session` cookie
@@ -13,6 +13,8 @@
  *   - pairing/session requests only go to the host origin derived from the QR
  *     (https + service-assigned port), never to an arbitrary URL.
  */
+
+import { Platform } from 'react-native';
 
 import {
   GROUP_SESSION_COOKIE,
@@ -28,8 +30,7 @@ import {
   type GroupSessionToken,
   type PairPlatform,
 } from './protocol';
-import { persistGroupPairedDevice } from './pairing';
-import type { StoredConnection } from './store';
+import { saveConnection, type StoredConnection } from './store';
 import * as nativeModule from '../../modules/dsh-mtls/src';
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,18 @@ interface GroupNativeModuleApi {
     value: string;
     maxAgeSeconds: number;
   }): Promise<unknown>;
+  /**
+   * 带 `__Host-dsh_session` cookie 的 HTTPS 请求（原生实现）。
+   * relay 边缘对普通隧道流量只校验 cookie，JS fetch 不带 WebView cookie store，
+   * 所以主机 status / restart 内部接口走原生请求。
+   */
+  groupHttpFetch?(options: {
+    url: string;
+    token: string;
+    method: 'GET' | 'POST';
+    body?: string;
+    timeoutMs?: number;
+  }): Promise<unknown>;
   clearGroupDeviceKey?(label?: string): Promise<unknown>;
 }
 
@@ -59,6 +72,7 @@ const nativeApi = nativeModule as unknown as GroupNativeModuleApi;
 /** True when the current build links the native group-auth functions. */
 export function isGroupNativeAvailable(): boolean {
   return (
+    nativeModule.isDshMtlsAvailable === true &&
     typeof nativeApi.generateGroupDeviceKey === 'function' &&
     typeof nativeApi.signGroupChallenge === 'function' &&
     typeof nativeApi.setSessionCookie === 'function'
@@ -185,20 +199,28 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
 
 async function fetchJson(
   url: string,
-  init: { method: 'GET' | 'POST'; body?: unknown; signal?: AbortSignal },
+  init: {
+    method: 'GET' | 'POST';
+    body?: unknown;
+    signal?: AbortSignal;
+    /** 额外请求头（例如 `Authorization: Bearer`）。 */
+    headers?: Record<string, string>;
+    /** 本次请求超时（默认 15s；重启探活等短请求传 3s）。 */
+    timeoutMs?: number;
+  },
 ): Promise<JsonHttpResult> {
   if (init.signal?.aborted) throw new GroupPairingError('aborted', '操作已取消。');
+  const timeoutMs = init.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
   const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), DEFAULT_REQUEST_TIMEOUT_MS);
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
   const onExternalAbort = () => controller.abort();
   init.signal?.addEventListener('abort', onExternalAbort);
   try {
+    const headers: Record<string, string> = { accept: 'application/json', ...(init.headers ?? {}) };
+    if (init.body !== undefined) headers['content-type'] = 'application/json';
     const response = await fetch(url, {
       method: init.method,
-      headers: init.body === undefined ? { accept: 'application/json' } : {
-        accept: 'application/json',
-        'content-type': 'application/json',
-      },
+      headers,
       body: init.body === undefined ? undefined : JSON.stringify(init.body),
       signal: controller.signal,
     });
@@ -211,18 +233,18 @@ async function fetchJson(
         parsed = null;
       }
     }
-    const headers: Record<string, string> = {};
+    const headersOut: Record<string, string> = {};
     for (const name of ['server', 'via', 'www-authenticate', 'content-type', 'x-powered-by']) {
       const value = response.headers.get(name);
-      if (value) headers[name] = value;
+      if (value) headersOut[name] = value;
     }
-    return { status: response.status, body: parsed, text: text.slice(0, 512), headers };
+    return { status: response.status, body: parsed, text: text.slice(0, 512), headers: headersOut };
   } catch (error) {
     if (isRecord(error) && error.name === 'AbortError') {
       if (init.signal?.aborted) throw new GroupPairingError('aborted', '操作已取消。');
       throw new GroupPairingError(
         'timeout',
-        `连接主机超时（${Math.round(DEFAULT_REQUEST_TIMEOUT_MS / 1000)}s）。请确认手机已联网、主机在线。`,
+        `连接主机超时（${Math.round(timeoutMs / 1000)}s）。请确认手机已联网、主机在线。`,
         { retryable: true },
       );
     }
@@ -276,7 +298,7 @@ function requireHttpOk(result: JsonHttpResult, action: string, context?: string)
 export interface GroupDeviceKey {
   /** P-256 uncompressed point (65 bytes), base64url. */
   publicKey: string;
-  /** Keychain/Keystore label used by signGroupChallenge; persist as connection.certRef. */
+  /** Keychain/Keystore label used by signGroupChallenge; persist as connection.deviceKeyLabel. */
   label: string;
 }
 
@@ -574,7 +596,7 @@ export interface GroupSessionParams {
   port: number;
   hostId: string;
   deviceId: string;
-  /** Keychain/Keystore label of the group device key (connection.certRef). */
+  /** Keychain/Keystore label of the group device key (connection.deviceKeyLabel). */
   label: string;
   signal?: AbortSignal;
   /** Clock override for tests. */
@@ -741,4 +763,171 @@ export function hasValidGroupSession(params: Pick<GroupSessionParams, 'host' | '
   if (!cachedSession) return false;
   if (cachedSession.key !== sessionCacheKey(params.host, params.port, params.deviceId)) return false;
   return cachedSession.expiresAt - now > SESSION_REFRESH_MARGIN_MS;
+}
+
+// ---------------------------------------------------------------------------
+// 带会话 cookie 的隧道内部请求（status / restart）
+// ---------------------------------------------------------------------------
+
+/**
+ * 当前 relay 边缘对普通隧道流量**只校验 `__Host-dsh_session` cookie**，而 JS `fetch`
+ * 拿不到 WKWebView/WebView 的 cookie store → 已鉴权的内部接口（`/__dsh_remote/status`、
+ * `/__dsh_remote/restart`）统一走原生请求（`groupHttpFetch`）。
+ *
+ * 原生请求同时带：
+ *   - `Cookie: __Host-dsh_session=<token>`（relay 边缘放行依据）；
+ *   - `Authorization: Bearer <token>`（host 端新接口也支持 Bearer；两者同一 token）。
+ * 不使用设备证书 / mTLS。
+ */
+type GroupHttpNativeFn = NonNullable<GroupNativeModuleApi['groupHttpFetch']>;
+
+/** Cookie / Bearer 用的 token 只应包含 base64url 安全字符（防头注入）。 */
+const GROUP_TOKEN_SAFE_RE = /^[A-Za-z0-9._~+/=-]+$/;
+
+function requireGroupHttpNative(): { groupHttpFetch: GroupHttpNativeFn } {
+  const fetchFn = nativeApi.groupHttpFetch;
+  if (!isGroupNativeAvailable() || typeof fetchFn !== 'function') {
+    throw new GroupPairingError(
+      'native_unavailable',
+      '当前 App 构建没有链接原生主机请求能力（modules/dsh-mtls）。请使用包含该模块的最新原生构建，而不是 Expo Go。',
+    );
+  }
+  return nativeApi as unknown as { groupHttpFetch: GroupHttpNativeFn };
+}
+
+function readGroupHttpResult(raw: unknown): { status: number; body: string } {
+  if (!isRecord(raw)) {
+    throw new GroupPairingError('invalid_response', '原生请求没有返回结果。');
+  }
+  const status = Number(raw.status);
+  if (!Number.isInteger(status) || status < 100 || status > 599) {
+    throw new GroupPairingError('invalid_response', '原生请求返回的状态码无效。');
+  }
+  return { status, body: typeof raw.body === 'string' ? raw.body : '' };
+}
+
+export interface GroupAuthorizedRequestOptions {
+  host: string;
+  port: number;
+  hostId: string;
+  deviceId: string;
+  /** Keychain/Keystore label of the group device key (connection.deviceKeyLabel). */
+  label: string;
+  method: 'GET' | 'POST';
+  /** 隧道内完整 https URL（见 protocol.ts 的 groupStatusUrl / groupRestartUrl）。 */
+  url: string;
+  /** JSON 请求体（可选）。 */
+  body?: unknown;
+  /** 单次请求超时；重启探活用 3s，重启请求用 10s。 */
+  timeoutMs?: number;
+  signal?: AbortSignal;
+}
+
+export interface GroupAuthorizedResponse {
+  status: number;
+  /** 解析后的 JSON（非 JSON 响应为 null）。 */
+  body: unknown;
+  /** 原始响应文本（截断到 512B，仅用于错误提示，不落盘）。 */
+  text: string;
+}
+
+/**
+ * 发起一次「已鉴权的隧道内部请求」：
+ * 1. 先用 {@link ensureGroupSessionIfNeeded} 确保短时 token 有效（缓存有效时复用）；
+ * 2. 用原生 `groupHttpFetch` 带 `__Host-dsh_session` cookie 请求（relay 边缘放行）；
+ * 3. 401/403 时强制续期一次 token 再重试（失败可重试，鉴权失败抛可读错误）。
+ */
+export async function groupAuthorizedFetch(
+  options: GroupAuthorizedRequestOptions,
+): Promise<GroupAuthorizedResponse> {
+  const api = requireGroupHttpNative();
+  const sessionParams: GroupSessionParams = {
+    host: options.host,
+    port: options.port,
+    hostId: options.hostId,
+    deviceId: options.deviceId,
+    label: options.label,
+    signal: options.signal,
+  };
+  const send = async (forceRefresh: boolean): Promise<GroupAuthorizedResponse> => {
+    const session = await ensureGroupSessionIfNeeded(
+      sessionParams,
+      forceRefresh ? { forceRefresh: true } : {},
+    );
+    if (!GROUP_TOKEN_SAFE_RE.test(session.token)) {
+      throw new GroupPairingError('invalid_response', '服务端返回的访问令牌格式无效。');
+    }
+    let raw: unknown;
+    try {
+      raw = await api.groupHttpFetch({
+        url: options.url,
+        token: session.token,
+        method: options.method,
+        timeoutMs: options.timeoutMs,
+        body: options.body === undefined ? undefined : JSON.stringify(options.body),
+      });
+    } catch (error) {
+      throw new GroupPairingError(
+        'network',
+        error instanceof Error && error.message
+          ? error.message
+          : '无法连接主机。请确认手机已联网、主机在线。',
+        { retryable: true },
+      );
+    }
+    const result = readGroupHttpResult(raw);
+    let parsed: unknown = null;
+    if (result.body.trim() !== '') {
+      try {
+        parsed = JSON.parse(result.body) as unknown;
+      } catch {
+        parsed = null;
+      }
+    }
+    return { status: result.status, body: parsed, text: result.body.slice(0, 512) };
+  };
+
+  let response = await send(false);
+  if (response.status === 401 || response.status === 403) {
+    // token 可能刚过期，或被 relay/主机拒绝：强制续期一次再重试。
+    response = await send(true);
+  }
+  return response;
+}
+
+// ---------------------------------------------------------------------------
+// Persistence / platform helpers
+// ---------------------------------------------------------------------------
+
+/** Pairing platform value; web preview is mapped to `ios` (UI preview only). */
+export function currentPairPlatform(): PairPlatform {
+  return Platform.OS === 'android' ? 'android' : 'ios';
+}
+
+/**
+ * 群体版配对成功后持久化连接（无证书；端口/主机 ID 来自服务端下发）。
+ * 私钥只在系统安全区（Keychain/Keystore），这里只存 label；token 不落盘。
+ */
+export async function persistGroupPairedDevice(params: {
+  pairing: GroupPairingUri;
+  device: GroupPairedDeviceData;
+  deviceName: string;
+  /** Keychain/Keystore label of the group device key (see group.ts). */
+  deviceKeyLabel: string;
+}): Promise<StoredConnection> {
+  const { pairing, device, deviceName } = params;
+  const connection: StoredConnection = {
+    host: pairing.host,
+    relayDomain: pairing.relayDomain,
+    hostFingerprint: device.hostFingerprint || pairing.hostFingerprint,
+    deviceId: device.deviceId,
+    deviceName,
+    hostName: device.hostName,
+    hostId: device.hostId || pairing.hostId,
+    port: device.mobilePort || pairing.port,
+    deviceKeyLabel: params.deviceKeyLabel,
+    pairedAt: Date.now(),
+  };
+  await saveConnection(connection);
+  return connection;
 }

@@ -1,13 +1,14 @@
 Pod::Spec.new do |s|
   s.name           = 'DSHMTLS'
-  s.version        = '0.1.0'
-  s.summary        = 'DSH Remote native mTLS WebView + device identity (POC skeleton)'
+  s.version        = '0.1.5'
+  s.summary        = 'DSH Remote group-service device key + session cookie (P-256)'
   s.description    = <<-DESC
-    POC skeleton for DSH Remote:
-      - WKWebView subclass answering TLS client-certificate challenges with a
-        Keychain SecIdentity (mTLS to the host plugin over the relay tunnel).
-      - Keychain helpers to import / find / delete the device identity.
-    Device key generation + CSR is a next-milestone item.
+    Native helpers for DSH Remote (group service / token auth):
+      - P-256 device key generation in the Secure Enclave (software Keychain fallback).
+      - ECDSA-SHA256 challenge signing for the relay edge auth flow.
+      - `__Host-` session cookie injection into the shared WKWebView cookie store.
+      - WebView cache cleanup for the settings screen.
+    classic/mTLS client-certificate support has been removed from the app.
   DESC
   s.author         = ''
   s.homepage       = 'https://example.invalid/dsh-remote'

@@ -1,14 +1,18 @@
 /**
- * SettingsScreen — App 设置页（版本 / 通知 / 缓存 / 设备与安全入口）。
+ * SettingsScreen — App 设置页（版本 / App 锁 / 缓存 / 设备与安全入口）。
  *
- * 从 Home 或 WebView 打开；设置项写 SecureStore，清理缓存调用原生模块
- * `clearWebCache()`（WKWebView 的 cache/cookie/存储 + URLCache）。
+ * 群体服务版（A 模式）：
+ *   - 全局 App 锁开关在这里（本页）：**只负责 App 冷启动解锁**（Face ID / Touch ID），
+ *     打开主机连接、同步信息、心跳、切会话、回前台都不要求识别；
+ *   - 单台主机的「打开此连接时要求面容」开关在 DevicesScreen（设备与安全），
+ *     仅在全局 App 锁开启时生效；
+ *   - 不再有 APNs 推送 / 应用内通知 / 通知权限设置（群体版暂不实现本机推送）；
+ *   - 不再有 classic/mTLS/设备证书相关设置项；
+ *   - 清理缓存调用原生模块 `clearWebCache()`（WKWebView 的 cache/cookie/存储 + URLCache）。
  */
 import { useCallback, useEffect, useState } from 'react';
 import {
   Alert,
-  AppState,
-  Linking,
   Platform,
   ScrollView,
   StyleSheet,
@@ -19,18 +23,23 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Application from 'expo-application';
-import * as Notifications from 'expo-notifications';
 
 import type { StoredConnection } from '../lib/store';
+import {
+  getBiometricAvailability,
+  isAppLockEnabled,
+  setAppLockEnabled,
+  type BiometricAvailability,
+} from '../lib/appLock';
 import { clearWebCache, isDshMtlsAvailable } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
 interface SettingsScreenProps {
   connection: StoredConnection | null;
-  inAppNotificationsEnabled: boolean;
-  onToggleInAppNotifications: (enabled: boolean) => void;
   onCacheCleared: () => void;
   onOpenDevices?: () => void;
+  /** App 锁开关变化（App.tsx 用它同步内存状态；开关本身存 SecureStore）。 */
+  onAppLockChanged?: (enabled: boolean) => void;
   onClose: () => void;
 }
 
@@ -46,70 +55,55 @@ function formatVersion(): string {
 
 export function SettingsScreen({
   connection,
-  inAppNotificationsEnabled,
-  onToggleInAppNotifications,
   onCacheCleared,
   onOpenDevices,
+  onAppLockChanged,
   onClose,
 }: SettingsScreenProps) {
   const insets = useSafeAreaInsets();
-  const [permissionGranted, setPermissionGranted] = useState<boolean | null>(null);
-  const [busy, setBusy] = useState('');
+  const [busy, setBusy] = useState(false);
   const [notice, setNotice] = useState('');
-
-  const refreshPermission = useCallback(async () => {
-    try {
-      const permission = await Notifications.getPermissionsAsync();
-      setPermissionGranted(permission.granted === true);
-    } catch {
-      setPermissionGranted(null);
-    }
-  }, []);
+  // App 锁：开关值存 SecureStore；生物识别能力用于提示/阻止在未录入时开启。
+  const [appLockEnabled, setAppLockEnabledState] = useState(false);
+  const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
 
   useEffect(() => {
-    void refreshPermission();
-    const subscription = AppState.addEventListener('change', (state) => {
-      if (state === 'active') void refreshPermission();
+    let cancelled = false;
+    void Promise.all([isAppLockEnabled(), getBiometricAvailability()]).then(([enabled, availability]) => {
+      if (cancelled) return;
+      setAppLockEnabledState(enabled);
+      setBiometrics(availability);
     });
-    return () => subscription.remove();
-  }, [refreshPermission]);
+    return () => { cancelled = true; };
+  }, []);
 
-  const sendTestNotification = async () => {
-    if (busy !== '') return;
-    setBusy('test');
-    try {
-      let granted = permissionGranted === true;
-      if (!granted) {
-        const requested = await Notifications.requestPermissionsAsync();
-        granted = requested.granted === true;
-        setPermissionGranted(granted);
-      }
-      if (!granted) {
-        setNotice('通知权限未允许，无法发送测试通知；请在系统设置中允许通知');
-        return;
-      }
-      await Notifications.scheduleNotificationAsync({
-        content: {
-          title: '应用内通知测试',
-          body: '如果 App 在前台，应在 App 内显示这张卡片，而不是系统横幅。',
-          sound: false,
-        },
-        trigger: null,
-      });
-      setNotice(inAppNotificationsEnabled ? '测试通知已发送：前台应显示应用内卡片' : '测试通知已发送：前台应显示系统横幅');
-    } catch (error) {
-      setNotice(`发送测试通知失败：${errorText(error)}`);
-    } finally {
-      setBusy('');
+  const handleToggleAppLock = useCallback(async (enabled: boolean) => {
+    if (enabled && biometrics && !biometrics.enrolled) {
+      Alert.alert(
+        '无法开启 App 锁',
+        `${biometrics.label} 尚未在系统中设置。请先在系统设置里录入生物识别，再回到这里开启。`,
+      );
+      return;
     }
-  };
+    await setAppLockEnabled(enabled);
+    setAppLockEnabledState(enabled);
+    onAppLockChanged?.(enabled);
+  }, [biometrics, onAppLockChanged]);
 
-  const clearCache = async () => {
-    if (busy !== '') return;
-    setBusy('cache');
+  const biometricsLabel = biometrics === null
+    ? '检测中…'
+    : biometrics.available
+      ? biometrics.enrolled
+        ? `${biometrics.label} 已设置`
+        : `${biometrics.label} 未设置`
+      : '设备不支持生物识别';
+
+  const clearCache = useCallback(async () => {
+    if (busy) return;
+    setBusy(true);
     try {
       if (!isDshMtlsAvailable) {
-        throw new Error('当前构建未链接原生模块，无法清理 WebView 缓存；请使用包含 dsh-mtls 的构建');
+        throw new Error('当前构建未链接原生模块，无法清理 WebView 缓存；请使用包含 dsh-mtls 的原生构建');
       }
       const cleared = await clearWebCache();
       onCacheCleared();
@@ -119,26 +113,20 @@ export function SettingsScreen({
     } catch (error) {
       setNotice(`清理缓存失败：${errorText(error)}`);
     } finally {
-      setBusy('');
+      setBusy(false);
     }
-  };
+  }, [busy, onCacheCleared]);
 
-  const confirmClearCache = () => {
+  const confirmClearCache = useCallback(() => {
     Alert.alert(
       '清理缓存',
-      '将清理 WebView 的缓存、Cookie 与本地存储，并重新加载当前主机页面。配对证书不会被删除。',
+      '将清理 WebView 的缓存、Cookie 与本地存储，并重新加载当前主机页面。配对信息与设备密钥不会被删除。',
       [
         { text: '取消', style: 'cancel' },
         { text: '清理', style: 'destructive', onPress: () => { void clearCache(); } },
       ],
     );
-  };
-
-  const openSystemSettings = () => {
-    Linking.openSettings().catch(() => setNotice('无法打开系统设置，请到 iOS 设置 → 通知 → DSH Remote 中调整'));
-  };
-
-  const permissionText = permissionGranted === null ? '未知' : permissionGranted ? '已允许' : '未允许';
+  }, [clearCache]);
 
   return (
     <View style={styles.screen}>
@@ -173,45 +161,24 @@ export function SettingsScreen({
         </View>
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>通知</Text>
-          <View style={styles.row}>
-            <View style={styles.rowText}>
-              <Text style={styles.rowLabel}>应用内通知</Text>
-              <Text style={styles.rowHint}>
-                开启：App 在前台收到推送时显示应用内卡片，不弹系统横幅；关闭：前台仍显示系统通知。后台始终是系统通知。
-              </Text>
+          <Text style={styles.sectionTitle}>App 锁（冷启动解锁）</Text>
+          <View style={styles.switchRow}>
+            <View style={styles.switchText}>
+              <Text style={styles.rowLabel}>App 冷启动时要求生物识别</Text>
+              <Text style={styles.rowHint}>{biometricsLabel}</Text>
             </View>
             <Switch
-              value={inAppNotificationsEnabled}
-              onValueChange={onToggleInAppNotifications}
+              value={appLockEnabled}
+              onValueChange={(enabled) => { void handleToggleAppLock(enabled); }}
               trackColor={{ false: colors.borderStrong, true: colors.accentPressed }}
-              thumbColor={inAppNotificationsEnabled ? colors.accent : colors.textMuted}
+              thumbColor={appLockEnabled ? colors.accent : colors.textMuted}
             />
           </View>
-          <View style={styles.divider} />
-          <View style={styles.row}>
-            <View style={styles.rowText}>
-              <Text style={styles.rowLabel}>通知权限</Text>
-              <Text style={styles.rowHint}>后台推送需要系统通知权限；未允许时收不到任何通知。</Text>
-            </View>
-            <Text style={[styles.rowValue, permissionGranted === false ? styles.valueWarn : null]}>
-              {permissionText}
-            </Text>
-          </View>
-          <View style={styles.actions}>
-            <TouchableOpacity style={sharedStyles.secondaryButton} onPress={openSystemSettings}>
-              <Text style={sharedStyles.secondaryButtonText}>系统设置</Text>
-            </TouchableOpacity>
-            <TouchableOpacity
-              style={[sharedStyles.secondaryButton, busy === 'test' ? sharedStyles.disabledButton : null]}
-              disabled={busy === 'test'}
-              onPress={() => { void sendTestNotification(); }}
-            >
-              <Text style={sharedStyles.secondaryButtonText}>
-                {busy === 'test' ? '发送中…' : '发送测试通知'}
-              </Text>
-            </TouchableOpacity>
-          </View>
+          <Text style={styles.rowHint}>
+            开启后，App 冷启动首次进入时需用 Face ID / Touch ID / 指纹解锁；打开主机连接、
+            同步信息、心跳与切换会话均不会再次要求识别。若希望某台主机在打开时也要求识别，
+            请到该主机的「设备与安全」里单独开启「打开此连接时要求面容」。
+          </Text>
         </View>
 
         <View style={sharedStyles.card}>
@@ -222,12 +189,12 @@ export function SettingsScreen({
           </Text>
           <View style={styles.actions}>
             <TouchableOpacity
-              style={[sharedStyles.secondaryButton, busy === 'cache' ? sharedStyles.disabledButton : null]}
-              disabled={busy === 'cache'}
+              style={[sharedStyles.secondaryButton, busy ? sharedStyles.disabledButton : null]}
+              disabled={busy}
               onPress={confirmClearCache}
             >
               <Text style={sharedStyles.secondaryButtonText}>
-                {busy === 'cache' ? '清理中…' : '清理 WebView 缓存'}
+                {busy ? '清理中…' : '清理 WebView 缓存'}
               </Text>
             </TouchableOpacity>
           </View>
@@ -236,7 +203,7 @@ export function SettingsScreen({
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>设备与安全</Text>
           <Text style={styles.rowHint}>
-            查看本机设备证书、诊断信息、App 锁开关，或重新配对/解除配对。
+            查看本机设备身份（P-256 设备密钥 / 短时 token），或解除本机配对。
           </Text>
           <View style={styles.actions}>
             <TouchableOpacity
@@ -262,7 +229,7 @@ export function SettingsScreen({
 
         <Text style={styles.footer}>
           DSH Remote · AGPL-3.0-or-later{'\n'}
-          通知内容来自会话摘要，锁屏可见；可在 iOS 设置里关闭锁屏预览。
+          群体服务版：P-256 设备密钥 + 短时 token；relay 终止手机 TLS，部署方可见会话明文。
         </Text>
       </ScrollView>
     </View>
@@ -295,12 +262,18 @@ const styles = StyleSheet.create({
     gap: spacing.md,
     paddingVertical: spacing.sm,
   },
-  rowText: { flex: 1, gap: 2 },
   rowLabel: { color: colors.text, fontSize: 15, fontWeight: '600' },
   rowHint: { color: colors.textMuted, fontSize: 12, lineHeight: 18, marginTop: 2 },
   rowValue: { color: colors.textMuted, fontSize: 13, maxWidth: '52%', textAlign: 'right' },
-  valueWarn: { color: colors.warning },
-  divider: { height: StyleSheet.hairlineWidth, backgroundColor: colors.border, marginVertical: spacing.xs },
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+  },
+  switchText: {
+    flex: 1,
+    gap: 2,
+  },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
   notice: {
     backgroundColor: colors.surfaceRaised,

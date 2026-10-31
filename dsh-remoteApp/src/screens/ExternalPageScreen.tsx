@@ -7,8 +7,9 @@
  *
  * 安全边界：
  *  - 只加载 http(s) 且不是隧道主机（调用方已校验，这里再兜底一次）；
- *  - 独立 WebView，不共享 DSH mTLS WebView 的 cookie/凭据；平台页需要用户在
- *    内嵌页里自行登录（cookie 在 WebView 数据目录里持久化，和桌面 DSH 会话无关）；
+ *  - 独立 WebView，不共享 DSH 主 WebView 的 cookie/凭据（也拿不到 `__Host-` 会话
+ *    token）；平台页需要用户在内嵌页里自行登录（cookie 在 WebView 数据目录里持久化，
+ *    和桌面 DSH 会话无关）；
  *  - 非 http(s) 链接（mailto:/tel: 等）交给系统处理。
  */
 import { useCallback, useRef, useState, type ComponentType, type Ref } from 'react';

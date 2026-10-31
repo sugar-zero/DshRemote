@@ -1,26 +1,21 @@
 // DSHMTLSModule.swift
-// DSH Remote — POC Expo Module entry point: mTLS WebView + Keychain identity.
+// DSH Remote — 原生模块入口（群体服务版 / A 模式，token 鉴权）。
 //
-// ⚠️ STATUS: POC / NOT COMPILED on this machine (only Command Line Tools, no
-// Xcode). Source is complete and reviewed, but must be built on the user's Mac
-// (`npx expo prebuild && npx expo run:ios`) — see README.
+// 历史原因保留模块名 `DSHMTLS`（减少工程改动），但模块内部只保留群体版能力。
 //
 // JS surface (modules/dsh-mtls/src/index.ts):
-//   setClientIdentity(label)            — configure Keychain label for challenges
-//   getClientIdentity()                 — current label
-//   clearClientIdentity()               — forget label (identity stays in Keychain)
-//   importP12(base64, password, label?) — POC dev helper (see DSHMTLSIdentityStore)
-//   generateCsr(commonName)             — P-256 密钥（Secure Enclave 优先）+ PKCS#10 CSR
-//   installCertificate(certPem,label)   — 安装主机签发的证书并关联设备私钥
-//   requestWithClientCert(options)       — 用设备身份发 HTTPS 请求（push token / pair status）
-//   getDiagnostics()                    — label / presence / subject / expiry
-//
-// 群体服务版（A 模式，token 鉴权；与 mTLS 并存）：
-//   generateGroupDeviceKey(label?)       — P-256 设备密钥（Secure Enclave 优先，幂等）
-//   getGroupDevicePublicKey(label?)      — 读取已存在的设备公钥（base64url 未压缩点）
+//   generateGroupDeviceKey(label?)        — P-256 设备密钥（Secure Enclave 优先，幂等）
+//   getGroupDevicePublicKey(label?)       — 读取已存在的设备公钥（base64url 未压缩点）
 //   signGroupChallenge(label, messageB64) — ECDSA-SHA256 签 relay challenge（DER→base64url）
-//   clearGroupDeviceKey(label?)          — 删除设备密钥
+//   clearGroupDeviceKey(label?)           — 删除设备密钥
 //   setSessionCookie({url,name,value,...}) — 注入 `__Host-` 会话 cookie（Secure/SameSite=Strict/host-only）
+//   groupHttpFetch({url,token,method,body?,timeoutMs}) — 带会话 cookie 的 HTTPS 请求
+//                                          （relay 边缘只认 cookie，用于 status/restart）
+//   clearWebCache()                       — 清理 WKWebView 缓存/Cookie/本地存储 + URLCache
+//
+// classic/单体 mTLS 原生能力（CSR / PKCS#12 导入 / 设备证书安装 / 原生 mTLS WebView /
+// URLSession 客户端证书请求）已从 App 删除：群体版设备身份只来自 P-256 设备密钥 +
+// relay 签发的短时 token。
 
 import Dispatch
 import ExpoModulesCore
@@ -30,48 +25,10 @@ public final class DSHMTLSModule: Module {
   public func definition() -> ModuleDefinition {
     Name("DSHMTLS")
 
-    // MARK: - Identity configuration
-
-    Function("setClientIdentity") { (label: String) in
-      DSHMTLSIdentityStore.shared.configuredLabel = label
-    }
-
-    Function("clearClientIdentity") {
-      DSHMTLSIdentityStore.shared.configuredLabel = nil
-    }
-
-    AsyncFunction("getClientIdentity") { () -> String? in
-      DSHMTLSIdentityStore.shared.configuredLabel
-    }
-
-    // MARK: - POC identity import (dev helper)
-
-    AsyncFunction("importP12") { (p12Base64: String, password: String, label: String?) -> [String: Any?] in
-      let resolvedLabel = label ?? DSHMTLSIdentityStore.shared.configuredLabel ?? "com.dsh.remote.device"
-      return try DSHMTLSIdentityStore.shared.importP12(
-        base64: p12Base64,
-        password: password,
-        label: resolvedLabel
-      )
-    }
-
-    // MARK: - Device identity: Secure Enclave key + CSR + certificate install
-
-    AsyncFunction("generateCsr") { (commonName: String) -> [String: Any] in
-      let label = "com.dsh.remote.device.\(UUID().uuidString)"
-      let result = try DSHMTLSCsr.generate(commonName: commonName, keyLabel: label)
-      return ["csrPem": result.csrPem, "label": result.keyLabel, "secureEnclave": result.secureEnclave]
-    }
-
-    AsyncFunction("installCertificate") { (certPem: String, label: String?) -> [String: Any?] in
-      let resolvedLabel = label ?? DSHMTLSIdentityStore.shared.configuredLabel ?? "com.dsh.remote.device"
-      return try DSHMTLSIdentityStore.shared.installCertificate(certPem: certPem, label: resolvedLabel)
-    }
-
     // MARK: - 群体服务版（A 模式）：P-256 设备密钥 / challenge 签名 / 会话 cookie
     //
-    // 与主线 mTLS 身份并存：群体版不签设备证书，而是把 P-256 公钥登记到主机/relay，
-    // 之后用私钥签 relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
+    // 群体版不签设备证书，而是把 P-256 公钥登记到主机/relay，之后用私钥签 relay
+    // challenge 换短时 token（docs/group-service-design.zh.md §7）。
 
     /// 生成或复用群体版 P-256 设备密钥；返回 base64url 未压缩点公钥（65B）与是否 Secure Enclave。
     AsyncFunction("generateGroupDeviceKey") { (label: String?) -> [String: Any] in
@@ -138,30 +95,75 @@ public final class DSHMTLSModule: Module {
       }
     }
 
-    // MARK: - Authenticated HTTPS (client certificate)
-
-    AsyncFunction("requestWithClientCert") { (options: [String: Any]) -> [String: Any] in
-      guard let url = options["url"] as? String else { throw DSHMTLSNetworkError.invalidURL }
-      let method = (options["method"] as? String) ?? "GET"
-      let headers = (options["headers"] as? [String: String]) ?? [:]
-      let body = options["body"] as? String
-      return try DSHMTLSNetwork.request(urlString: url, method: method, headers: headers, body: body)
+    /// 带 `__Host-dsh_session` 会话 cookie 的 HTTPS 请求（群体版隧道内的已鉴权内部接口）。
+    ///
+    /// 为什么需要原生请求：relay 边缘对普通隧道流量只校验 `__Host-dsh_session` cookie，
+    /// 而 App 的 JS `fetch`（NSURLSession 的 cookie 处理）与 WKWebView 的 cookie store
+    /// 不共享；这里由原生显式构造 cookie（写入 `HTTPCookieStorage.shared` 并设置
+    /// `Cookie` 请求头）后发请求，保证 relay 边缘按 cookie 放行。
+    ///
+    /// 只允许 https；返回 `{ status, body }`，JSON 解析交给 JS 侧。
+    /// 不使用设备证书 / mTLS：鉴权仍是 relay 签发的短时 token。
+    AsyncFunction("groupHttpFetch") { (options: [String: Any], promise: Promise) in
+      guard let urlString = options["url"] as? String,
+            let url = URL(string: urlString),
+            url.scheme?.lowercased() == "https",
+            let host = url.host, !host.isEmpty,
+            let token = options["token"] as? String, !token.isEmpty else {
+        promise.reject("invalid-http-options", "groupHttpFetch 需要 https url 与 token")
+        return
+      }
+      // token 会进入 Cookie / Authorization 头：只允许 base64url 安全字符（防头注入）。
+      guard token.range(of: "^[A-Za-z0-9._~+/=-]+$", options: .regularExpression) != nil else {
+        promise.reject("invalid-http-options", "groupHttpFetch 的 token 含非法字符")
+        return
+      }
+      let method = ((options["method"] as? String) ?? "GET").uppercased()
+      guard method == "GET" || method == "POST" else {
+        promise.reject("invalid-http-method", "groupHttpFetch 只支持 GET / POST")
+        return
+      }
+      let timeoutMs = (options["timeoutMs"] as? NSNumber)?.doubleValue ?? 15_000
+      let cookieName = "__Host-dsh_session"
+      let cookieHeader = "\(cookieName)=\(token)"
+      var properties: [HTTPCookiePropertyKey: Any] = [
+        .name: cookieName,
+        .value: token,
+        .path: "/",
+        .secure: "TRUE",
+        .discard: "FALSE",
+        .maximumAge: 30 * 60,
+        .originURL: url,
+      ]
+      if #available(iOS 13.0, *) {
+        properties[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteStrict
+      }
+      // 双写：URLSession 默认会把 HTTPCookieStorage 里的匹配 cookie 自动带进请求；
+      // 同时显式设置 Cookie 头，避免依赖自动 cookie 处理的具体行为（两者值相同）。
+      if let cookie = HTTPCookie(properties: properties) {
+        HTTPCookieStorage.shared.setCookie(cookie)
+      }
+      var request = URLRequest(url: url, timeoutInterval: max(1, timeoutMs / 1000))
+      request.httpMethod = method
+      request.setValue("application/json", forHTTPHeaderField: "Accept")
+      request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+      request.setValue(cookieHeader, forHTTPHeaderField: "Cookie")
+      if let body = options["body"] as? String, !body.isEmpty {
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body.data(using: .utf8)
+      }
+      URLSession.shared.dataTask(with: request) { data, response, error in
+        if let error = error {
+          promise.reject("group-http-failed", "无法连接主机：\(error.localizedDescription)")
+          return
+        }
+        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        let body = data.flatMap { String(data: $0, encoding: .utf8) } ?? ""
+        promise.resolve(["status": status, "body": body])
+      }.resume()
     }
 
-    // MARK: - Diagnostics
-
-    AsyncFunction("getDiagnostics") { () -> [String: Any?] in
-      DSHMTLSIdentityStore.shared.diagnostics(label: nil)
-    }
-
-    // MARK: - WebView bridge / cache
-
-    /// 把一段 JS 注入当前 mTLS WebView（App 点击推送后用它打开对应会话）。
-    AsyncFunction("evaluateJavaScript") { (script: String) -> Bool in
-      guard let view = DshMtlsWebView.activeView else { return false }
-      view.evaluateJavaScript(script)
-      return true
-    }
+    // MARK: - WebView cache
 
     /// 清理 WKWebView 的持久化缓存 / Cookie / DOM 存储，并清空 URLCache。
     /// 设置页“清理缓存”调用；完成后由 JS 侧重载 WebView。
@@ -189,22 +191,6 @@ public final class DSHMTLSModule: Module {
           finish(false)
         }
       }
-    }
-
-    // MARK: - Custom mTLS-aware WebView
-
-    View(DshMtlsWebView.self) {
-      Prop("url") { (view: DshMtlsWebView, url: String?) in
-        view.applyUrl(url)
-      }
-      Prop("clientIdentityLabel") { (view: DshMtlsWebView, label: String?) in
-        view.clientIdentityLabel = label
-      }
-      Prop("injectedJavaScript") { (view: DshMtlsWebView, script: String?) in
-        view.applyInjectedJavaScript(script)
-      }
-
-      Events("onMessage", "onLoadingStart", "onLoadingFinish", "onLoadingError")
     }
   }
 }

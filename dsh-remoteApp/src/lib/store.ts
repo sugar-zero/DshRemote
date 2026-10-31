@@ -1,22 +1,19 @@
 /**
- * DSH Remote — secure persistence for the paired host connection.
+ * DSH Remote — 群体服务版（A 模式）本地持久化。
  *
- * Security boundary (evaluation §4.4 / §4.7):
- *  - The device PRIVATE KEY is generated and kept by the native module in the
- *    iOS Keychain / Android Keystore. It is never exported to JS and must never
- *    be written through this wrapper.
- *  - This wrapper only stores non-key credentials: host metadata, device id,
- *    host fingerprint, and (for the POC) the issued certificate PEM. The
- *    certificate is public information; it still lives in SecureStore/Keychain
- *    because it identifies this device to the host.
- *  - `certRef` is a Keychain/Keystore label the native mTLS module uses to look
- *    up the identity (see `modules/dsh-mtls`).
+ * 安全边界：
+ *  - 群体版设备私钥（P-256）只存在 iOS Secure Enclave / Keychain 或 AndroidKeyStore，
+ *    由原生模块生成和持有，不经过 JS、也不写入这里；本文件只保存密钥的 **label**。
+ *  - 会话 token 只存在内存 + WebView 的 `__Host-dsh_session` cookie 中，**不落盘**。
+ *  - 本文件保存：主机元数据（host / hostId / port / relayDomain / 指纹）、设备 ID、
+ *    设备名、设备密钥 label、配对时间。
+ *  - classic/单体 mTLS 版遗留的连接记录（含设备证书 PEM）在加载时**直接丢弃**，
+ *    不做迁移：群体版 App 不再支持 classic 模式。
  *
  * Platform notes:
  *  - iOS: Keychain via expo-secure-store, `WHEN_UNLOCKED_THIS_DEVICE_ONLY`
  *    (no iCloud sync, no backup restore to another device).
- *  - Android: EncryptedSharedPreferences via expo-secure-store. Android limits a
- *    single stored value (~2 KB), so PEM blobs are chunked below.
+ *  - Android: EncryptedSharedPreferences via expo-secure-store.
  *  - Web: expo-secure-store is unavailable; a memory-only fallback keeps the
  *    UI preview runnable (`npm run web`). It is never persistent and never used
  *    for real pairing.
@@ -25,14 +22,13 @@
 import { Platform } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
-export const CONNECTION_STORAGE_KEY = 'dshremote.connection.v1';
-/** v2: 多主机列表（每台 host 一条）；首次加载会把 v1 单条迁移过来。 */
+/** v2 多主机列表（每台 host 一条；群体版记录）。 */
 export const CONNECTIONS_STORAGE_KEY = 'dshremote.connections.v2';
-export const CERTIFICATE_STORAGE_KEY = 'dshremote.cert.v1';
+/** classic/单体版的单条连接记录；加载时清理，不迁移。 */
+export const LEGACY_CONNECTION_STORAGE_KEY = 'dshremote.connection.v1';
+/** classic/单体版的设备证书 PEM 前缀；加载时清理，不迁移。 */
+export const LEGACY_CERTIFICATE_STORAGE_KEY = 'dshremote.cert.v1';
 export const DEVICE_NAME_STORAGE_KEY = 'dshremote.deviceName.v1';
-
-/** Max characters per SecureStore value. Android enforces ~2048 bytes; stay well below. */
-const CHUNK_SIZE = 1400;
 
 const SECURE_STORE_OPTIONS: SecureStore.SecureStoreOptions = {
   keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY,
@@ -64,26 +60,18 @@ async function deleteItem(key: string): Promise<void> {
   });
 }
 
-/** True when the platform has a real secure store (false on web preview). */
-export async function isSecureStoreAvailable(): Promise<boolean> {
-  if (isWeb) return false;
-  try {
-    return await SecureStore.isAvailableAsync();
-  } catch {
-    return false;
-  }
-}
-
 // ---------------------------------------------------------------------------
-// Connection record
+// Connection record (group service / token auth only)
 // ---------------------------------------------------------------------------
 
 /**
- * Persisted host connection. Field names intentionally mirror the pairing
- * response + ADMIN-API host metadata so screens can use them directly.
+ * 已配对主机的一条群体版记录。
+ *
+ * 设备身份 = 服务端登记的设备公钥 + 本机 Keychain/Keystore 里的私钥；
+ * `deviceKeyLabel` 用来让原生模块找到这把密钥，它不是秘密。
  */
 export interface StoredConnection {
-  /** Tunnel host, e.g. `h_ab12cd34.relay.example.com` (`https://${host}`). */
+  /** Tunnel host, e.g. `h_ab12cd34.relay.example.com`（`https://${host}:${port}`）。 */
   host: string;
   /** Relay base domain, e.g. `relay.example.com`. */
   relayDomain: string;
@@ -93,56 +81,81 @@ export interface StoredConnection {
   deviceId: string;
   /** Human-readable device name shown on the desktop device list. */
   deviceName: string;
-  /**
-   * Keychain/Keystore label of the client identity used for mTLS
-   * (`DSHMTLS.setClientIdentity(label)`). Absent until the native identity is
-   * installed.
-   */
-  certRef?: string;
+  /** 服务端分配/管理的主机 ID（`h_...`）。 */
+  hostId: string;
+  /** 手机访问端口（服务端自签 TLS 终止在 relay 边缘）。 */
+  port: number;
+  /** Keychain/Keystore label of the P-256 group device key. */
+  deviceKeyLabel: string;
   /** Host display name returned by the pairing response, if any. */
   hostName?: string;
   /**
-   * 群体版（A 模式）认证方式：'mtls' = classic 设备证书；'token' = P-256 设备密钥 +
-   * 短时 token + `__Host-dsh_session` cookie。旧记录缺省按 'mtls' 处理。
+   * 「打开此连接时要求面容」开关（0.1.3 起，每台主机独立）。
+   *
+   * 仅在全局 App 锁（设置页，负责冷启动解锁）开启时生效；
+   * 旧记录 / 未设置时为 undefined（等价 false，不需要迁移）。
    */
-  authMode?: 'mtls' | 'token';
-  /** 群体版：服务端下发的手机访问端口（默认 11443）；classic 无。 */
-  port?: number;
-  /** 群体版：服务端分配的主机 ID（`h_...`）。 */
-  hostId?: string;
+  requireBiometricOnOpen?: boolean;
   /** Epoch ms when pairing completed. */
   pairedAt: number;
-  /**
-   * Epoch ms when the host last rejected this device's certificate (HTTP 401/403),
-   * i.e. the device was revoked / the certificate expired on the host side.
-   * The record stays local until the user deletes it explicitly.
-   */
-  revokedAt?: number;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null;
 }
 
-function isStoredConnection(value: unknown): value is StoredConnection {
-  if (!isRecord(value)) return false;
-  return (
-    typeof value.host === 'string' &&
-    typeof value.relayDomain === 'string' &&
-    typeof value.hostFingerprint === 'string' &&
-    typeof value.deviceId === 'string' &&
-    typeof value.deviceName === 'string' &&
-    typeof value.pairedAt === 'number'
-  );
+/**
+ * 把持久化记录规范化为群体版连接；不兼容的记录返回 null（由调用方丢弃）。
+ *
+ * - 0.1.1 把 `certRef` 改名为 `deviceKeyLabel`：旧群体版记录（authMode='token'）里的
+ *   certRef 就是 P-256 设备密钥 label，这里迁移过来，升级安装不需要重新配对；
+ * - 0.1.3 新增可选的 `requireBiometricOnOpen`（每台主机「打开此连接时要求面容」）：
+ *   旧记录没有该字段时保持 undefined（等价 false），不强制迁移；
+ * - classic/单体版记录没有 hostId/port（也没有 group 设备密钥），一律丢弃、不迁移。
+ */
+function normalizeStoredConnection(value: unknown): StoredConnection | null {
+  if (!isRecord(value)) return null;
+  const hostId = typeof value.hostId === 'string' ? value.hostId : '';
+  const port = Number(value.port);
+  const deviceKeyLabel = typeof value.deviceKeyLabel === 'string'
+    ? value.deviceKeyLabel
+    : typeof value.certRef === 'string'
+      ? value.certRef
+      : '';
+  if (
+    typeof value.host !== 'string' ||
+    value.host === '' ||
+    typeof value.relayDomain !== 'string' ||
+    typeof value.hostFingerprint !== 'string' ||
+    typeof value.deviceId !== 'string' ||
+    typeof value.deviceName !== 'string' ||
+    hostId === '' ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535 ||
+    deviceKeyLabel === '' ||
+    typeof value.pairedAt !== 'number'
+  ) {
+    return null;
+  }
+  return {
+    host: value.host,
+    relayDomain: value.relayDomain,
+    hostFingerprint: value.hostFingerprint,
+    deviceId: value.deviceId,
+    deviceName: value.deviceName,
+    hostId,
+    port,
+    deviceKeyLabel,
+    ...(typeof value.hostName === 'string' ? { hostName: value.hostName } : {}),
+    // 只保留 true：旧记录没有该字段 = 关闭（默认行为不变）。
+    ...(value.requireBiometricOnOpen === true ? { requireBiometricOnOpen: true } : {}),
+    pairedAt: value.pairedAt,
+  };
 }
 
 function connectionIdentity(connection: StoredConnection): string {
   return `${connection.host}|${connection.deviceId}`;
-}
-
-/** 稳定标识：同一 host + deviceId 视为同一条配对记录。 */
-export function connectionKey(connection: StoredConnection): string {
-  return connectionIdentity(connection);
 }
 
 /** 两条配对记录是否指向同一台主机上的同一设备。 */
@@ -151,52 +164,52 @@ export function isSameConnection(a: StoredConnection, b: StoredConnection): bool
 }
 
 /**
- * 认证方式；旧记录（没有 authMode 字段）一律按 classic mTLS 处理。
+ * 清除 classic/单体版遗留的凭据（连接记录 + 设备证书 PEM）。
+ * 仅清理已知的 key：旧版本的证书按 hostFingerprint 分片存储，无法枚举，
+ * 但其中只有公开证书 PEM（私钥从来只在 Keychain/Keystore），不再被任何代码读取。
  */
-export function connectionAuthMode(connection: Pick<StoredConnection, 'authMode'>): 'mtls' | 'token' {
-  return connection.authMode === 'token' ? 'token' : 'mtls';
-}
-
-/** 群体版端口（非法/缺省回退 443；classic 记录不使用该字段）。 */
-export function connectionPort(connection: Pick<StoredConnection, 'port'>): number {
-  const port = Number(connection.port ?? 0);
-  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 443;
+async function clearLegacyClassicCredentials(): Promise<void> {
+  await Promise.all([
+    deleteItem(LEGACY_CONNECTION_STORAGE_KEY),
+    deleteItem(LEGACY_CERTIFICATE_STORAGE_KEY),
+    deleteItem(`${LEGACY_CERTIFICATE_STORAGE_KEY}.meta`),
+  ]);
 }
 
 /**
- * 读取所有已配对主机（兼容旧的单连接 v1 数据）。
+ * 读取所有已配对主机（只返回群体版记录）。
  *
- * v1（单个 `CONNECTION_STORAGE_KEY`）会在这里一次性迁移到 v2 列表并删除 v1：
- * 否则删除掉最后一条 v2 记录后，`loadConnections` 会再次回退读到 v1，把早已
- * 删除的旧主机「复活」出来（真机验收时实际踩到过）。
+ * 旧 classic/单体版数据（单条 v1 连接 + 设备证书）不再迁移：过滤后直接写回本机记录，
+ * 让用户从主机列表/扫码页重新配对。
  */
 export async function loadConnections(): Promise<StoredConnection[]> {
+  await clearLegacyClassicCredentials();
   const raw = await getItem(CONNECTIONS_STORAGE_KEY);
-  if (raw) {
+  if (!raw) return [];
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(parsed)) return [];
+  const stored = parsed
+    .map(normalizeStoredConnection)
+    .filter((item): item is StoredConnection => item !== null);
+  if (JSON.stringify(stored) !== JSON.stringify(parsed)) {
+    // 过滤掉了 classic 记录，或迁移了旧的 certRef 字段：把规范化的列表写回。
     try {
-      const parsed: unknown = JSON.parse(raw);
-      if (Array.isArray(parsed)) return parsed.filter(isStoredConnection);
+      if (stored.length === 0) await deleteItem(CONNECTIONS_STORAGE_KEY);
+      else await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(stored));
     } catch {
-      // fall through to legacy
+      // 写回失败不影响本次返回，内存里的连接仍可用。
     }
   }
-  const legacy = await loadConnection();
-  if (!legacy) return [];
-  try {
-    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify([legacy]));
-    await deleteItem(CONNECTION_STORAGE_KEY);
-  } catch {
-    // 迁移失败时仍返回内存中的记录，不阻塞配对页。
-  }
-  return [legacy];
+  return stored;
 }
 
 /**
- * 串行化「读-改-写」连接列表的操作。
- *
- * 后台的主机状态同步与用户删除/新增可能同时发生：没有锁时，两个操作各自
- * 读到旧列表再写回，会把刚删除的记录重新写回去。锁只包住写操作，读仍是
- * 无阻塞的（SecureStore 的单条写入是原子的）。
+ * 串行化「读-改-写」连接列表的操作，避免并发的保存/删除互相覆盖。
  */
 let connectionWriteQueue: Promise<void> = Promise.resolve();
 
@@ -214,25 +227,6 @@ export async function saveConnection(connection: StoredConnection): Promise<void
     if (index >= 0) list[index] = connection;
     else list.push(connection);
     await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
-    // v2 已是权威数据：清掉旧 v1，避免删除最后一条记录后旧数据显示回来。
-    await deleteItem(CONNECTION_STORAGE_KEY);
-  });
-}
-
-/**
- * 仅更新一条已存在的配对记录；记录已被删除时不重新插入。
- * 后台同步用这个接口，避免与用户删除操作竞争把记录「复活」。
- * @returns 记录是否仍存在并被更新。
- */
-export async function updateConnection(connection: StoredConnection): Promise<boolean> {
-  return withConnectionWriteLock(async () => {
-    const list = await loadConnections();
-    const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
-    if (index < 0) return false;
-    list[index] = connection;
-    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
-    await deleteItem(CONNECTION_STORAGE_KEY);
-    return true;
   });
 }
 
@@ -243,133 +237,33 @@ export async function removeConnection(connection: StoredConnection): Promise<vo
     const next = list.filter((item) => connectionIdentity(item) !== connectionIdentity(connection));
     if (next.length === 0) await deleteItem(CONNECTIONS_STORAGE_KEY);
     else await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(next));
-    await deleteItem(CONNECTION_STORAGE_KEY);
   });
-}
-
-/** 兼容旧 API：返回最近保存的一台主机。 */
-export async function loadConnection(): Promise<StoredConnection | null> {
-  const raw = await getItem(CONNECTION_STORAGE_KEY);
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isStoredConnection(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-}
-
-export async function clearConnection(): Promise<void> {
-  await Promise.all([deleteItem(CONNECTION_STORAGE_KEY), deleteItem(CONNECTIONS_STORAGE_KEY)]);
-}
-
-// ---------------------------------------------------------------------------
-// Certificate PEM (POC: may live in SecureStore until the native identity store
-// owns it; the private key is already native-only)
-// ---------------------------------------------------------------------------
-
-export interface StoredCertificate {
-  /** PEM for the device certificate issued by the host device CA. */
-  certPem: string;
-  /** PEM for the host device CA (needed if a native HTTP client verifies mTLS). */
-  caPem: string;
-  /** Epoch ms when stored. */
-  storedAt: number;
-}
-
-interface CertificateChunkMeta {
-  chunkCount: number;
-  storedAt: number;
-  sha256Hint?: string;
-}
-
-function certScopeSuffix(scope?: string): string {
-  if (!scope) return '';
-  const safe = scope.replace(/[^A-Za-z0-9_-]/g, '_').slice(0, 96);
-  return `.${safe}`;
-}
-
-function chunkKey(scope: string | undefined, index: number): string {
-  return `${CERTIFICATE_STORAGE_KEY}${certScopeSuffix(scope)}.chunk.${index}`;
-}
-
-function metaKey(scope: string | undefined): string {
-  return `${CERTIFICATE_STORAGE_KEY}${certScopeSuffix(scope)}.meta`;
 }
 
 /**
- * Store both PEMs as chunked values: `{certPem: string, caPem: string}` JSON is
- * split into <=1400-char pieces to stay inside Android's per-value limit.
+ * 设置某台主机的「打开此连接时要求面容」开关（0.1.3 起，每台主机独立）。
+ *
+ * 只在全局 App 锁（设置页，冷启动解锁）开启时生效；关闭时删除字段，
+ * 保持「旧记录默认 false」的语义。返回更新后的记录；连接已不存在时返回 null。
  */
-export async function saveCertificate(certificate: StoredCertificate, scope?: string): Promise<void> {
-  const payload = JSON.stringify({
-    certPem: certificate.certPem,
-    caPem: certificate.caPem,
-    storedAt: certificate.storedAt,
+export async function setConnectionRequireBiometricOnOpen(
+  connection: StoredConnection,
+  enabled: boolean,
+): Promise<StoredConnection | null> {
+  let updated: StoredConnection | null = null;
+  await withConnectionWriteLock(async () => {
+    const list = await loadConnections();
+    const index = list.findIndex((item) => connectionIdentity(item) === connectionIdentity(connection));
+    const current = index >= 0 ? list[index] : undefined;
+    if (!current) return;
+    const next: StoredConnection = { ...current };
+    if (enabled) next.requireBiometricOnOpen = true;
+    else delete next.requireBiometricOnOpen;
+    list[index] = next;
+    await setItem(CONNECTIONS_STORAGE_KEY, JSON.stringify(list));
+    updated = next;
   });
-  const previous = await loadCertificateMeta(scope);
-  const chunks: string[] = [];
-  for (let offset = 0; offset < payload.length; offset += CHUNK_SIZE) {
-    chunks.push(payload.slice(offset, offset + CHUNK_SIZE));
-  }
-  await Promise.all(chunks.map((chunk, index) => setItem(chunkKey(scope, index), chunk)));
-
-  const meta: CertificateChunkMeta = { chunkCount: chunks.length, storedAt: certificate.storedAt };
-  await setItem(metaKey(scope), JSON.stringify(meta));
-
-  // Remove stale trailing chunks from a previous, longer certificate.
-  if (previous) {
-    for (let index = chunks.length; index < previous.chunkCount; index += 1) {
-      await deleteItem(chunkKey(scope, index));
-    }
-  }
-}
-
-async function loadCertificateMeta(scope?: string): Promise<CertificateChunkMeta | null> {
-  const raw = await getItem(metaKey(scope));
-  if (!raw) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    if (!isRecord(parsed)) return null;
-    if (typeof parsed.chunkCount !== 'number' || typeof parsed.storedAt !== 'number') return null;
-    return { chunkCount: parsed.chunkCount, storedAt: parsed.storedAt };
-  } catch {
-    return null;
-  }
-}
-
-export async function loadCertificate(scope?: string): Promise<StoredCertificate | null> {
-  const meta = await loadCertificateMeta(scope);
-  if (!meta) {
-    // 兼容旧版本保存的无 scope 证书（当前主机仍在用）
-    if (scope) return loadCertificate();
-    return null;
-  }
-  const parts: string[] = [];
-  for (let index = 0; index < meta.chunkCount; index += 1) {
-    const chunk = await getItem(chunkKey(scope, index));
-    if (chunk === null) return null; // Corrupted/partial record: treat as absent.
-    parts.push(chunk);
-  }
-  try {
-    const parsed: unknown = JSON.parse(parts.join(''));
-    if (!isRecord(parsed)) return null;
-    if (typeof parsed.certPem !== 'string' || typeof parsed.caPem !== 'string') return null;
-    const storedAt = typeof parsed.storedAt === 'number' ? parsed.storedAt : meta.storedAt;
-    return { certPem: parsed.certPem, caPem: parsed.caPem, storedAt };
-  } catch {
-    return null;
-  }
-}
-
-export async function clearCertificate(scope?: string): Promise<void> {
-  const meta = await loadCertificateMeta(scope);
-  if (meta) {
-    for (let index = 0; index < meta.chunkCount; index += 1) {
-      await deleteItem(chunkKey(scope, index));
-    }
-  }
-  await deleteItem(metaKey(scope));
+  return updated;
 }
 
 // ---------------------------------------------------------------------------
@@ -387,29 +281,4 @@ export async function loadDeviceName(): Promise<string | null> {
 /** 忘记用户自定义的设备名（下次配对重新使用系统设备名）。 */
 export async function clearDeviceName(): Promise<void> {
   await deleteItem(DEVICE_NAME_STORAGE_KEY);
-}
-
-// ---------------------------------------------------------------------------
-// Aggregate operations
-// ---------------------------------------------------------------------------
-
-/** Remove every credential this app persists (used by "重新配对"). */
-export async function clearAll(): Promise<void> {
-  await Promise.all([clearConnection(), clearCertificate(), deleteItem(DEVICE_NAME_STORAGE_KEY)]);
-}
-
-/** Quick summary for the devices screen. */
-export interface StoredCredentialSummary {
-  connection: StoredConnection | null;
-  hasCertificate: boolean;
-  certificateStoredAt: number | null;
-}
-
-export async function loadCredentialSummary(): Promise<StoredCredentialSummary> {
-  const [connection, certificate] = await Promise.all([loadConnection(), loadCertificate()]);
-  return {
-    connection,
-    hasCertificate: certificate !== null,
-    certificateStoredAt: certificate?.storedAt ?? null,
-  };
 }

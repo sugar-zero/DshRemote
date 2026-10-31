@@ -1,22 +1,13 @@
 /**
- * DevicesScreen — current device / certificate / connection management.
+ * DevicesScreen — 当前主机 / 群体版设备身份 / 单连接面容开关 / 解除本机配对。
  *
- * IMPORTANT (ADMIN-API.md §1/§2):
- *   Device list + revoke live behind the LOCAL admin API
- *   (`/api/remote-access/devices`, `/devices/:id/revoke`). That API is
- *   authenticated with the host's DSH browser cookie and is explicitly DENIED
- *   through the remote tunnel. It is also same-origin-only and not reachable
- *   from React Native (the WebView's cookies live inside WKWebView/WebView, not
- *   in fetch()).
- *
- *   Therefore, in the POC:
- *     - device management happens on the desktop DSH UI (host side), and
- *     - this screen shows the locally stored device identity + certificate
- *       state, and lets the user re-pair / unpair the device.
- *
- *   A future milestone can either (a) add a "device list" bridge in the host
- *   plugin's tunnel API (authenticated by mTLS, e.g.
- *   `/__dsh_remote/devices`), or (b) surface a deep-link to the desktop UI.
+ * 群体服务版（A 模式）：
+ *   - 设备身份是 Secure Enclave / AndroidKeyStore 里的 P-256 设备密钥（用 label 引用），
+ *     不是设备证书；本页不再展示任何证书 / mTLS 诊断 / 证书导入入口。
+ *   - 设备列表与撤销在主机侧 DSH「远程访问」里操作；relay 明确返回 unknown_device 时，
+ *     WebView 会提示本机记录失效并引导重新配对。
+ *   - 全局 App 锁（冷启动解锁）开关在 App 设置页；本页只放**这台主机**的
+ *     「打开此连接时要求面容」开关（全局 App 锁关闭时禁用、不生效）。
  */
 
 import { useCallback, useEffect, useState } from 'react';
@@ -28,56 +19,30 @@ import {
   StyleSheet,
   Switch,
   Text,
-  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import {
-  ADMIN_PATHS,
   formatFingerprint,
   shortFingerprint,
   truncateMiddle,
 } from '../lib/protocol';
-import {
-  loadCertificate,
-  saveConnection,
-  type StoredCertificate,
-  type StoredConnection,
-} from '../lib/store';
-import {
-  getDiagnostics,
-  importClientIdentityFromP12,
-  isDshMtlsAvailable,
-  setClientIdentity,
-  type DshMtlsDiagnostics,
-} from '../../modules/dsh-mtls/src';
-import {
-  getBiometricAvailability,
-  isAppLockEnabled,
-  setAppLockEnabled,
-  type BiometricAvailability,
-} from '../lib/appLock';
-import {
-  canManageRemoteDevices,
-  fetchAudit,
-  fetchRemoteDevices,
-  revokeRemoteDevice,
-  type AuditEntry,
-  type HostStatus,
-  type RemoteDevice,
-} from '../lib/devices';
-import { syncConnectionWithHost } from '../lib/hostSync';
-import { colors, radii, sharedStyles, spacing, typography } from '../theme';
+import { isAppLockEnabled } from '../lib/appLock';
+import type { StoredConnection } from '../lib/store';
+import { colors, radii, sharedStyles, spacing } from '../theme';
 
 interface DevicesScreenProps {
   connection: StoredConnection;
   onClose: () => void;
-  /** 删除本机配对记录与设备证书，返回主机列表 / 扫码页（不进入配对流程）。 */
+  /** 删除本机配对记录与群体版设备密钥，返回主机列表 / 扫码页（不进入配对流程）。 */
   onDeleteLocal: () => Promise<void> | void;
-  /** Called after the POC import updates `certRef` so the WebView picks it up. */
-  onConnectionUpdated?: (connection: StoredConnection) => void;
+  /**
+   * 切换这台主机的「打开此连接时要求面容」开关。
+   * App 负责持久化到连接记录（全局 App 锁关闭时该开关不生效）。
+   */
+  onRequireBiometricChanged?: (enabled: boolean) => Promise<void> | void;
 }
 
 function formatTimestamp(epochMs: number | null | undefined): string {
@@ -104,138 +69,46 @@ export function DevicesScreen({
   connection,
   onClose,
   onDeleteLocal,
-  onConnectionUpdated,
+  onRequireBiometricChanged,
 }: DevicesScreenProps) {
   const insets = useSafeAreaInsets();
-  // token 模式（群体服务）：没有 mTLS 客户端证书，设备身份是 P-256 密钥 + 短时 token。
-  const isGroupMode = connection.authMode === 'token';
-  const [certificate, setCertificate] = useState<StoredCertificate | null>(null);
-  const [diagnostics, setDiagnostics] = useState<DshMtlsDiagnostics | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [devImportOpen, setDevImportOpen] = useState(false);
-  const [p12Base64, setP12Base64] = useState('');
-  const [p12Password, setP12Password] = useState('');
-  const [importing, setImporting] = useState(false);
-  const [importMessage, setImportMessage] = useState<string | null>(null);
-  const [appLockEnabled, setAppLockEnabledState] = useState(false);
-  const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
-  const [remoteDevices, setRemoteDevices] = useState<RemoteDevice[] | null>(null);
-  const [remoteDevicesError, setRemoteDevicesError] = useState<string | null>(null);
-  const [remoteBusy, setRemoteBusy] = useState<string | null>(null);
-  const [hostStatus, setHostStatus] = useState<HostStatus | null>(null);
-  const [auditEntries, setAuditEntries] = useState<AuditEntry[] | null>(null);
-
-  useEffect(() => {
-    // 群体模式不使用 mTLS，跳过 classic 的主机状态/设备列表同步
-    if (isGroupMode) return undefined;
-    if (!canManageRemoteDevices()) return undefined;
-    let cancelled = false;
-    void (async () => {
-      // 先从主机同步：主机名可能已在桌面侧改过；401/403 则说明本设备已被撤销。
-      const sync = await syncConnectionWithHost(connection);
-      if (cancelled) return;
-      if (sync.status) setHostStatus(sync.status);
-      if (sync.changed) onConnectionUpdated?.(sync.connection);
-      if (sync.revocation === 'revoked') {
-        setRemoteDevices(null);
-        setAuditEntries(null);
-        setRemoteDevicesError(
-          '主机拒绝了本机的设备证书：这台主机可能已在主机侧解除配对（设备已撤销或证书已过期）。',
-        );
-        return;
-      }
-      if (sync.error) {
-        setRemoteDevicesError(sync.error);
-        return;
-      }
-      try {
-        const [devices, audit] = await Promise.all([
-          fetchRemoteDevices(sync.connection),
-          fetchAudit(sync.connection, 10),
-        ]);
-        if (cancelled) return;
-        setRemoteDevices(devices);
-        setAuditEntries(audit);
-        setRemoteDevicesError(null);
-      } catch (error) {
-        if (!cancelled) {
-          setRemoteDevicesError(error instanceof Error ? error.message : String(error));
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [connection, onConnectionUpdated, isGroupMode]);
+  // 全局 App 锁（设置页，冷启动解锁）是否开启；null = 读取中（开关先禁用）。
+  const [globalLockEnabled, setGlobalLockEnabled] = useState<boolean | null>(null);
+  // 这台主机的「打开此连接时要求面容」开关（持久化在连接记录的 requireBiometricOnOpen）。
+  const [requireBiometric, setRequireBiometric] = useState(
+    connection.requireBiometricOnOpen === true,
+  );
+  const [savingBiometric, setSavingBiometric] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([isAppLockEnabled(), getBiometricAvailability()]).then(([enabled, availability]) => {
-      if (cancelled) return;
-      setAppLockEnabledState(enabled);
-      setBiometrics(availability);
+    isAppLockEnabled().then((enabled) => {
+      if (!cancelled) setGlobalLockEnabled(enabled);
+    }).catch(() => {
+      if (!cancelled) setGlobalLockEnabled(false);
     });
     return () => { cancelled = true; };
   }, []);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function load() {
-      const [storedCertificate, nativeDiagnostics] = await Promise.all([
-        loadCertificate(connection.hostFingerprint).catch(() => null),
-        getDiagnostics().catch(() => null),
-      ]);
-      if (cancelled) return;
-      setCertificate(storedCertificate);
-      setDiagnostics(nativeDiagnostics);
-      setLoading(false);
-    }
-    void load();
-    return () => {
-      cancelled = true;
-    };
-  }, []);
-
-  const handleImportP12 = useCallback(async () => {
-    if (!p12Base64.trim()) {
-      setImportMessage('请先粘贴 PKCS#12 的 base64 内容。');
-      return;
-    }
-    setImporting(true);
-    setImportMessage(null);
+  const handleToggleRequireBiometric = useCallback(async (enabled: boolean) => {
+    // 全局 App 锁关闭时单连接开关不生效，也不允许改（按钮本身就是 disabled）。
+    if (globalLockEnabled !== true || savingBiometric) return;
+    setSavingBiometric(true);
     try {
-      const result = await importClientIdentityFromP12(
-        p12Base64.trim(),
-        p12Password,
-        connection.certRef,
-      );
-      if (result.configuredIdentityLabel) {
-        await setClientIdentity(result.configuredIdentityLabel);
-        const updated: StoredConnection = {
-          ...connection,
-          certRef: result.configuredIdentityLabel,
-        };
-        await saveConnection(updated);
-        onConnectionUpdated?.(updated);
-      }
-      setImportMessage(
-        result.pendingUserConfirmation
-          ? '已打开系统证书安装界面：请在系统中确认安装，然后回到 App 重新构建/重启 WebView。'
-          : `导入完成：${result.imported ? '已安装设备身份' : '状态未知'}` +
-              (result.subject ? ` · ${result.subject}` : ''),
-      );
-      setP12Base64('');
-      setP12Password('');
-    } catch (error) {
-      setImportMessage(error instanceof Error ? error.message : '导入设备证书失败。');
+      await onRequireBiometricChanged?.(enabled);
+      setRequireBiometric(enabled);
+    } catch {
+      Alert.alert('保存失败', '无法保存这台主机的面容开关，请稍后重试。');
     } finally {
-      setImporting(false);
+      setSavingBiometric(false);
     }
-  }, [connection, onConnectionUpdated, p12Base64, p12Password]);
+  }, [globalLockEnabled, onRequireBiometricChanged, savingBiometric]);
 
   const handleDeleteLocal = useCallback(() => {
     Alert.alert(
-      '删除本机配对记录',
-      '将清除本机保存的这台主机的配对信息和设备证书，并回到主机列表。\n\n主机上的设备记录不会因此删除（如需彻底解除，请在主机「远程访问」里撤销该设备）。删除后需要重新扫码配对。',
+      '解除本机配对',
+      '将清除本机保存的这台主机的配对信息和设备密钥（Keychain/Keystore），并回到主机列表。\n\n主机上的设备记录不会因此删除（如需彻底解除，请在主机「远程访问」里撤销该设备）。删除后需要重新扫码配对。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -263,33 +136,14 @@ export function DevicesScreen({
       <ScrollView
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + spacing.xxl }]}
       >
-        {loading ? (
-          <View style={[sharedStyles.card, styles.centerCard]}>
-            <ActivityIndicator color={colors.accent} />
-            <Text style={styles.hint}>读取本地设备信息…</Text>
-          </View>
-        ) : null}
-
-        {connection.revokedAt !== undefined ? (
-          <View style={[sharedStyles.card, styles.revokedCard]}>
-            <Text style={styles.revokedTitle}>主机侧已解除配对</Text>
-            <Text style={styles.bodyText}>
-              主机不再接受本机的设备证书（可能已在桌面端撤销该设备，或证书已过期）。
-              本机保存的记录不会自动删除，可以使用下面的「删除本机配对记录」清理，然后重新扫码配对。
-            </Text>
-          </View>
-        ) : null}
-
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>当前主机</Text>
           <DetailRow label="主机" value={connection.hostName || connection.host} />
           <DetailRow
             label="隧道地址"
-            value={
-              isGroupMode && connection.port && connection.port !== 443
-                ? `https://${connection.host}:${connection.port}/`
-                : `https://${connection.host}/`
-            }
+            value={connection.port === 443
+              ? `https://${connection.host}/`
+              : `https://${connection.host}:${connection.port}/`}
             mono
           />
           <DetailRow label="中继域名" value={connection.relayDomain} mono />
@@ -300,120 +154,62 @@ export function DevicesScreen({
             mono
           />
           <DetailRow label="配对时间" value={formatTimestamp(connection.pairedAt)} />
-          {connection.revokedAt !== undefined ? (
-            <DetailRow label="检测到主机拒绝" value={formatTimestamp(connection.revokedAt)} />
-          ) : null}
         </View>
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>主机状态</Text>
-          {isGroupMode ? (
-            <>
-              <DetailRow label="认证模式" value="token（短时令牌，无需本地证书）" />
-              <DetailRow label="主机 ID" value={connection.hostId ?? '—'} mono />
-              <DetailRow label="手机访问端口" value={connection.port ? String(connection.port) : '—'} />
-              <Text style={styles.hint}>
-                群体模式由 relay 终止手机 TLS，主机只做出站隧道；本机使用 Secure Enclave / Keystore 中的
-                P-256 设备密钥对 challenge 签名换取短时 token。主机侧设备列表请在桌面 DSH「远程访问」里查看。
-              </Text>
-            </>
-          ) : remoteDevicesError ? (
-            <Text style={styles.statusError}>{remoteDevicesError}</Text>
-          ) : hostStatus ? (
-            <>
-              <DetailRow label="主机名称（已同步）" value={hostStatus.hostName || '（未设置）'} />
-              <DetailRow
-                label="中继连接"
-                value={
-                  hostStatus.relayConnected === null
-                    ? '—'
-                    : hostStatus.relayConnected
-                      ? '已连接'
-                      : '未连接'
-                }
-              />
-              <DetailRow label="主机版本" value={hostStatus.version ?? '—'} mono />
-              <DetailRow
-                label="已配对设备"
-                value={`${hostStatus.devices?.active ?? 0} 台有效 / 共 ${hostStatus.devices?.total ?? 0} 台`}
-              />
-              <Text style={styles.hint}>
-                主机改名后，App 回到主机列表或重新进入本页时会通过 mTLS 自动同步。
-              </Text>
-            </>
-          ) : (
-            <Text style={styles.hint}>正在读取主机状态…</Text>
-          )}
+          <Text style={styles.sectionTitle}>认证与会话</Text>
+          <DetailRow label="认证模式" value="token（短时令牌，无需本地证书）" />
+          <DetailRow label="主机 ID" value={connection.hostId} mono />
+          <DetailRow label="手机访问端口" value={String(connection.port)} />
+          <Text style={styles.hint}>
+            群体服务版由 relay 终止手机 TLS，主机只做出站隧道；本机使用 Secure Enclave / Keystore
+            中的 P-256 设备密钥对 challenge 签名，换取 15–30 分钟的短时 token（只存在内存与
+            `__Host-` cookie 中，不落盘）。主机侧设备列表请在主机的「远程访问」里查看。
+          </Text>
         </View>
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>本机设备身份</Text>
           <DetailRow label="设备名称" value={connection.deviceName} />
           <DetailRow label="设备 ID" value={truncateMiddle(connection.deviceId, 8)} mono />
-          <DetailRow
-            label={isGroupMode ? '设备密钥标签' : '证书引用'}
-            value={connection.certRef ?? '（未安装原生身份）'}
-            mono
-          />
-          {isGroupMode ? (
-            <>
-              <DetailRow label="认证模式" value="token（短时令牌）" />
-              <Text style={styles.hint}>
-                群体模式不保存设备证书；P-256 私钥在 Secure Enclave / Keychain 中，只用于对 relay 下发的
-                challenge 签名，App 与 JS 层都无法读取或导出。
-              </Text>
-            </>
-          ) : (
-            <>
-              <View style={styles.divider} />
-              <Text style={styles.sectionSubtitle}>设备证书</Text>
-              <DetailRow
-                label="证书状态"
-                value={certificate ? '已保存（SecureStore）' : '未保存'}
-              />
-              <DetailRow label="保存时间" value={formatTimestamp(certificate?.storedAt)} />
-              <DetailRow
-                label="证书长度"
-                value={certificate ? `${certificate.certPem.length} 字符` : '—'}
-              />
-              <Text style={styles.hint}>
-                设备私钥由原生模块保存在 Keychain / Android Keystore 中，App 与 JS 层都无法读取或导出。
-              </Text>
-            </>
-          )}
-        </View>
-
-        {isGroupMode ? null : (
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>原生 mTLS 模块</Text>
-          <DetailRow
-            label="模块状态"
-            value={
-              isDshMtlsAvailable
-                ? diagnostics?.moduleAvailable
-                  ? '已链接'
-                  : '已链接（诊断不可用）'
-                : '未链接（Expo Go / 未构建 dev client）'
-            }
-          />
-          <DetailRow
-            label="身份状态"
-            value={diagnostics?.identityPresent ? 'Keychain/Keystore 中存在设备身份' : '未检测到设备身份'}
-          />
-          <DetailRow label="证书主题" value={diagnostics?.subject ?? '—'} mono />
-          <DetailRow label="证书到期" value={diagnostics?.notAfter ?? '—'} />
-          <DetailRow label="平台" value={diagnostics?.platform ?? '—'} />
+          <DetailRow label="设备密钥标签" value={connection.deviceKeyLabel} mono />
           <Text style={styles.hint}>
-            原生身份由 modules/dsh-mtls 提供：WKWebView 客户端证书挑战 / Android
-            onReceivedClientCertRequest。
+            群体版不保存设备证书；P-256 私钥在 Secure Enclave / Keychain（Android 为
+            AndroidKeyStore）中，只用于对 relay 下发的 challenge 签名，App 与 JS 层都无法读取或导出。
           </Text>
         </View>
-        )}
+
+        <View style={sharedStyles.card}>
+          <Text style={styles.sectionTitle}>打开此连接时要求面容</Text>
+          <View style={styles.switchRow}>
+            <View style={styles.switchText}>
+              <Text style={styles.rowLabel}>从主机列表打开这台主机时要求面容</Text>
+              <Text style={styles.rowHint}>
+                {globalLockEnabled === null
+                  ? '正在读取 App 锁状态…'
+                  : globalLockEnabled
+                    ? '全局 App 锁已开启'
+                    : '需先在「设置」中开启 App 锁，此开关才会生效'}
+              </Text>
+            </View>
+            <Switch
+              value={requireBiometric}
+              disabled={globalLockEnabled !== true || savingBiometric}
+              onValueChange={(enabled) => { void handleToggleRequireBiometric(enabled); }}
+              trackColor={{ false: colors.borderStrong, true: colors.accentPressed }}
+              thumbColor={requireBiometric ? colors.accent : colors.textMuted}
+            />
+          </View>
+          <Text style={styles.hint}>
+            只影响这台主机：开启后，每次从主机列表打开它（或配对完成进入）时要求一次
+            Face ID / Touch ID；其它主机不受影响。App 冷启动时的解锁由「设置 → App 锁」负责。
+          </Text>
+        </View>
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>解除本机配对</Text>
           <Text style={styles.bodyText}>
-            删除本机保存的这台主机的配对信息与设备证书，并返回主机列表（没有其它主机时进入扫码页）。
+            删除本机保存的这台主机的配对信息与设备密钥，并返回主机列表（没有其它主机时进入扫码页）。
             主机上的设备记录不会因此删除——如需彻底解除，请在主机「远程访问」里撤销该设备。
             想重新连接同一台主机时，从主页「＋ 配对新主机」重新扫码即可。
           </Text>
@@ -431,9 +227,7 @@ export function DevicesScreen({
         </View>
 
         <Text style={styles.footnote}>
-          {isGroupMode
-            ? 'DSH Remote · 群体模式：P-256 设备密钥 + 短时 token 会话；主机侧可随时撤销设备。'
-            : 'DSH Remote · 远程访问采用 mTLS 设备证书；主机侧可随时撤销。安全模型详见 docs/remote-access-evaluation.zh.md。'}
+          DSH Remote · 群体模式：P-256 设备密钥 + 短时 token 会话；主机侧可随时撤销设备。
         </Text>
       </ScrollView>
     </View>
@@ -441,24 +235,6 @@ export function DevicesScreen({
 }
 
 const styles = StyleSheet.create({
-  section: { marginTop: spacing.lg },
-  lockRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
-  remoteDeviceRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    paddingVertical: spacing.sm,
-    borderBottomWidth: StyleSheet.hairlineWidth,
-    borderBottomColor: colors.border,
-  },
-  revokeButton: {
-    backgroundColor: 'rgba(242, 99, 122, 0.14)',
-    borderRadius: radii.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  revokeButtonText: { color: colors.danger, fontSize: 13, fontWeight: '600' },
-  detailHint: { fontSize: 12, color: colors.textMuted, marginTop: spacing.xs },
   screen: {
     flex: 1,
     backgroundColor: colors.background,
@@ -504,10 +280,6 @@ const styles = StyleSheet.create({
     color: colors.text,
     marginBottom: spacing.sm,
   },
-  sectionSubtitle: {
-    ...typography.label,
-    marginBottom: spacing.xs,
-  },
   detailRow: {
     flexDirection: 'row',
     alignItems: 'flex-start',
@@ -531,11 +303,6 @@ const styles = StyleSheet.create({
     fontSize: 11,
     lineHeight: 17,
   },
-  divider: {
-    height: StyleSheet.hairlineWidth,
-    backgroundColor: colors.border,
-    marginVertical: spacing.sm,
-  },
   hint: {
     fontSize: 12,
     color: colors.textFaint,
@@ -547,15 +314,24 @@ const styles = StyleSheet.create({
     color: colors.textMuted,
     lineHeight: 19,
   },
-  buttonRow: {
-    marginTop: spacing.sm,
+  switchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
   },
-  secondaryButton: {
-    ...sharedStyles.secondaryButton,
+  switchText: {
+    flex: 1,
+    gap: 2,
   },
-  secondaryButtonText: {
-    ...sharedStyles.secondaryButtonText,
-    fontSize: 13,
+  rowLabel: {
+    color: colors.text,
+    fontSize: 15,
+    fontWeight: '600',
+  },
+  rowHint: {
+    color: colors.textMuted,
+    fontSize: 12,
+    lineHeight: 18,
   },
   dangerButton: {
     marginTop: spacing.md,
@@ -571,48 +347,8 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontWeight: '700',
   },
-  revokedCard: {
-    borderColor: colors.danger,
-    backgroundColor: 'rgba(242, 99, 122, 0.08)',
-  },
-  revokedTitle: {
-    color: colors.danger,
-    fontSize: 16,
-    fontWeight: '700',
-    marginBottom: spacing.xs,
-  },
-  statusError: {
-    color: colors.warning,
-    fontSize: 13,
-    lineHeight: 19,
-  },
   disabledButton: {
     opacity: 0.45,
-  },
-  centerCard: {
-    alignItems: 'center',
-    gap: spacing.sm,
-  },
-  devImportBody: {
-    marginTop: spacing.md,
-    gap: spacing.sm,
-  },
-  p12Input: {
-    minHeight: 88,
-    textAlignVertical: 'top',
-    fontFamily: Platform.select({ ios: 'Menlo', android: 'monospace', default: 'monospace' }),
-    fontSize: 11,
-  },
-  inputLabel: {
-    ...typography.label,
-    marginBottom: spacing.xs,
-  },
-  primaryButton: {
-    ...sharedStyles.primaryButton,
-    marginTop: spacing.xs,
-  },
-  primaryButtonText: {
-    ...sharedStyles.primaryButtonText,
   },
   footnote: {
     fontSize: 11,

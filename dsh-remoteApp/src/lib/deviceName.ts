@@ -8,8 +8,8 @@
  *    机型名（如 "iPhone 17 Pro Max"），至少能区分机型；
  *  - Web 预览 / 原生模块缺失时退回旧文案，保证页面对 UI 预览仍可用。
  *
- * 该名字只用于 `/__dsh_remote/pair` 请求里的 `deviceName`（并作为 CSR 的 CN），
- * 不是身份凭据；设备身份始终只来自 mTLS 客户端证书。
+ * 该名字只用于 `/__dsh_remote/pair` 请求里的 `deviceName`（显示在主机设备列表），
+ * 不是身份凭据；设备身份来自群体版 P-256 设备密钥 + 短时 token。
  */
 
 import { Platform } from 'react-native';

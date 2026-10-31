@@ -1,15 +1,12 @@
 // DSHMTLSGroupKeys.swift
 // DSH Remote — 群体服务版（A 模式）设备密钥：P-256 设备身份 + 挑战签名。
 //
-// 与现有 mTLS 身份（DSHMTLSCsr / DSHMTLSIdentityStore，用于主线的 B2 形态）**并存**：
-//   - 群体版不再签设备证书，而是把 P-256 **公钥**（未压缩点 65B）登记到主机/relay；
-//   - 之后用私钥签 relay challenge 换短时 token（见 docs/group-service-design.zh.md §7）。
+// 群体版不签设备证书：把 P-256 **公钥**（未压缩点 65B）登记到主机/relay，
+// 之后用私钥签 relay challenge 换短时 token（见 docs/group-service-design.zh.md §7）。
 //
 // 安全约束：
 //   - 私钥只进 Keychain / Secure Enclave，绝不返回 JS；
 //   - 返回值只有公钥（base64url 未压缩点）与签名（base64url DER）。
-//
-// ⚠️ 本文件随 Expo 模块一起在用户 Mac 上由 Xcode 编译（本机仅 `swiftc -parse` 语法自检）。
 
 import Foundation
 import Security

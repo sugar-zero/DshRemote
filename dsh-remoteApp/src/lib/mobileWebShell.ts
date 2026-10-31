@@ -47,7 +47,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
         window.webkit.messageHandlers.dshMtlsBridge.postMessage(text);
       } else if (window.ReactNativeWebView
         && typeof window.ReactNativeWebView.postMessage === 'function') {
-        // react-native-webview 回退路径（非原生 mTLS View）也能收到桥消息。
+        // react-native-webview 路径（群体版唯一路径）也能收到桥消息。
         window.ReactNativeWebView.postMessage(text);
       }
     } catch (error) {
@@ -675,7 +675,7 @@ export const MOBILE_WEB_SHELL_JS = String.raw`
     // 查询用量 / 充值 / 更多账号信息，账号菜单的意见反馈等）。原生 WKWebView/WebView
     // 没有新窗口能力（iOS 没有 WKUIDelegate，Android setSupportMultipleWindows(false)），
     // 点击会被 WebKit 直接丢弃，表现为「完全没反应」。这里把 http(s) 外链通过桥交给
-    // App，用系统浏览器打开；隧道主机自身的链接保持原样（外部浏览器没有设备证书）。
+    // App，用系统浏览器打开；隧道主机自身的链接保持原样（外部浏览器没有会话 cookie）。
     function externalHttpUrlOf(rawHref) {
       if (typeof rawHref !== 'string' || rawHref === '') return '';
       var url = null;

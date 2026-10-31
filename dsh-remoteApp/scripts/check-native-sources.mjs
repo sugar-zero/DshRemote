@@ -2,11 +2,13 @@
 /**
  * 原生模块源码一致性检查（无需 Xcode / Android SDK）。
  *
- * 用途：本仓库机器无法编译 iOS/Android 原生代码，但可以静态保证：
+ * 群体服务版（A 模式）App 的原生模块只保留 group 能力；这个脚本静态保证：
  *   1. JS bridge（src/index.ts）的方法与 iOS(Swift)/Android(Kotlin) 的导出方法一致；
- *   2. 两端原生模块名/视图名一致；
- *   3. 关键实现文件存在且包含关键 API（Secure Enclave / AndroidKeyStore / 客户端证书）；
- *   4. 原生文件括号大致平衡（捕获明显的复制/编辑错误）。
+ *   2. 两端原生模块名一致（模块名沿用历史的 `DSHMTLS`，减少工程改动）；
+ *   3. 群体版关键实现存在：Secure Enclave / AndroidKeyStore P-256、ECDSA-SHA256
+ *      签名、`__Host-` 会话 cookie、WebView 缓存清理；
+ *   4. classic/单体 mTLS 版的原生文件已删除（防止回潮）；
+ *   5. 原生文件括号大致平衡（捕获明显的复制/编辑错误）。
  *
  * 这不能替代真机编译，但能防止两端接口/实现漂移。
  *
@@ -24,32 +26,52 @@ function ok(msg) { console.log(`  ✅ ${msg}`); }
 function bad(msg) { console.log(`  ❌ ${msg}`); failures += 1; }
 function warn(msg) { console.log(`  ⚠️  ${msg}`); warnings += 1; }
 
-const ts = read('modules/dsh-mtls/src/index.ts');
-const swift = read('modules/dsh-mtls/ios/DSHMTLSModule.swift');
-const kotlin = read('modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt');
+const SWIFT_MODULE = 'modules/dsh-mtls/ios/DSHMTLSModule.swift';
+const SWIFT_GROUP_KEYS = 'modules/dsh-mtls/ios/DSHMTLSGroupKeys.swift';
+const KOTLIN_MODULE = 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt';
+const KOTLIN_GROUP_KEYS = 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsGroupKeys.kt';
 
-console.log('== JS bridge ↔ 原生导出方法 ==');
+const ts = read('modules/dsh-mtls/src/index.ts');
+const swift = read(SWIFT_MODULE);
+const kotlin = read(KOTLIN_MODULE);
+
+console.log('== JS bridge ↔ 原生导出方法（群体版：全部必需） ==');
 const interfaceStart = ts.indexOf('interface NativeDshMtlsModule');
 const interfaceEnd = ts.indexOf('\n}', interfaceStart);
-const interfaceText = ts.slice(interfaceStart, interfaceEnd);
+if (interfaceStart < 0 || interfaceEnd < 0) {
+  bad('找不到 TS bridge 的 NativeDshMtlsModule 接口');
+}
+const interfaceText = interfaceStart >= 0 && interfaceEnd > interfaceStart ? ts.slice(interfaceStart, interfaceEnd) : '';
 const tsEntries = [...interfaceText.matchAll(/^ {2}(\w+)(\?)?\(/gm)].map((m) => ({ name: m[1], optional: Boolean(m[2]) }));
 const nativeFunctionNames = (source) => new Set([...source.matchAll(/(?:Async)?Function\("([^"]+)"/g)].map((m) => m[1]));
 const ios = nativeFunctionNames(swift);
 const android = nativeFunctionNames(kotlin);
 
-for (const entry of tsEntries) {
+const expectedFunctions = [
+  'generateGroupDeviceKey',
+  'getGroupDevicePublicKey',
+  'signGroupChallenge',
+  'clearGroupDeviceKey',
+  'setSessionCookie',
+  'groupHttpFetch',
+  'clearWebCache',
+];
+for (const name of expectedFunctions) {
   const missing = [];
-  if (!ios.has(entry.name)) missing.push('iOS');
-  if (!android.has(entry.name)) missing.push('Android');
-  if (missing.length === 0) { ok(`${entry.name} (${entry.optional ? 'optional' : 'required'})`); continue; }
-  if (entry.optional) warn(`${entry.name} 在 ${missing.join('/')} 缺失（JS 侧 optional，可接受）`);
-  else bad(`${entry.name} 在 ${missing.join('/')} 缺失`);
+  if (!tsEntries.some((entry) => entry.name === name)) missing.push('TS');
+  if (!ios.has(name)) missing.push('iOS');
+  if (!android.has(name)) missing.push('Android');
+  if (missing.length === 0) ok(`${name}`);
+  else bad(`${name} 在 ${missing.join('/')} 缺失`);
+}
+for (const entry of tsEntries) {
+  if (!expectedFunctions.includes(entry.name)) bad(`TS bridge 出现未预期的 classic 方法：${entry.name}`);
 }
 for (const name of [...ios, ...android]) {
   if (!tsEntries.some((entry) => entry.name === name)) bad(`原生导出 ${name} 未出现在 TS bridge 接口中`);
 }
 
-console.log('== 模块/视图名 ==');
+console.log('== 模块名 ==');
 const moduleNames = [
   ['TS', /DSH_MTLS_MODULE_NAME = '([^']+)'/.exec(ts)?.[1]],
   ['iOS', /Name\("([^"]+)"\)/.exec(swift)?.[1]],
@@ -58,45 +80,49 @@ const moduleNames = [
 const resolvedModuleNames = new Set(moduleNames.map(([, value]) => value).filter(Boolean));
 if (resolvedModuleNames.size === 1) ok(`模块名一致：${[...resolvedModuleNames][0]}`);
 else bad(`模块名不一致：${moduleNames.map(([label, value]) => `${label}=${value}`).join(', ')}`);
-const viewNames = new Set([
-  /DSH_MTLS_VIEW_NAME = '([^']+)'/.exec(ts)?.[1],
-  /View\((\w+)\.self\)/.exec(swift)?.[1],
-  /View\((\w+)::class\.java\)/.exec(kotlin)?.[1],
-].filter(Boolean));
-if (viewNames.size === 1) ok(`视图名存在：${[...viewNames][0]}`);
-else warn(`JS 视图名与原生 View 名称不同（JS=${[...viewNames].join(', ')}；原生类名可不同，需看 expo-module.config）`);
 
-console.log('== 关键实现文件 / API ==');
+console.log('== 群体版关键实现文件 / API ==');
 const requiredFiles = [
-  'modules/dsh-mtls/ios/DSHMTLSCsr.swift',
-  'modules/dsh-mtls/ios/DSHMTLSNetwork.swift',
-  'modules/dsh-mtls/ios/DSHMTLSIdentityStore.swift',
-  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsCsr.kt',
-  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsNetwork.kt',
-  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsIdentityStore.kt',
+  SWIFT_MODULE,
+  SWIFT_GROUP_KEYS,
+  KOTLIN_MODULE,
+  KOTLIN_GROUP_KEYS,
 ];
 for (const file of requiredFiles) {
   if (existsSync(resolve(root, file))) ok(file);
   else bad(`缺少 ${file}`);
 }
 const apiChecks = [
-  ['iOS Secure Enclave 密钥生成', 'modules/dsh-mtls/ios/DSHMTLSCsr.swift', 'kSecAttrTokenIDSecureEnclave'],
-  ['iOS PKCS#10 编码', 'modules/dsh-mtls/ios/DSHMTLSCsr.swift', 'CERTIFICATE REQUEST'],
-  ['iOS 客户端证书挑战', 'modules/dsh-mtls/ios/DSHMTLSWebView.swift', 'NSURLAuthenticationMethodClientCertificate'],
-  ['iOS URLSession mTLS', 'modules/dsh-mtls/ios/DSHMTLSNetwork.swift', 'URLCredential(identity:'],
-  ['Android KeyGenParameterSpec', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsCsr.kt', 'KeyGenParameterSpec'],
-  ['Android PKCS#10 编码', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsCsr.kt', 'CERTIFICATE REQUEST'],
-  ['Android 证书安装', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsIdentityStore.kt', 'setKeyEntry'],
-  ['Android WebView 客户端证书', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsWebViewClient.kt', 'onReceivedClientCertRequest'],
-  ['Android HttpsURLConnection mTLS', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsNetwork.kt', 'X509ExtendedKeyManager'],
-  ['iOS WebView 缓存清理', 'modules/dsh-mtls/ios/DSHMTLSModule.swift', 'WKWebsiteDataStore.allWebsiteDataTypes()'],
-  ['Android WebView Cookie/存储清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'WebStorage'],
-  ['Android WebView HTTP 缓存清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'clearCache(true)'],
-  ['Android WebView 表单数据清理', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt', 'clearFormData()'],
+  ['iOS Secure Enclave 密钥生成', SWIFT_GROUP_KEYS, 'kSecAttrTokenIDSecureEnclave'],
+  ['iOS ECDSA-SHA256 签名', SWIFT_GROUP_KEYS, 'ecdsaSignatureMessageX962SHA256'],
+  ['iOS 未压缩 P-256 公钥导出', SWIFT_GROUP_KEYS, 'data.count == 65'],
+  ['iOS `__Host-` 会话 cookie（SameSite=Strict）', SWIFT_MODULE, 'sameSiteStrict'],
+  ['iOS WebView 缓存清理', SWIFT_MODULE, 'WKWebsiteDataStore.allWebsiteDataTypes()'],
+  ['Android AndroidKeyStore P-256', KOTLIN_GROUP_KEYS, 'secp256r1'],
+  ['Android ECDSA-SHA256 签名', KOTLIN_GROUP_KEYS, 'SHA256withECDSA'],
+  ['Android 会话 Cookie（Secure/HttpOnly/SameSite=Strict）', KOTLIN_MODULE, 'HttpOnly; SameSite=Strict'],
+  ['Android WebView Cookie/存储清理', KOTLIN_MODULE, 'WebStorage'],
 ];
 for (const [label, file, needle] of apiChecks) {
   if (read(file).includes(needle)) ok(label);
   else bad(`${label}（${file} 缺少 ${needle}）`);
+}
+
+console.log('== classic/单体 mTLS 文件必须已删除 ==');
+const removedFiles = [
+  'modules/dsh-mtls/ios/DSHMTLSCsr.swift',
+  'modules/dsh-mtls/ios/DSHMTLSIdentityStore.swift',
+  'modules/dsh-mtls/ios/DSHMTLSNetwork.swift',
+  'modules/dsh-mtls/ios/DSHMTLSWebView.swift',
+  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsCsr.kt',
+  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsIdentityStore.kt',
+  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsNetwork.kt',
+  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsWebView.kt',
+  'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsWebViewClient.kt',
+];
+for (const file of removedFiles) {
+  if (existsSync(resolve(root, file))) bad(`classic 文件仍存在：${file}`);
+  else ok(`已删除 ${file}`);
 }
 
 console.log('== 括号平衡（粗检） ==');
@@ -133,7 +159,7 @@ function balance(source, open, close) {
   }
   return depth === 0;
 }
-for (const file of [...requiredFiles, 'modules/dsh-mtls/ios/DSHMTLSModule.swift', 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt']) {
+for (const file of requiredFiles) {
   const source = read(file);
   const balanced = [['{', '}'], ['(', ')'], ['[', ']']].every(([open, close]) => balance(source, open, close));
   if (balanced) ok(`${file} 括号平衡`);
