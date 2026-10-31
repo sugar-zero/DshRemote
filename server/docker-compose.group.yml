@@ -1,10 +1,10 @@
 # ============================================================================
 # 群体服务版（A 模式）relay 部署模板
 #
-# 与 docker-compose.build.yml（classic 盲中继）的区别：
+# 本分支只提供群体服务版（A 模式）：
 #   - relay 终止手机 TLS（边缘通配证书），主机只做出站隧道、自助注册；
 #   - 控制面同时提供：主机隧道、自助注册（邀请码）、部署方后台 /__admin；
-#   - 不使用 RELAY_HOST_ID / tokens.json（主机由邀请码自助注册）。
+#   - 主机由邀请码自助注册，无主机 token / 静态主机配置。
 #
 # 准备（只需 .env + 证书，配置文件首次启动自动生成）：
 #   cp .env.group.example .env.group   # 至少改 RELAY_DOMAIN
@@ -38,7 +38,7 @@
 #   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
 #
 # 导出离线镜像：
-#   docker save -o dsh-relay-0.2.14-group-linux-amd64.tar dsh-remote-relay:0.2.14-group
+#   docker save -o dsh-relay-0.3.0-group-linux-amd64.tar dsh-remote-relay:0.3.0-group
 # ============================================================================
 
 name: dsh-remote-group
@@ -48,7 +48,7 @@ services:
     build:
       context: ../dsh-remoteService
       dockerfile: packages/relay/Dockerfile
-    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.2.14-group}
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.3.0-group}
     container_name: dsh-relay-group
     user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
     command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]
@@ -63,10 +63,9 @@ services:
       - "${RELAY_GROUP_API_HOST_BIND:-0.0.0.0}:${RELAY_GROUP_API_HOST_PORT:-19443}:9443"
       # 仅本机：部署方后台（SSH 隧道 / nginx admin vhost 访问，绝不放公网）
       - "127.0.0.1:${RELAY_GROUP_ADMIN_HOST_PORT:-19444}:9444"
-      # 仅本机：/healthz（不承载业务）；同机 classic 默认也占 18080，冲突时改 RELAY_GROUP_HEALTH_HOST_PORT
+      # 仅本机：/healthz（不承载业务）；同机其它服务占用 18080 时改 RELAY_GROUP_HEALTH_HOST_PORT
       - "127.0.0.1:${RELAY_GROUP_HEALTH_HOST_PORT:-18080}:80"
     environment:
-      RELAY_MODE: group
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
       # 域名/证书：首次启动据此自动生成 data/config/relay.json
       # 未设置时 compose 直接报错（避免容器起来后才报「RELAY_DOMAIN 为空」）

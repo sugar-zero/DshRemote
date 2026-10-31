@@ -4,21 +4,14 @@
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
-  "description": "DSH 远程访问（方案 B2）：自托管盲中继 + 主机插件（mTLS 反向代理）+ 共享协议",
+  "description": "DSH 群体服务版（A 模式）：relay 终止 TLS + 主机出站隧道 + 设备密钥/短时 token + 共享协议",
   "workspaces": [
     "packages/*"
   ],
   "scripts": {
     "test": "node scripts/run-tests.js",
     "relay": "node packages/relay/bin/relay.js",
-    "poc": "node poc/run-poc.js",
-    "poc:webview": "bash poc/webview-mtls/run.sh",
-    "poc:csr": "bash poc/native-csr/run.sh",
-    "bench": "node poc/bench-relay.js",
-    "poc:docker": "bash poc/docker-e2e/run.sh",
-    "validate:artifacts": "bash scripts/validate-artifacts.sh",
-    "poc:deploy": "node poc/check-deploy-local.js",
-    "poc:iphone-local": "node poc/serve-iphone-local.mjs"
+    "validate:artifacts": "bash scripts/validate-artifacts.sh"
   },
   "engines": {
     "node": ">=22"
