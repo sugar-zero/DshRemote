@@ -1152,7 +1152,7 @@ class Relay {
     });
     socket.on('error', (err) => this.logger.debug(`edge: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
     const sni = typeof socket.servername === 'string' && socket.servername !== '' ? socket.servername : null;
-    this.logger.info(`edge: tls ${formatPeer(socket)} sni=${JSON.stringify(sni)}`);
+    this.logger.debug(`edge: tls ${formatPeer(socket)} sni=${JSON.stringify(sni)}`);
     void this.handleEdgeSession(socket, sni).catch((err) => {
       this.logger.debug(`edge: session error from ${formatPeer(socket)}: ${err && err.message ? err.message : String(err)}`);
       if (!socket.destroyed) socket.destroy();
@@ -1323,7 +1323,7 @@ class Relay {
       this.finishStream(stream, 'open_timeout');
     }, this.config.timings.openTimeoutMs);
     stream.openTimer.unref?.();
-    this.logger.info(`edge: tunnel ${pathname ?? '-'} → host "${hostId}" (stream ${streamId}${deviceId ? `, device ${deviceId}` : ''}) from ${remote}`);
+    this.logger.debug(`edge: tunnel ${pathname ?? '-'} → host "${hostId}" (stream ${streamId}${deviceId ? `, device ${deviceId}` : ''}) from ${remote}`);
     this.sendJson(host.ws, {
       t: RELAY_MSG.HOST_OPEN,
       streamId,
