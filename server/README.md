@@ -36,6 +36,7 @@ server/
 │   ├── group-nginx-stream.conf   # group 独立服务器：443/8443 L4 转发（relay 自己终止 TLS）
 │   ├── host-nginx-stream.combined.conf # classic + group 同机：合并版 stream（SNI 分流，只 listen 一次）
 │   ├── group-admin-http.conf     # group：后台 /__admin 的 nginx HTTP 反代（basic auth/IP 白名单）
+│   ├── group-api-http.conf       # group：注册 API 的 nginx HTTP 反代（可选，注意 Host/限速）
 │   └── container-nginx.conf      # 专用服务器：compose 内 nginx
 ├── data/                         # git ignore：tokens、relay 配置、证书
 └── certs/                        # git ignore：可选挂载证书
@@ -628,8 +629,16 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    - 注册 API 与控制面 WSS 必须分开：注册响应会下发 `controlUrl`（= `RELAY_GROUP_PUBLIC_CONTROL_PORT` 端口），
      主机用它回连隧道，不再从服务地址推导。
    - 后台只绑 `127.0.0.1:19444`；用 SSH 隧道或 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 反代到 admin 域名。
-   - **nginx 前置时只需要转发两个端口**：公网 `443 → 127.0.0.1:1443`、`8443 → 127.0.0.1:18443`；
-     API（19443）直接对公网；后台（19444）不要转发到公网。
+   - **nginx 前置时最简只转发两个端口**：公网 `443 → 127.0.0.1:1443`、`8443 → 127.0.0.1:18443`；
+     API（19443）可以直接对公网，也可以用 nginx 反代（见下）；后台（19444）不要转发到公网。
+   - **注册 API 也可以走 nginx**：它只有一个 `POST /__group/register`，不依赖 SNI/多域名路由，
+     所以既可用 L4 转发，也可让 nginx 终止 TLS 后反代到 relay（nginx 作为客户端连
+     `https://127.0.0.1:19443`）。用 HTTP 反代时：把 `RELAY_GROUP_API_HOST_BIND` 改为 `127.0.0.1`，
+     nginx 上游证书校验可关闭（仅回环），并**必须**把 `Host` 设为 `<RELAY_DOMAIN>`——注册响应里的
+     `controlUrl` 是用请求 Host 生成的，Host 错了主机回连隧道会失败。
+     注意：relay 的注册限速按 TCP 来源 IP 统计，经反代后所有请求都来自 127.0.0.1，单 IP 限速会退化成共享桶，
+     需要把 `registration.maxAttemptsPerMinute` 调大或接受这一点。示例见
+     [`nginx/group-api-http.conf`](nginx/group-api-http.conf)。
 
    **常见问题：明明配了 `RELAY_DOMAIN`，容器仍报「缺少 RELAY_DOMAIN」**：
    `docker compose` 默认只读 `.env`，不读 `.env.group`。如果你把变量放在 `.env.group` 里，
