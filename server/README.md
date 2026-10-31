@@ -567,7 +567,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 > 用邀请码自助注册；relay 侧提供邀请码/主机管理后台 `/__admin`。设计见
 > [`docs/group-service-design.zh.md`](../docs/group-service-design.zh.md)。**部署方可见明文，责任由部署方承担。**
 
-镜像：`dsh-remote-relay:0.2.1-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.1-group-linux-amd64.tar`）。
+镜像：`dsh-remote-relay:0.2.2-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.2-group-linux-amd64.tar`）。
 
 1. **准备环境变量模板**（不要复用 classic 的 `.env`）：
 
@@ -582,6 +582,10 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    cd server
    mkdir -p data/config data/certs/relay.example.com data/certs/wildcard
    cp group/relay.group.example.json data/config/relay.json    # 改域名/端口
+   # 启动报 relay: cannot read config file "/data/config/relay.json": ENOENT 时：
+   #   - 先确认宿主机上 data/config/relay.json 存在（cp 漏了 / 路径大小写）；
+   #   - 再确认 compose 的 ./data 挂载路径（相对于 compose 文件所在目录）；
+   #   - 修好后 docker compose up -d 重建容器。
    # 控制面证书（relay.example.com）→ data/certs/relay.example.com/{fullchain.pem,privkey.pem}
    # 边缘通配证书（*.relay.example.com）→ data/certs/wildcard/{fullchain.pem,privkey.pem}
    chown -R 100:101 data      # 镜像内 relay 用户 UID/GID
@@ -619,7 +623,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 
    # B. 服务器离线镜像
-   docker load -i dsh-relay-0.2.1-group-linux-amd64.tar
+   docker load -i dsh-relay-0.2.2-group-linux-amd64.tar
    docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
    ```
 
@@ -691,7 +695,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 ```bash
 cd /opt/dsh-group
 chmod 600 .env
-docker load -i /path/to/dsh-relay-0.2.1-group-linux-amd64.tar
+docker load -i /path/to/dsh-relay-0.2.2-group-linux-amd64.tar
 docker compose config          # 先确认变量插值（镜像/端口/挂载）
 docker compose up -d --no-build
 docker compose ps && docker compose logs -f relay

@@ -487,7 +487,7 @@ https://<relayDomain>:<adminPort>/__admin/
 靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
 （未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.1-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.2-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 
