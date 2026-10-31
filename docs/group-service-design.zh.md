@@ -264,6 +264,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   （公网 WSS 地址，来自 `group.publicControlPort`），主机插件据此回连隧道；未配置时保留旧的控制面兜底行为；
   新增 `test/group-surfaces.test.js`（控制面 HTTP 404 / API 面只收注册 / 后台面独立 token）；
   镜像 **0.2.2** 起 entrypoint 对缺失的 `--config` 文件给出可操作提示（不再裸 ENOENT）；
+  镜像 **0.2.3** 起 group 模式可**只填 `.env`**（域名/证书路径/端口）：首次启动自动生成
+  `data/config/relay.json`（0600，已存在不覆盖），缺域名/证书时给出可操作报错；
   compose 默认端口：edge 1443 / WSS 18443 / API 19443 / admin 127.0.0.1:19444；镜像重建为 `dsh-remote-relay:0.2.1-group`；`npm test` 190/190。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。

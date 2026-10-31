@@ -333,6 +333,9 @@ node bin/relay.js token list --config /etc/dsh-relay/relay.json
 `group` 模式 = 群体服务版 A 模式：**服务端终止 TLS + 主机自助注册 + 服务端推送**。
 P1 切片先实现「邀请码 → 主机自助注册」；边缘 TLS 终止与出站隧道在后续切片接入。
 启用：`--mode group` 且配置 `group.file`（默认 `<config 目录>/group.json`）。
+容器部署时也可以**不写 relay.json**：entrypoint 在 group 模式下会按 `.env`
+（`RELAY_DOMAIN` + 证书默认路径 / `RELAY_TLS_*`、`RELAY_GROUP_EDGE_*`）自动生成
+`/data/config/relay.json`（0600，已存在则不覆盖）；需要高级项时再手改该文件。
 
 ```json
 {
@@ -487,7 +490,7 @@ https://<relayDomain>:<adminPort>/__admin/
 靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
 （未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.2-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.3-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 
