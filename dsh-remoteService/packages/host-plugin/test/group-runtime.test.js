@@ -208,6 +208,7 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
     assert.match(registration.tokenPublicKey, /BEGIN PUBLIC KEY/);
     // 控制面地址来自服务端下发，且是 WSS 端口（≠ 注册 API 端口）
     assert.equal(registration.controlUrl, `ws://127.0.0.1:${relay.controlPort}`);
+    assert.equal(runtime.status().controlUrl, registration.controlUrl);
     assert.notEqual(String(relay.controlPort), String(relay.groupApiPort));
     groupInfo = { hostId: registration.hostId, relayDomain: registration.relayDomain, mobilePort: registration.mobilePort };
     devices.onChange = () => runtime.syncDevices();

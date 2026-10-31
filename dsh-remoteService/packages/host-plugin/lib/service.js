@@ -16,7 +16,7 @@ import { checkTlsKeyPair } from './tls-check.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 import { GroupHostRuntime } from './group.js';
 
-const VERSION = '0.1.18';
+const VERSION = '0.1.19';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -523,13 +523,18 @@ export class RemoteService {
   status() {
     const config = this.config ?? loadConfig();
     const tls = this.tlsInfo ?? {};
+    const groupEnabled = Boolean(config.groupEnabled);
+    const group = this.groupRuntime?.status();
     return {
       version: VERSION,
       enabled: Boolean(config.enabled),
+      // group 模式下「中继」显示的就是群体隧道（classic connector 此时未启动，不能拿它当状态）
       relay: {
-        url: config.relayUrl,
-        connected: Boolean(this.connector?.isConnected()),
-        lastError: this.connector?.lastError ?? this.lastError,
+        url: groupEnabled ? (group?.serviceUrl ?? config.groupServiceUrl ?? '') : config.relayUrl,
+        connected: groupEnabled ? Boolean(group?.connected) : Boolean(this.connector?.isConnected()),
+        lastError: groupEnabled
+          ? (group?.lastError ?? this.lastError)
+          : (this.connector?.lastError ?? this.lastError),
       },
       host: {
         id: config.hostId,
