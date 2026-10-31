@@ -270,6 +270,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   镜像 **0.2.4** 起邀请码在 `group.json`（0600）中明文保存，后台/CLI 可随时查看复制（旧邀请码只有哈希，
   升级后显示"不可显示"，需重新生成）；host token 仍只存 SHA-256；
   镜像 **0.2.5** 起后台不再展示邀请码明文，只提供「复制」按钮（防肩窥），CLI `invite list` 仍可查看；
+  镜像 **0.2.7** 起 relay 会记录边缘 auth 请求失败日志（`edge: auth <path> -> <status> ... host/device/原因`），
+  便于定位 App challenge/token 401；
   镜像 **0.2.6** 起新增 `POST /__group/refresh`（hostToken 鉴权、不消耗邀请码）：服务端改
   `mobilePort`/`publicControlPort` 后，主机插件「重试连接」/重启会自动同步最新 mobilePort/controlUrl，
   无需重置注册；

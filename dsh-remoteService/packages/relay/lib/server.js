@@ -1236,6 +1236,13 @@ class Relay {
         body,
         clientKey: socket.remoteAddress ?? 'unknown',
       });
+      if (result.status >= 400) {
+        const entry = result.body && result.body.error ? result.body.error : result.body;
+        this.logger.warn(
+          `edge: auth ${pathname} -> ${result.status} for host ${hostId} `
+          + `device ${String(body && body.deviceId ? body.deviceId : '?')} from ${remote}: ${JSON.stringify(entry)}`,
+        );
+      }
       writeHttpResponse(socket, {
         status: result.status,
         headers: result.headers,
