@@ -1218,6 +1218,9 @@ class Relay {
     }
 
     const pathname = parsedHead.path.split('?')[0];
+    if (pathname.startsWith('/__group/')) {
+      this.logger.info(`edge: request ${parsedHead.method} ${pathname} for host ${hostId} from ${remote}`);
+    }
     if (pathname === GROUP_AUTH_CHALLENGE_PATH || pathname === GROUP_AUTH_TOKEN_PATH) {
       let body;
       try {

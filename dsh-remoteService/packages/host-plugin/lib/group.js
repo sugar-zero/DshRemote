@@ -161,6 +161,8 @@ export class GroupHostRuntime {
     this.connector = undefined;
     this.lastError = null;
     this.closed = false;
+    /** 群体版设备 lastSeen 节流（deviceId → 上次写盘时间）。 */
+    this.deviceTouchAt = new Map();
   }
 
   /** 当前注册信息（只读副本）。 */
@@ -425,6 +427,7 @@ export class GroupHostRuntime {
       socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
       return;
     }
+    this.#touchDevice(payload.deviceId);
     await this.proxy.handleUpgrade(req, socket, head, {
       id: payload.deviceId,
       deviceId: payload.deviceId,
@@ -518,6 +521,7 @@ export class GroupHostRuntime {
       this.#send(res, 401, { ok: false, error: 'unknown_device' });
       return;
     }
+    this.#touchDevice(payload.deviceId);
     // —— 已鉴权的内部远程接口（群体版暂只支持 status；push/restart 后续接入）——
     if (pathname === STATUS_PATH) {
       if (req.method !== 'GET') {
@@ -552,6 +556,19 @@ export class GroupHostRuntime {
   }
 
   /** @returns {Array<{deviceId: string, publicKey: string}>} */
+  /** 群体版没有 mTLS 握手，鉴权成功时按设备 ID 更新 lastSeen（30s 节流）。 */
+  #touchDevice(deviceId) {
+    const now = this.now();
+    const last = this.deviceTouchAt.get(deviceId) ?? 0;
+    if (now - last < 30_000) return;
+    this.deviceTouchAt.set(deviceId, now);
+    try {
+      if (typeof this.devices?.touchById === 'function') this.devices.touchById(deviceId);
+    } catch {
+      /* lastSeen 更新失败不影响代理 */
+    }
+  }
+
   #deviceRecords() {
     if (typeof this.getGroupDevices === 'function') {
       return this.getGroupDevices().map((entry) => ({ deviceId: String(entry.deviceId), publicKey: String(entry.publicKey) }));

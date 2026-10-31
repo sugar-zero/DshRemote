@@ -289,6 +289,8 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
     assert.ok(okResponse.includes(`ok:${pairedDeviceId}:/hello`), okResponse.slice(0, 300));
     assert.equal(seen[0]?.device, pairedDeviceId);
     assert.equal(seen[0]?.host, fqdn);
+    // 群体版鉴权成功后更新 lastSeen（管理台不再显示「从未连接」）
+    assert.ok(devices.get(pairedDeviceId)?.lastSeenAt > 0);
 
     // 4b) WebSocket 升级（DSH UI 实时通道）：边缘隧道 → 主机 loopback 明文代理 → DshProxy.handleUpgrade
     const wsResponse = await tlsRaw({
