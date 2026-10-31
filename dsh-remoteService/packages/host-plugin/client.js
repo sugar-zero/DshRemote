@@ -105,6 +105,7 @@ window.__ModuleLoader__.load({
       'group.connected': '隧道连接',
       'group.lastError': '最近错误',
       'action.registerGroup': '注册并连接',
+      'action.retryGroup': '重试连接',
       'action.resetGroup': '重置注册',
       'msg.groupRegistered': '群体服务已注册并连接',
       'msg.groupRegisterFailed': '注册失败：{message}',
@@ -300,6 +301,7 @@ window.__ModuleLoader__.load({
       'group.connected': 'Tunnel',
       'group.lastError': 'Last error',
       'action.registerGroup': 'Register & connect',
+      'action.retryGroup': 'Retry connection',
       'action.resetGroup': 'Reset registration',
       'msg.groupRegistered': 'Group service registered and connected',
       'msg.groupRegisterFailed': 'Registration failed: {message}',
@@ -1574,6 +1576,25 @@ window.__ModuleLoader__.load({
         }
       };
 
+      const retryGroup = async () => {
+        if (busy === 'group') return;
+        setBusy('group');
+        try {
+          const response = await jpost('/group/retry', {});
+          if (!aliveRef.current) return;
+          const next = response && typeof response === 'object' ? response : status;
+          const fresh = draftFromStatus(next, draft);
+          setStatus(next);
+          setDraft(fresh);
+          setBaseline(fresh);
+          showFlash('good', t('msg.groupRetried'));
+        } catch (error) {
+          if (aliveRef.current) showFlash('warn', t('msg.saveFailed', { message: formatError(error) }));
+        } finally {
+          if (aliveRef.current) setBusy('');
+        }
+      };
+
       const resetGroup = async () => {
         if (busy === 'group') return;
         setBusy('group');
@@ -1752,6 +1773,7 @@ window.__ModuleLoader__.load({
         draft.groupEnabled
           ? h('div', { 'data-ra-actions': '' },
             h(Btn, { onClick: () => { void registerGroup(); }, disabled: busy === 'group' || groupRegistered }, t('action.registerGroup')),
+            h(Btn, { onClick: () => { void retryGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.retryGroup')),
             h(Btn, { onClick: () => { void resetGroup(); }, disabled: busy === 'group' || !groupRegistered }, t('action.resetGroup')))
           : null,
         draft.groupEnabled ? h('div', { 'data-ra-note': '' }, t('group.tlsNote')) : null);

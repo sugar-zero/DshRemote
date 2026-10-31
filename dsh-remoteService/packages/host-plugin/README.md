@@ -282,7 +282,7 @@ volumes:
 状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/hostId/fqdn/mobilePort/connected/plainPort）。
 
 设置页（Client 半）：group 模式下新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
-注册/隧道状态、**注册并连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。
+注册/隧道状态、**注册并连接** / **重试连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。
 **常见错误**：注册时报 `not_found（control plane only accepts WebSocket upgrades on /control）`
 → 「服务地址」填成了**控制面 WSS 端口**（18443/8443）。注册必须走**注册 API 地址**
 （直连 `https://<relayDomain>:19443`，或 nginx 暴露的 API 入口）；控制面只接受 WebSocket upgrade，
@@ -292,6 +292,7 @@ volumes:
 
 - `POST /api/remote-access/group/register`（body `{serviceUrl, inviteCode, hostName?}`）→ 注册并连接；
   邀请码一次性，注册成功后会从配置中清空；
+- `POST /api/remote-access/group/retry` → **重试隧道连接**（不重置注册、不消耗邀请码；修好 nginx/证书后用）；
 - `POST /api/remote-access/group/reset` → 停隧道、删除 `group.json`、关闭群体模式。
 
 **群体版配对**：桌面端点「配对新设备」生成 **QR v2**（`dshremote://pair?v=2&host=<hostId>.<domain>&port=<mobilePort>&auth=token&...`，

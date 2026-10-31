@@ -16,7 +16,7 @@ import { checkTlsKeyPair } from './tls-check.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 import { GroupHostRuntime } from './group.js';
 
-const VERSION = '0.1.17';
+const VERSION = '0.1.18';
 
 /** 主机插件的运行时装配：配置 → 身份/CA/设备/配对 → TLS 监听 + relay 连接。 */
 export class RemoteService {
@@ -505,6 +505,17 @@ export class RemoteService {
     this.config = saveConfig({ groupEnabled: false, groupInviteCode: '' });
     await this.#apply();
     this.audit?.append({ action: 'group-reset', result: 'ok' });
+    return this.status();
+  }
+
+  /** 群体服务版：重试控制面隧道（不重置注册、不消耗邀请码）。 */
+  async retryGroup() {
+    const info = this.groupRuntime?.status();
+    if (!info?.registered) {
+      throw Object.assign(new Error('尚未注册服务，无法重试连接'), { status: 409, code: 'group-not-registered' });
+    }
+    await this.groupRuntime.reconnect();
+    this.audit?.append({ action: 'group-retry', result: 'ok' });
     return this.status();
   }
 
