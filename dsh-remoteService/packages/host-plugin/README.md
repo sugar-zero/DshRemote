@@ -279,7 +279,8 @@ volumes:
    通过后才交给 `DshProxy` 反代到 127.0.0.1 DSH（cookie 注入 / deny list / WS 全部复用）。
 4. 设备增删/撤销后调用 `syncDevices()`（后续会接到配对/设备管理事件）→ `device.sync` 全量覆盖。
 
-状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/hostId/fqdn/mobilePort/connected/plainPort）。
+状态：`GET /api/remote-access/status` 的 `group` 段（registered/serviceUrl/controlUrl/hostId/fqdn/mobilePort/connected/plainPort）。
+group 模式下状态里的 `relay.connected` 也映射为群体隧道状态（否则 UI 会误显示"中继离线"）。
 
 设置页（Client 半）：group 模式下新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
 注册/隧道状态、**注册并连接** / **重试连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。

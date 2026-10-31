@@ -1760,6 +1760,7 @@ window.__ModuleLoader__.load({
             h(InfoRow, { label: t('group.registered'), value: groupRegistered ? t('group.registered') : t('group.notRegistered') }),
             h(InfoRow, { label: t('group.hostId'), value: group.hostId || '—' }),
             h(InfoRow, { label: t('group.fqdn'), value: group.fqdn || '—' }),
+            h(InfoRow, { label: t('group.controlUrl'), value: group.controlUrl || '—' }),
             h(InfoRow, {
               label: t('group.connected'),
               value: h('span', { 'data-ra-inline': '' },
@@ -1780,7 +1781,7 @@ window.__ModuleLoader__.load({
 
       const statusSection = h(Section, { title: t('section.status') },
         loadError !== '' ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('msg.loadFailed', { message: loadError })) : null,
-        h(InfoRow, { label: t('field.relayUrl'), value: relay.url || '—' }),
+        h(InfoRow, { label: draft.groupEnabled ? t('field.groupServiceUrl') : t('field.relayUrl'), value: relay.url || '—' }),
         h(InfoRow, {
           label: t('relay.status'),
           value: h('span', { 'data-ra-inline': '' },

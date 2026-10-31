@@ -306,6 +306,7 @@ export class GroupHostRuntime {
     return {
       registered: Boolean(registration),
       serviceUrl: registration?.serviceUrl ?? this.config.groupServiceUrl ?? '',
+      controlUrl: registration?.controlUrl ?? '',
       hostId: registration?.hostId ?? '',
       hostName: registration?.hostName || this.config.hostName || '',
       relayDomain: registration?.relayDomain ?? '',
