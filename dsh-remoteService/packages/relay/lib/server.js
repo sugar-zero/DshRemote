@@ -1300,7 +1300,7 @@ class Relay {
     }
     socket.pause();
     /** @type {Buffer[]} */
-    const pending = [rawHead];
+    const pending = [forceEdgeTunnelHead(rawHead)];
     if (rest && rest.length > 0) pending.push(rest);
     const stream = {
       id: streamId,
@@ -1447,6 +1447,38 @@ class Relay {
  * @param {string} [options.dataHost='0.0.0.0'] 监听地址
  * @returns {Promise<{dataPort:number, controlPort:number, httpPort:number, domain:string, dev:boolean, close:Function, health:Function, onlineHostIds:Function}>}
  */
+/**
+ * 边缘隧道只承载「一条连接上的第一个 HTTP 请求」：之后 socket 原样交给主机。
+ * 必须强制 Connection: close，否则客户端（iOS URLSession 默认 keep-alive）会把后续请求
+ * （例如 pairing 之后的 challenge）复用同一 TLS 连接发出，第二请求会被直接透传到主机明文
+ * 代理（没有会话 cookie → 主机 401，relay 日志也看不到），表现为「配对后立刻 401，重试又能进」。
+ * WebSocket Upgrade 请求不能改写（101 之后连接本来就要原样双向透传）。
+ * @param {Buffer} head
+ * @returns {Buffer}
+ */
+export function forceEdgeTunnelHead(head) {
+  let upgrade = false;
+  try {
+    const parsed = parseHttpHead(head);
+    upgrade = typeof parsed.headers.upgrade === 'string' && parsed.headers.upgrade !== '';
+  } catch {
+    return head;
+  }
+  if (upgrade) return head;
+  const text = head.toString('latin1');
+  const end = text.indexOf('\r\n\r\n');
+  if (end < 0) return head;
+  const lines = text.slice(0, end).split('\r\n');
+  const filtered = lines.filter((line) => {
+    const idx = line.indexOf(':');
+    if (idx <= 0) return true;
+    const name = line.slice(0, idx).trim().toLowerCase();
+    return name !== 'connection' && name !== 'proxy-connection' && name !== 'keep-alive';
+  });
+  filtered.push('Connection: close');
+  return Buffer.from(`${filtered.join('\r\n')}\r\n\r\n`, 'latin1');
+}
+
 export async function createRelay(options = {}) {
   const config = normalizeConfig(options);
   const relay = new Relay(config);
