@@ -568,7 +568,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 > 用邀请码自助注册；relay 侧提供邀请码/主机管理后台 `/__admin`。设计见
 > [`docs/group-service-design.zh.md`](../docs/group-service-design.zh.md)。**部署方可见明文，责任由部署方承担。**
 
-镜像：`dsh-remote-relay:0.2.3-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.3-group-linux-amd64.tar`）。
+镜像：`dsh-remote-relay:0.2.4-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.4-group-linux-amd64.tar`）。
 
 1. **准备环境变量模板**（不要复用 classic 的 `.env`）：
 
@@ -675,7 +675,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 
    # B. 服务器离线镜像
-   docker load -i dsh-relay-0.2.3-group-linux-amd64.tar
+   docker load -i dsh-relay-0.2.4-group-linux-amd64.tar
    docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
    ```
 
@@ -714,7 +714,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    `admin-token`（后台令牌）和证书；迁移/升级前备份整个 `data/`，其中 `signing-key.pem` 和 `admin-token` 不要泄露。
 
 4. **后台**：默认只绑回环，二选一访问（后台「生成邀请码」后要复制的是**43 字符邀请码**，
-   不是列表里的 `inv_xxx` ID；邀请码只显示一次，丢了只能新建）：
+   不是列表里的 `inv_xxx` ID；生成后可在列表里随时复制）：
    - SSH 隧道：`ssh -L 19444:127.0.0.1:19444 <VPS>`，然后浏览器打开 `https://127.0.0.1:19444/__admin/`
      （证书是 relay 域名，需在 `/etc/hosts` 映射或忽略证书告警；也可用 `--resolve` / 本地 SOCKS）；
    - nginx 反代：按 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 暴露成 `admin.<domain>` 并加 basic auth。
@@ -753,7 +753,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 ```bash
 cd /opt/dsh-group
 chmod 600 .env
-docker load -i /path/to/dsh-relay-0.2.3-group-linux-amd64.tar
+docker load -i /path/to/dsh-relay-0.2.4-group-linux-amd64.tar
 docker compose config          # 先确认变量插值（镜像/端口/挂载）
 docker compose up -d --no-build
 docker compose ps && docker compose logs -f relay

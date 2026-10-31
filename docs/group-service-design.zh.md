@@ -223,7 +223,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
 
 - **2026-10-27：切片 1 已落地**——relay `group` 模式 + 邀请码自助注册
   （`POST /__group/register`，服务端分配 hostId/hostToken/mobilePort，`mobilePort` 随注册下发）+
-  CLI（`invite create|list|revoke`、`host list|revoke`）+ `group.json`（0600、只存 SHA-256、原子写）+
+  CLI（`invite create|list|revoke`、`host list|revoke`）+ `group.json`（0600、邀请码明文便于后台查看、
+  host token 只存 SHA-256、原子写）+
   每 IP/全局限速、邀请过期/次数/撤销、`maxHosts` 上限；`npm test` **170/170**、
   `validate:artifacts` 通过；文档见 `dsh-remoteService/packages/relay/README.md` §10。
 - **2026-10-27：切片 2 已落地**——边缘 TLS 终止（通配证书，`group.edge`）+ 出站隧道
@@ -266,6 +267,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   镜像 **0.2.2** 起 entrypoint 对缺失的 `--config` 文件给出可操作提示（不再裸 ENOENT）；
   镜像 **0.2.3** 起 group 模式可**只填 `.env`**（域名/证书路径/端口）：首次启动自动生成
   `data/config/relay.json`（0600，已存在不覆盖），缺域名/证书时给出可操作报错；
+  镜像 **0.2.4** 起邀请码在 `group.json`（0600）中明文保存，后台/CLI 可随时查看复制（旧邀请码只有哈希，
+  升级后显示"不可显示"，需重新生成）；host token 仍只存 SHA-256；
   compose 默认端口：edge 1443 / WSS 18443 / API 19443 / admin 127.0.0.1:19444；镜像重建为 `dsh-remote-relay:0.2.1-group`；`npm test` 190/190。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。

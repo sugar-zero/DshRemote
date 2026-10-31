@@ -305,7 +305,8 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
 
   <section class="card">
     <h2>邀请码</h2>
-    <table><thead><tr><th>ID</th><th>备注</th><th>已用/上限</th><th>过期</th><th>状态</th><th></th></tr></thead><tbody id="invites"></tbody></table>
+    <table><thead><tr><th>备注</th><th>邀请码</th><th>已用/上限</th><th>过期</th><th>状态</th><th></th></tr></thead><tbody id="invites"></tbody></table>
+    <p class="muted">邀请码保存在服务器 group.json（0600），后台可随时复制；列表里的 <code>inv_…</code> 只是内部 ID，不能用于注册。</p>
   </section>
 
   <section class="card">
@@ -363,6 +364,10 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
     return node;
   }
   function tag(text, cls) { return el('span', text, 'tag' + (cls ? ' ' + cls : '')); }
+  function copyText(text) {
+    if (!navigator.clipboard) { flash('浏览器不支持自动复制，请手动选择复制'); return; }
+    navigator.clipboard.writeText(text).then(function () { flash('邀请码已复制'); }, function () { flash('复制失败，请手动选择复制'); });
+  }
   function render() {
     if (!state) return;
     var hosts = state.hosts || [];
@@ -390,8 +395,24 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
     }
     invites.forEach(function (invite) {
       var tr = el('tr');
-      tr.appendChild(el('td', invite.inviteId));
-      tr.appendChild(el('td', invite.note || '—'));
+      var noteCell = el('td', invite.note || '—');
+      var idHint = el('div', invite.inviteId, 'muted');
+      noteCell.appendChild(idHint);
+      tr.appendChild(noteCell);
+
+      var codeCell = el('td');
+      if (invite.code) {
+        var codeEl = el('code', invite.code);
+        codeCell.appendChild(codeEl);
+        var copyBtn = el('button', '复制', 'secondary');
+        copyBtn.style.marginLeft = '6px';
+        copyBtn.addEventListener('click', function () { copyText(invite.code); });
+        codeCell.appendChild(copyBtn);
+      } else {
+        codeCell.appendChild(el('span', '旧邀请码（仅哈希，不可显示；请重新生成）', 'muted'));
+      }
+      tr.appendChild(codeCell);
+
       tr.appendChild(el('td', invite.used + ' / ' + invite.maxUses));
       tr.appendChild(el('td', invite.expiresAt ? fmtTime(invite.expiresAt) : '永不过期'));
       var statusCell = el('td');
@@ -482,9 +503,7 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
         box.appendChild(code);
         box.appendChild(document.createTextNode('  '));
         var copy = el('button', '复制', 'secondary');
-        copy.addEventListener('click', function () {
-          if (navigator.clipboard) navigator.clipboard.writeText(data.code).then(function () { flash('已复制'); }, function () {});
-        });
+        copy.addEventListener('click', function () { copyText(data.code); });
         box.appendChild(copy);
         $('new-invite').appendChild(box);
         $('invite-note').value = '';

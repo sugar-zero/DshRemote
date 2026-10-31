@@ -386,7 +386,8 @@ node bin/relay.js host revoke <hostId> --config /etc/dsh-relay/relay.json
 安全约定：
 
 - **邀请制**：没有有效邀请码一律拒绝；`registration.enabled=false` 可整体关闭。
-- `group.json` 只存 invite code / host token 的 **SHA-256**，明文只在创建/注册响应出现一次；
+- `group.json`（0600）里 invite code **明文保存**（部署方后台/CLI 需随时查看复制）、host token 只存 **SHA-256**；
+  因此 `group.json` 属于敏感文件（含邀请码），泄露后应撤销全部邀请码并重建；
   文件 `0600`、原子写；relay 每次注册请求重读，CLI 改动无需重启。
 - hostId 由服务端分配（DNS label 安全、不可自定义）；友好名称仅展示用。
 - `mobilePort` 随注册下发，主机写进配对二维码（QR v2）。
@@ -475,7 +476,7 @@ https://<relayDomain>:<adminPort>/__admin/
 推荐经 nginx 反代到 `admin.<domain>` 并加 basic auth / IP 白名单（见 `server/nginx/group-admin-http.conf`），
 或用 SSH 隧道访问；不要直接把这个端口暴露公网。
 
-页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；明文只显示一次并可复制）；
+页面可以：查看域名/手机端口/在线主机数；**生成邀请码**（备注、可用次数、有效期；生成后列表里可随时查看/复制）；
 注意：列表里的 `inv_xxx` 是**邀请码 ID，不能当邀请码用**；真正要填给主机/App 的是生成时显示的
 **43 字符 base64url 邀请码**（只显示一次，丢了只能新建；store 只存哈希）。
 列邀请码并撤销；列主机（在线/离线/已撤销）并撤销主机。数据全部来自 `group.json`，页面每 10 秒自动刷新。
@@ -492,7 +493,7 @@ https://<relayDomain>:<adminPort>/__admin/
 靠 admin token + 失败限速保护，再经 nginx/SSH 隧道访问；admin token 只给部署方、不要发给群成员。
 （未配置 `adminPort` 时退回旧行为：后台与主机隧道共用控制面端口。）
 
-**容器镜像**：`dsh-remote-relay:0.2.3-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
+**容器镜像**：`dsh-remote-relay:0.2.4-group`（`docker compose -f server/docker-compose.group.yml up -d --build`）；
 group 模式不启动 classic 的 443 L4 透传，边缘 TLS 直接监听 `group.edge.port`。离线部署见
 [`server/README.md` §10](../../../server/README.md)。
 

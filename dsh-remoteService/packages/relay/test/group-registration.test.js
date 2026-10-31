@@ -144,11 +144,12 @@ test('group store: invite/token stored hashed (0600), invite single-use, revoke 
     assert.ok(invite.expiresAt > Date.now());
 
     const raw = readFileSync(file, 'utf8');
-    assert.equal(raw.includes(invite.code), false, 'invite code must not be stored in plaintext');
+    assert.equal(raw.includes(invite.code), true, 'invite code is stored plaintext for admin/CLI display');
     if (process.platform !== 'win32') assert.equal(statSync(file).mode & 0o777, 0o600, 'group.json must be 0600');
 
     const invites = listInvites(file);
     assert.deepEqual(invites.map((entry) => entry.inviteId), [invite.inviteId]);
+    assert.equal(invites[0].code, invite.code, 'listInvites returns plaintext code for admin display');
     assert.equal(invites[0].remaining, 1);
 
     const registration = registerHost({ file, inviteCode: invite.code, hostName: '  Friend Mac  ', mobilePort: 11443 });
@@ -336,7 +337,7 @@ test('CLI: invite create/list/revoke and host list/revoke', () => {
     assert.equal(listed.status, 0, listed.stderr);
     assert.equal(JSON.parse(listed.stdout).invites.length, 1);
     assert.equal(JSON.parse(listed.stdout).invites[0].remaining, 2);
-    assert.equal(listed.stdout.includes(invite.code), false, 'invite list must not print the code');
+    assert.equal(listed.stdout.includes(invite.code), true, 'invite list prints the code for copying');
 
     const registration = registerHost({ file, inviteCode: invite.code, hostName: 'Test Mac' });
     const hosts = runCli(['host', 'list', '--group-file', file, '--json']);
