@@ -713,6 +713,17 @@ docker compose up -d --no-build
 docker compose ps && docker compose logs -f relay
 ```
 
+> **如果 JSON 文件名/镜像文件名还没改**：目录里同时保留 `docker-compose.group.yml` 和 `.env` 时，
+> `docker compose` 找不到默认的 `docker-compose.yml`，必须带 `-f`；而 `.env` 的读取还依赖
+> 工作目录/项目目录，最稳的写法是显式指定：
+>
+> ```bash
+> cd /opt/dsh-group
+> docker compose --env-file .env -f docker-compose.group.yml up -d --force-recreate
+> ```
+>
+> 否则容易出现「.env 里明明配了 RELAY_DOMAIN，容器里却是空」的假象。
+
 要点：
 
 - 改名后 `.env` 会被自动读取；不在同目录时用 `docker compose --env-file /opt/dsh-group/.env -f ...`；
