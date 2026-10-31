@@ -1,14 +1,18 @@
 /**
- * 自托管盲中继（方案 B2）核心实现。
+ * 群体服务版（A 模式）relay 核心实现。
  *
- *   :443/tcp   TLS 透传 —— 只读 ClientHello 的 SNI，按 <hostId>.<domain> 路由；
- *              relay 不终止 TLS、不持有主机证书私钥，看不到明文内容。
- *   :80/tcp    除 /healthz 外一律 301 到 https://<host><path>。
- *   :8443/tcp  控制面 WSS（host 插件专用）：host.hello 鉴权 → host.ready →
- *              JSON 控制消息 + 二进制流帧（dsh-remote-protocol）。
+ * 0.3.0 起 relay 只服务群体版产品线：classic 单机盲中继（443 TLS 透传、80 跳转、
+ * tokens.json）已删除。剩余四个面：
  *
- * 数据面多路复用：
- *   公网连接 → u32 streamId → host.open(JSON) → host.opened(JSON) →
+ *   :<edge.port>/tcp  边缘 TLS —— relay 用通配证书终止手机 TLS（SNI → <hostId>.<domain>），
+ *                     设备会话（短时 token / __Host- cookie）鉴权后经控制面隧道转发到主机。
+ *   :<controlPort>/tcp 控制面 WSS（host 插件专用）：host.hello 鉴权 → host.ready →
+ *                     JSON 控制消息 + 二进制流帧（dsh-remote-protocol）。
+ *   :<httpPort>/tcp   只保留 GET/HEAD /healthz（容器 HEALTHCHECK 用）；其它一律 404。
+ *   api / admin 面     可各自独立监听：POST /__group/register、/__group/refresh；/__admin。
+ *
+ * 隧道多路复用（边缘连接 → 主机）：
+ *   公网 TLS 连接 → u32 streamId → host.open(JSON) → host.opened(JSON) →
  *   [二进制 DATA 帧双向] → CLOSE 帧。
  */
 
@@ -32,12 +36,9 @@ import {
   decodeFrame,
   encodeFrame,
   hostFqdn,
-  safeEqualStrings,
 } from 'dsh-remote-protocol';
-import { MAX_CLIENT_HELLO_BYTES, parseClientHello } from './sni.js';
-import { isValidHostId, loadHostTokens, normalizeHostId } from './tokens.js';
+import { isValidHostId, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
-import { createPushService } from './push.js';
 import { GroupRegistrationService, verifyHostToken } from './group.js';
 import { GROUP_ADMIN_BASE, createGroupAdminHandler, ensureAdminToken } from './group-admin.js';
 import { dirname, join } from 'node:path';
@@ -70,33 +71,6 @@ function closeServer(server) {
   });
 }
 
-/**
- * 带 mtime 无关的 tokens 文件按需读取：每次握手都重读，CLI 改动即时生效。
- */
-class HostTokenStore {
-  /**
-   * @param {{hostTokens: Record<string, string>, tokensFile?: string, logger: any}} options
-   */
-  constructor({ hostTokens, tokensFile, logger }) {
-    this.explicit = hostTokens ?? {};
-    this.tokensFile = tokensFile;
-    this.logger = logger;
-  }
-
-  /** @param {string} hostId @returns {string | undefined} */
-  get(hostId) {
-    if (Object.hasOwn(this.explicit, hostId)) return this.explicit[hostId];
-    if (!this.tokensFile) return undefined;
-    try {
-      const tokens = loadHostTokens(this.tokensFile);
-      return Object.hasOwn(tokens, hostId) ? tokens[hostId] : undefined;
-    } catch (err) {
-      this.logger.warn(`cannot read tokens file "${this.tokensFile}": ${err && err.message ? err.message : String(err)}`);
-      return undefined;
-    }
-  }
-}
-
 /** @param {net.Socket} socket */
 function formatPeer(socket) {
   return `${socket.remoteAddress ?? '?'}:${socket.remotePort ?? '?'}`;
@@ -107,70 +81,51 @@ class Relay {
   constructor(config) {
     this.config = config;
     this.logger = config.logger;
-    this.tokenStore = new HostTokenStore({
-      hostTokens: config.hostTokens,
-      tokensFile: config.tokensFile,
-      logger: config.logger,
-    });
-    this.pushService = createPushService({ ...config.push, logger: config.logger });
     /**
-     * 群体服务版（A 模式）注册/开通服务；classic 模式下为 null（main 行为不变）。
-     * @type {GroupRegistrationService | null}
-     */
-    /**
-     * 群体版设备会话鉴权（仅 group + edge 时启用）：短时 token、challenge、设备注册表。
+     * 群体版设备会话鉴权（仅 edge 启用时）：短时 token、challenge、设备注册表。
      * @type {GroupAuthService | null}
      */
-    this.groupAuth = config.mode === 'group' && config.group.edge.enabled
+    this.groupAuth = config.group.edge.enabled
       ? new GroupAuthService({
         groupFile: config.group.file,
         ...config.group.auth,
         logger: config.logger,
       })
       : null;
-    this.groupService = config.mode === 'group'
-      ? new GroupRegistrationService({
-        ...config.group,
-        relayDomain: config.domain,
-        logger: config.logger,
-        tokenPublicKey: this.groupAuth?.publicKey,
-        getControlPort: () => this.controlPort,
-        publicControlPort: config.group.publicControlPort,
-      })
-      : null;
-    /** 群体版部署方后台（/__admin）：默认自动生成 admin-token 文件（0600）。 */
-    this.groupAdmin = null;
-    this.groupAdminTokenInfo = null;
-    if (config.mode === 'group') {
-      const adminTokenFile = config.group.adminTokenFile ?? join(dirname(config.group.file), 'admin-token');
-      const admin = ensureAdminToken({ token: config.group.adminToken, tokenFile: adminTokenFile });
-      this.groupAdminTokenInfo = admin;
-      this.groupAdmin = createGroupAdminHandler({
-        groupFile: config.group.file,
-        domain: config.domain,
-        mobilePort: config.group.mobilePort,
-        adminToken: admin.token,
-        onlineHostIds: () => [...this.hosts.keys()],
-        logger: config.logger,
-      });
-    }
+    /**
+     * 群体版注册/开通服务（邀请码 → 主机自助注册；本产品线唯一入口，始终启用）。
+     * @type {GroupRegistrationService}
+     */
+    this.groupService = new GroupRegistrationService({
+      ...config.group,
+      relayDomain: config.domain,
+      logger: config.logger,
+      tokenPublicKey: this.groupAuth?.publicKey,
+      getControlPort: () => this.controlPort,
+      publicControlPort: config.group.publicControlPort,
+    });
+    /** 部署方后台（/__admin）：默认自动生成 admin-token 文件（0600）。 */
+    const adminTokenFile = config.group.adminTokenFile ?? join(dirname(config.group.file), 'admin-token');
+    const admin = ensureAdminToken({ token: config.group.adminToken, tokenFile: adminTokenFile });
+    this.groupAdminTokenInfo = admin;
+    this.groupAdmin = createGroupAdminHandler({
+      groupFile: config.group.file,
+      domain: config.domain,
+      mobilePort: config.group.mobilePort,
+      adminToken: admin.token,
+      onlineHostIds: () => [...this.hosts.keys()],
+      logger: config.logger,
+    });
 
     /** @type {Map<string, any>} hostId → host */
     this.hosts = new Map();
-    /** @type {Set<net.Socket>} 数据面未关闭 socket（close() 时强制断） */
-    this.dataSockets = new Set();
-    /** @type {Map<string, number>} IP → 当前数据面连接数（DoS 兜底） */
-    this.ipConnections = new Map();
 
-    this.dataPort = config.dataPort;
     this.controlPort = config.controlPort;
     this.httpPort = config.httpPort;
     this.edgePort = 0;
     this.closed = false;
 
-    /** @type {net.Server | null} */
-    this.dataServer = null;
-    /** @type {tls.Server | null} 群体版边缘 TLS（A 模式） */
+    /** @type {tls.Server | null} 边缘 TLS（A 模式，唯一数据面） */
     this.edgeServer = null;
     /** @type {Set<import('node:tls').TLSSocket>} 边缘连接（close() 时强制断） */
     this.edgeSockets = new Set();
@@ -203,20 +158,18 @@ class Relay {
     this.controlServer.on('upgrade', (req, socket, head) => this.handleControlUpgrade(req, socket, head));
 
     // 职责分离：控制面只做 WSS 隧道；注册 API / 部署方后台各自独立监听（apiPort / adminPort）。
-    if (this.config.mode === 'group') {
-      const makeHttpServer = (handler, name) => {
-        const server = tlsMaterial
-          ? https.createServer({ cert: tlsMaterial.cert, key: tlsMaterial.key }, handler)
-          : http.createServer(handler);
-        server.on('error', (err) => this.logger.error(`${name} server error: ${err.code ?? ''} ${err.message}`));
-        return server;
-      };
-      if (this.config.group.apiPort !== undefined) {
-        this.groupApiServer = makeHttpServer((req, res) => this.handleGroupApiHttpRequest(req, res), 'group api');
-      }
-      if (this.config.group.adminPort !== undefined) {
-        this.groupAdminServer = makeHttpServer((req, res) => { void this.groupAdmin(req, res); }, 'group admin');
-      }
+    const makeHttpServer = (handler, name) => {
+      const server = tlsMaterial
+        ? https.createServer({ cert: tlsMaterial.cert, key: tlsMaterial.key }, handler)
+        : http.createServer(handler);
+      server.on('error', (err) => this.logger.error(`${name} server error: ${err.code ?? ''} ${err.message}`));
+      return server;
+    };
+    if (this.config.group.apiPort !== undefined) {
+      this.groupApiServer = makeHttpServer((req, res) => this.handleGroupApiHttpRequest(req, res), 'group api');
+    }
+    if (this.config.group.adminPort !== undefined) {
+      this.groupAdminServer = makeHttpServer((req, res) => { void this.groupAdmin(req, res); }, 'group admin');
     }
 
     this.wss = new WebSocketServer({
@@ -229,15 +182,9 @@ class Relay {
     this.wss.on('error', (err) => this.logger.error(`control websocket server error: ${err.message}`));
 
     this.httpServer = http.createServer((req, res) => this.handleHttpRequest(req, res));
-    this.httpServer.on('error', (err) => this.logger.error(`http plane server error: ${err.code ?? ''} ${err.message}`));
+    this.httpServer.on('error', (err) => this.logger.error(`http health server error: ${err.code ?? ''} ${err.message}`));
 
-    // group 模式由边缘 TLS 终结手机流量，不再启动 classic 的 L4 透传端口（避免占用 443）。
-    if (this.config.mode !== 'group') {
-      this.dataServer = net.createServer((socket) => this.handleDataConnection(socket));
-      this.dataServer.on('error', (err) => this.logger.error(`data plane server error: ${err.code ?? ''} ${err.message}`));
-    }
-
-    if (this.config.mode === 'group' && this.config.group.edge.enabled) {
+    if (this.config.group.edge.enabled) {
       const edgeTls = readTlsMaterial(this.config.group.edge.tls);
       this.edgeServer = tls.createServer(
         { cert: edgeTls.cert, key: edgeTls.key, requestCert: false, rejectUnauthorized: false },
@@ -251,7 +198,6 @@ class Relay {
 
     try {
       await Promise.all([
-        this.dataServer ? this.listen(this.dataServer, this.config.dataPort, 'data') : Promise.resolve(),
         this.listen(this.controlServer, this.config.controlPort, 'control'),
         this.listen(this.httpServer, this.config.httpPort, 'http'),
         this.edgeServer ? this.listen(this.edgeServer, this.config.group.edge.port, 'edge') : Promise.resolve(),
@@ -260,7 +206,7 @@ class Relay {
             this.groupApiServer,
             this.config.group.apiPort,
             'group api',
-            this.config.group.apiBind ?? this.config.dataHost,
+            this.config.group.apiBind ?? this.config.listenHost,
           )
           : Promise.resolve(),
         this.groupAdminServer
@@ -280,7 +226,6 @@ class Relay {
 
     const controlAddr = /** @type {net.AddressInfo} */ (this.controlServer.address());
     const httpAddr = /** @type {net.AddressInfo} */ (this.httpServer.address());
-    if (this.dataServer) this.dataPort = /** @type {net.AddressInfo} */ (this.dataServer.address()).port;
     this.controlPort = controlAddr.port;
     this.httpPort = httpAddr.port;
     if (this.groupApiServer) this.groupApiPort = /** @type {net.AddressInfo} */ (this.groupApiServer.address()).port;
@@ -302,9 +247,8 @@ class Relay {
     this.heartbeatTimer.unref?.();
 
     this.logger.info(
-      `relay listening on ${this.config.dataHost} — `
-      + (this.dataServer ? `data :${this.dataPort} (tls passthrough), ` : '')
-      + `control :${this.controlPort} (${tlsMaterial ? 'wss' : 'ws/dev'}), http :${this.httpPort}; domain ${this.config.domain}`,
+      `group relay listening on ${this.config.listenHost} — `
+      + `control :${this.controlPort} (${tlsMaterial ? 'wss' : 'ws/dev'}), http health :${this.httpPort}; domain ${this.config.domain}`,
     );
     if (this.groupApiServer) {
       const scheme = tlsMaterial ? 'https' : 'http';
@@ -334,7 +278,7 @@ class Relay {
    * @param {number} port
    * @param {string} name
    */
-  listen(server, port, name, host = this.config.dataHost) {
+  listen(server, port, name, host = this.config.listenHost) {
     return new Promise((resolve, reject) => {
       const onError = (err) => {
         server.removeListener('listening', onListening);
@@ -351,16 +295,14 @@ class Relay {
     });
   }
 
-  /** 暴露给调用方的 API（createRelay/startRelay 返回值）。 */
+  /** 暴露给调用方的 API（createRelay/startRelay 返回值；群体版 relay）。 */
   api() {
     return {
-      dataPort: this.dataPort,
       controlPort: this.controlPort,
       httpPort: this.httpPort,
       groupApiPort: this.groupApiPort,
       groupAdminPort: this.groupAdminPort,
       domain: this.config.domain,
-      mode: this.config.mode,
       edgePort: this.edgePort,
       dev: this.config.dev,
       close: () => this.close(),
@@ -374,7 +316,6 @@ class Relay {
       ok: true,
       domain: this.config.domain,
       hosts: [...this.hosts.keys()].sort(),
-      pushTokens: this.pushService.totalCount(),
     };
   }
 
@@ -399,8 +340,6 @@ class Relay {
         /* ignore */
       }
     }
-    for (const socket of this.dataSockets) socket.destroy();
-    this.dataSockets.clear();
     for (const socket of this.edgeSockets) socket.destroy();
     this.edgeSockets.clear();
     this.controlServer?.closeAllConnections?.();
@@ -420,7 +359,6 @@ class Relay {
       /* ignore */
     }
     await Promise.all([
-      closeServer(this.dataServer),
       closeServer(this.httpServer),
       closeServer(this.controlServer),
       closeServer(this.edgeServer),
@@ -456,7 +394,8 @@ class Relay {
 
   /**
    * 控制端口上的普通 HTTP 请求：
-   *   - POST /__group/register → 群体版自助注册（仅 group 模式）；
+   *   - POST /__group/register、POST /__group/refresh → 群体版注册 API（未独立监听时）；
+   *   - /__admin* → 部署方后台（未独立监听时）；
    *   - 其它 → 404（控制面只接受 WS upgrade）。
    */
   handleControlHttpRequest(req, res) {
@@ -466,17 +405,17 @@ class Relay {
     } catch {
       pathname = req.url ?? '/';
     }
-    const separatedAdmin = this.config.mode === 'group' && this.config.group.adminPort !== undefined;
-    const separatedApi = this.config.mode === 'group' && this.config.group.apiPort !== undefined;
-    if (!separatedAdmin && this.groupAdmin && (pathname === GROUP_ADMIN_BASE || pathname.startsWith(`${GROUP_ADMIN_BASE}/`))) {
+    const separatedAdmin = this.config.group.adminPort !== undefined;
+    const separatedApi = this.config.group.apiPort !== undefined;
+    if (!separatedAdmin && (pathname === GROUP_ADMIN_BASE || pathname.startsWith(`${GROUP_ADMIN_BASE}/`))) {
       void this.groupAdmin(req, res);
       return;
     }
-    if (!separatedApi && this.groupService && pathname === GROUP_REGISTER_PATH) {
+    if (!separatedApi && pathname === GROUP_REGISTER_PATH) {
       void this.groupService.handleHttp(req, res);
       return;
     }
-    if (!separatedApi && this.groupService && pathname === GROUP_REFRESH_PATH) {
+    if (!separatedApi && pathname === GROUP_REFRESH_PATH) {
       void this.groupService.handleRefreshHttp(req, res);
       return;
     }
@@ -579,26 +518,8 @@ class Relay {
       case RELAY_MSG.HOST_CLOSE:
         this.handleHostCloseMessage(conn.host, msg);
         return;
-      case RELAY_MSG.PUSH_REGISTER: {
-        try {
-          const result = this.pushService.register(conn.host.hostId, {
-            deviceId: msg.deviceId,
-            provider: msg.provider,
-            token: msg.token,
-          });
-          this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'register', ok: true, ...result });
-        } catch (error) {
-          this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'register', ok: false, code: error.code ?? 'push-register-failed', message: error.message });
-        }
-        return;
-      }
-      case RELAY_MSG.PUSH_SEND: {
-        this.pushService.send(conn.host.hostId, { kind: msg.kind })
-          .then((result) => this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'send', ok: true, ...result }))
-          .catch((error) => this.sendJson(conn.host.ws, { t: RELAY_MSG.PUSH_RESULT, action: 'send', ok: false, message: error.message }));
-        return;
-      }
       default:
+        // 0.3.0 起 relay 不再提供 push 服务：未知消息（含旧 host 的 push.register/send）忽略。
         this.logger.debug(`control: ignoring unsupported message type ${JSON.stringify(String(msg.t))}`);
     }
   }
@@ -701,7 +622,6 @@ class Relay {
       hostId,
       domain: this.config.domain,
       hostname: hostFqdn(hostId, this.config.domain),
-      dataPort: this.dataPort,
     });
   }
 
@@ -751,59 +671,8 @@ class Relay {
   }
 
   // ---------------------------------------------------------------------------
-  // 数据面（:443 raw TCP，TLS 透传 + SNI 路由）
+  // 边缘隧道核心：SNI → hostId 路由 + stream 分配（边缘 TLS 在下方「边缘平面」）
   // ---------------------------------------------------------------------------
-
-  /** @param {net.Socket} socket */
-  handleDataConnection(socket) {
-    if (this.closed) {
-      socket.destroy();
-      return;
-    }
-    const ip = socket.remoteAddress ?? 'unknown';
-    const ipCount = this.ipConnections.get(ip) ?? 0;
-    if (ipCount >= this.config.limits.maxConnectionsPerIp
-      || this.dataSockets.size >= this.config.limits.maxDataConnections) {
-      this.logger.warn(`data: dropping connection from ${formatPeer(socket)}: connection limit reached`);
-      socket.destroy();
-      return;
-    }
-    this.ipConnections.set(ip, ipCount + 1);
-    this.dataSockets.add(socket);
-    socket.on('close', () => {
-      this.dataSockets.delete(socket);
-      const remaining = (this.ipConnections.get(ip) ?? 1) - 1;
-      if (remaining <= 0) this.ipConnections.delete(ip);
-      else this.ipConnections.set(ip, remaining);
-    });
-    socket.on('error', (err) => this.logger.debug(`data: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
-
-    const remote = formatPeer(socket);
-    let buffered = Buffer.alloc(0);
-    let routed = false;
-
-    /** @param {Buffer} chunk */
-    const onData = (chunk) => {
-      if (routed) return;
-      buffered = buffered.length === 0 ? chunk : Buffer.concat([buffered, chunk]);
-      if (buffered.length > MAX_CLIENT_HELLO_BYTES) {
-        this.logger.debug(`data: dropping ${remote}: ClientHello exceeds ${MAX_CLIENT_HELLO_BYTES} bytes`);
-        socket.destroy();
-        return;
-      }
-      const result = parseClientHello(buffered);
-      if (result.status === 'incomplete') return;
-      routed = true;
-      socket.removeListener('data', onData);
-      if (result.status === 'invalid') {
-        this.logger.debug(`data: dropping ${remote}: ${result.reason}`);
-        socket.destroy();
-        return;
-      }
-      this.routeDataConnection(socket, result.sni, buffered, remote);
-    };
-    socket.on('data', onData);
-  }
 
   /**
    * 从 SNI 解析 hostId：必须严格是 <hostId>.<domain>，hostId 为单个 DNS 首标签。
@@ -821,64 +690,6 @@ class Relay {
   }
 
   /**
-   * @param {net.Socket} socket
-   * @param {string | null} sni
-   * @param {Buffer} helloBytes 已读到的客户端字节（至少包含完整 ClientHello）
-   * @param {string} remote
-   */
-  routeDataConnection(socket, sni, helloBytes, remote) {
-    if (socket.destroyed) return;
-    // 先暂停：host.opened 之前到达的字节留在 socket 读缓冲里，不会丢。
-    socket.pause();
-
-    const hostId = this.resolveHostIdFromSni(sni);
-    if (!hostId) {
-      this.logger.debug(`data: dropping ${remote}: no route for SNI ${sni === null ? '(absent)' : JSON.stringify(sni)}`);
-      socket.destroy();
-      return;
-    }
-    const host = this.hosts.get(hostId);
-    if (!host || !isWsOpen(host.ws)) {
-      this.logger.debug(`data: dropping ${remote}: host "${hostId}" is offline (SNI ${JSON.stringify(sni)})`);
-      socket.destroy();
-      return;
-    }
-    const streamId = this.allocateStreamId(host);
-    if (streamId === null) {
-      this.logger.warn(`data: dropping ${remote}: stream table for host "${hostId}" is full`);
-      socket.destroy();
-      return;
-    }
-
-    const stream = {
-      id: streamId,
-      host,
-      socket,
-      /** @type {Buffer[]} */
-      pending: [helloBytes],
-      opened: false,
-      finished: false,
-      hostClosed: false,
-      /** @type {NodeJS.Timeout | null} */
-      openTimer: null,
-    };
-    host.streams.set(streamId, stream);
-    socket.on('close', () => this.finishStream(stream, 'app_closed'));
-    socket.on('error', (err) => this.logger.debug(`data: stream ${streamId} app error: ${err.code ?? err.message}`));
-
-    stream.openTimer = setTimeout(() => {
-      if (stream.opened || stream.finished) return;
-      this.logger.warn(`data: stream ${streamId} → host "${hostId}" open timeout`);
-      this.sendJson(host.ws, { t: RELAY_MSG.HOST_CLOSE, streamId, reason: 'open_timeout' });
-      this.finishStream(stream, 'open_timeout');
-    }, this.config.timings.openTimeoutMs);
-    stream.openTimer.unref?.();
-
-    this.logger.debug(`data: stream ${streamId} → host "${hostId}" (SNI ${JSON.stringify(sni)}, ${helloBytes.length}B hello buffered) from ${remote}`);
-    this.sendJson(host.ws, { t: RELAY_MSG.HOST_OPEN, streamId, sni });
-  }
-
-  /**
    * @param {any} host
    * @returns {number | null}
    */
@@ -891,11 +702,11 @@ class Relay {
   }
 
   /**
-   * host 回了 host.opened：先把缓冲的 ClientHello **转发给 host**（client→host 方向），
-   * 然后恢复 app socket 读流；后续 app 数据走 forwardAppData。
+   * host 回了 host.opened：先把缓冲的首包（HTTP 请求头/剩余字节）**转发给 host**
+   *（client→host 方向），然后恢复 app socket 读流；后续 app 数据走 forwardAppData。
    *
-   * 注意方向：stream.pending 是客户端发来的 ClientHello（client→host），
-   * 绝不能写回 app socket（那会让 TLS 客户端收到自己发出的握手字节）。
+   * 注意方向：stream.pending 是客户端发来的首包（client→host），
+   * 绝不能写回 app socket。
    *
    * @param {any} stream
    */
@@ -936,7 +747,7 @@ class Relay {
     }
   }
 
-  /** 开始把 app socket 的后续字节转成 DATA 帧（先发 Host 的 ClientHello 之后才调用）。 */
+  /** 开始把 app socket 的后续字节转成 DATA 帧（首包已发给 host 之后才调用）。 */
   resumeAppStream(stream) {
     if (stream.finished || stream.socket.destroyed) return;
     stream.socket.on('data', (chunk) => this.forwardAppData(stream, chunk));
@@ -1106,27 +917,22 @@ class Relay {
   }
 
   /**
-   * 校验 host 控制面凭据：group 模式走注册 store 的 token hash；classic 走 tokens.json。
+   * 校验 host 控制面凭据：只认 group.json 里的注册 token hash（classic tokens.json 已删除）。
    * @param {string} hostId
    * @param {string} token
    */
   verifyHostCredential(hostId, token) {
-    if (this.config.mode === 'group') {
-      try {
-        if (verifyHostToken(this.config.group.file, hostId, token)) return true;
-      } catch (err) {
-        this.logger.warn(`control: cannot verify group host "${hostId}": ${err && err.message ? err.message : String(err)}`);
-      }
+    try {
+      return verifyHostToken(this.config.group.file, hostId, token);
+    } catch (err) {
+      this.logger.warn(`control: cannot verify host "${hostId}": ${err && err.message ? err.message : String(err)}`);
+      return false;
     }
-    const expected = this.tokenStore.get(hostId);
-    return typeof expected === 'string' && safeEqualStrings(String(token), expected);
   }
 
   // ---------------------------------------------------------------------------
   // 群体版边缘平面（A 模式）：relay 终止手机 TLS，明文经控制面隧道转发到主机
   // ---------------------------------------------------------------------------
-  // 本切片（P1 切片 2）只做「边缘 TLS 终止 + 出站隧道」骨架与压测；设备鉴权
-  //（短时 token + relay 签名断言）在下一片接入，因此未认证模式仅 dev 可用。
 
   /** @param {import('node:tls').TLSSocket} socket */
   handleEdgeConnection(socket) {
@@ -1137,7 +943,7 @@ class Relay {
     const ip = socket.remoteAddress ?? 'unknown';
     const ipCount = this.edgeIpConnections.get(ip) ?? 0;
     if (ipCount >= this.config.limits.maxConnectionsPerIp
-      || this.edgeSockets.size >= this.config.limits.maxDataConnections) {
+      || this.edgeSockets.size >= this.config.limits.maxEdgeConnections) {
       this.logger.warn(`edge: dropping ${formatPeer(socket)}: connection limit reached`);
       socket.destroy();
       return;
@@ -1260,7 +1066,7 @@ class Relay {
       return;
     }
 
-    // 配对路径：与 classic 一致，允许无会话（一次性 secret + 主机确认保护；主机侧还有限速）。
+    // 配对路径：允许无会话（一次性 secret + 主机确认保护；主机侧还有限速）。
     const isPairPath = pathname === PAIR_PATH || pathname === `${PAIR_PATH}/` || pathname === PAIR_STATUS_PATH;
 
     // 普通业务流量：校验 __Host- 会话 cookie（dev 允许跳过；生产必须通过）。
@@ -1371,13 +1177,12 @@ class Relay {
   }
 
   // ---------------------------------------------------------------------------
-  // HTTP 平面（:80）
+  // health 平面（:80，仅 /healthz；容器 HEALTHCHECK / 同机探针用）
   // ---------------------------------------------------------------------------
 
   /** @param {http.IncomingMessage} req @param {http.ServerResponse} res */
   handleHttpRequest(req, res) {
     const rawUrl = typeof req.url === 'string' && req.url.startsWith('/') ? req.url : '/';
-
     if (rawUrl.split('?')[0] === '/healthz' && (req.method === 'GET' || req.method === 'HEAD')) {
       const body = JSON.stringify(this.health());
       res.writeHead(200, {
@@ -1388,34 +1193,18 @@ class Relay {
       res.end(req.method === 'HEAD' ? undefined : body);
       return;
     }
-
-    const targetHost = this.pickRedirectHost(req.headers.host);
-    res.writeHead(301, {
-      location: `https://${targetHost}${rawUrl}`,
-      'content-length': 0,
+    // 0.3.0 起 80 端口只保留 /healthz（classic 的 301 跳转已删除）。
+    const body = JSON.stringify({
+      ok: false,
+      error: { code: 'not_found', message: 'HTTP plane serves GET/HEAD /healthz only; use the edge TLS port for phone traffic' },
+    });
+    res.writeHead(404, {
+      'content-type': 'application/json; charset=utf-8',
+      'cache-control': 'no-store',
+      'content-length': Buffer.byteLength(body),
       connection: 'close',
     });
-    res.end();
-  }
-
-  /**
-   * 复用请求 Host（去掉端口），非法时回落到 relay domain。
-   * @param {string | undefined} hostHeader
-   * @returns {string}
-   */
-  pickRedirectHost(hostHeader) {
-    if (typeof hostHeader === 'string') {
-      let host = hostHeader.trim();
-      if (host.startsWith('[')) {
-        const end = host.indexOf(']');
-        if (end > 0) host = host.slice(0, end + 1);
-      } else {
-        const colon = host.indexOf(':');
-        if (colon > 0) host = host.slice(0, colon);
-      }
-      if (host !== '' && host.length <= 253 && /^[a-z0-9.:[\]_-]+$/i.test(host)) return host;
-    }
-    return this.config.domain;
+    res.end(body);
   }
 
   /**
@@ -1433,20 +1222,6 @@ class Relay {
   }
 }
 
-/**
- * 创建并启动 relay。
- * @param {object} options
- * @param {string} options.domain 根域名，如 relay.example.com
- * @param {number} [options.dataPort=443] TLS 透传端口；0 = 临时端口
- * @param {number} [options.controlPort=8443] 控制面端口；0 = 临时端口
- * @param {number} [options.httpPort=80] HTTP 跳转端口；0 = 临时端口
- * @param {Record<string,string>} [options.hostTokens] hostId → token（也可用 tokensFile）
- * @param {{certFile?: string, keyFile?: string, cert?: Buffer|string, key?: Buffer|string}} [options.tls]
- * @param {boolean} [options.dev=false] 允许无 TLS 的 ws:// 控制面（仅测试/开发）
- * @param {string} [options.tokensFile] tokens.json 路径
- * @param {string} [options.dataHost='0.0.0.0'] 监听地址
- * @returns {Promise<{dataPort:number, controlPort:number, httpPort:number, domain:string, dev:boolean, close:Function, health:Function, onlineHostIds:Function}>}
- */
 /**
  * 边缘隧道只承载「一条连接上的第一个 HTTP 请求」：之后 socket 原样交给主机。
  * 必须强制 Connection: close，否则客户端（iOS URLSession 默认 keep-alive）会把后续请求
@@ -1479,6 +1254,19 @@ export function forceEdgeTunnelHead(head) {
   return Buffer.from(`${filtered.join('\r\n')}\r\n\r\n`, 'latin1');
 }
 
+/**
+ * 创建并启动群体服务版 relay（A 模式）。
+ * @param {object} options
+ * @param {string} options.domain 根域名，如 relay.example.com
+ * @param {object} options.group 群体版配置（必填 group.file；见 lib/config.js）
+ * @param {number} [options.controlPort=8443] 控制面 WSS 端口；0 = 临时端口
+ * @param {number} [options.httpPort=80] health 端口（GET/HEAD /healthz）；0 = 临时端口
+ * @param {{certFile?: string, keyFile?: string, cert?: Buffer|string, key?: Buffer|string}} [options.tls]
+ * @param {boolean} [options.dev=false] 允许无 TLS 的 ws:// 控制面（仅测试/开发）
+ * @param {string} [options.listenHost='0.0.0.0'] 监听地址（旧名 dataHost 仍接受）
+ * @returns {Promise<{controlPort:number, httpPort:number, groupApiPort:number, groupAdminPort:number,
+ *   edgePort:number, domain:string, dev:boolean, close:Function, health:Function, onlineHostIds:Function}>}
+ */
 export async function createRelay(options = {}) {
   const config = normalizeConfig(options);
   const relay = new Relay(config);
@@ -1487,7 +1275,7 @@ export async function createRelay(options = {}) {
 
 /**
  * startRelay 与 createRelay 等价，语义更贴近 CLI/config 文件入口：
- * 先校验配置（生产必须 TLS），再绑定三个端口并返回实际端口。
+ * 先校验配置（生产必须 TLS），再绑定各端口并返回实际端口。
  * @param {object} config
  */
 export async function startRelay(config = {}) {

@@ -1,7 +1,15 @@
+/**
+ * health 平面（httpPort）：0.3.0 起只保留 GET/HEAD /healthz，classic 的 301 跳转已删除。
+ */
+
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
 import http from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
-import { createRelay } from '../index.js';
+import { createInvite, createRelay, registerHost } from '../index.js';
+import { ControlClient } from './helpers/control-client.js';
 import { silentLogger } from './helpers/certs.js';
 
 /**
@@ -31,61 +39,97 @@ function request(port, { method = 'GET', path = '/', hostHeader } = {}) {
   });
 }
 
-async function startHttpTestRelay() {
+function tempGroup() {
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-relay-http-'));
+  const file = join(dir, 'group.json');
+  return { dir, file, cleanup: () => rmSync(dir, { recursive: true, force: true }) };
+}
+
+/** 起一个 group relay（dev/无 TLS，临时端口 + 临时 group.json）。 */
+async function startHttpTestRelay(file) {
   return createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
-    hostTokens: { poc: 'token' },
     logger: silentLogger,
+    group: { file, edge: { enabled: false } },
   });
 }
 
 test('GET /healthz returns 200 JSON with domain and online hosts', async () => {
-  const relay = await startHttpTestRelay();
+  const temp = tempGroup();
+  const relay = await startHttpTestRelay(temp.file);
   try {
     const response = await request(relay.httpPort, { path: '/healthz', hostHeader: 'relay.test' });
     assert.equal(response.status, 200);
     assert.match(response.headers['content-type'], /application\/json/);
-    assert.deepEqual(JSON.parse(response.body), { ok: true, domain: 'relay.test', hosts: [], pushTokens: 0 });
+    assert.deepEqual(JSON.parse(response.body), { ok: true, domain: 'relay.test', hosts: [] });
   } finally {
     await relay.close();
+    temp.cleanup();
   }
 });
 
 test('HEAD /healthz returns 200 with empty body', async () => {
-  const relay = await startHttpTestRelay();
+  const temp = tempGroup();
+  const relay = await startHttpTestRelay(temp.file);
   try {
-    const response = await request(relay.httpPort, { method: 'HEAD', path: '/healthz', hostHeader: 'relay.test' });
+    const response = await request(relay.httpPort, { method: 'HEAD', path: '/healthz' });
     assert.equal(response.status, 200);
     assert.equal(response.body, '');
   } finally {
     await relay.close();
+    temp.cleanup();
   }
 });
 
-test('all other requests are 301-redirected to https://<host><path>', async () => {
-  const relay = await startHttpTestRelay();
+test('/healthz lists online hosts and drops them after disconnect', async () => {
+  const temp = tempGroup();
+  const invite = createInvite(temp.file, {});
+  const host = registerHost({ file: temp.file, inviteCode: invite.code, hostName: 'Health Host' });
+  const relay = await startHttpTestRelay(temp.file);
   try {
-    const hostUnique = await request(relay.httpPort, {
-      path: '/some/path?x=1&y=2',
-      hostHeader: 'poc.relay.test:80',
-    });
-    assert.equal(hostUnique.status, 301);
-    assert.equal(hostUnique.headers.location, 'https://poc.relay.test/some/path?x=1&y=2');
+    const client = await ControlClient.connect(`ws://127.0.0.1:${relay.controlPort}/control`);
+    client.sendJson({ t: 'host.hello', protocolVersion: 1, hostId: host.hostId, token: host.hostToken });
+    assert.equal((await client.nextJson()).t, 'host.ready');
 
-    const bare = await request(relay.httpPort, { path: '/', hostHeader: 'relay.test' });
-    assert.equal(bare.status, 301);
-    assert.equal(bare.headers.location, 'https://relay.test/');
+    const online = await request(relay.httpPort, { path: '/healthz' });
+    assert.deepEqual(JSON.parse(online.body).hosts, [host.hostId]);
 
-    // 非 GET 的 /healthz 也走 301（健康检查只认 GET/HEAD）
-    const post = await request(relay.httpPort, { method: 'POST', path: '/healthz', hostHeader: 'relay.test' });
-    assert.equal(post.status, 301);
-    assert.equal(post.headers.location, 'https://relay.test/healthz');
+    client.close();
+    await client.waitClose();
+    const deadline = Date.now() + 2000;
+    let body = JSON.parse((await request(relay.httpPort, { path: '/healthz' })).body);
+    while (body.hosts.length > 0 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      body = JSON.parse((await request(relay.httpPort, { path: '/healthz' })).body);
+    }
+    assert.deepEqual(body.hosts, [], 'offline host must disappear from /healthz');
   } finally {
     await relay.close();
+    temp.cleanup();
+  }
+});
+
+test('non-health paths return 404 (classic 301 redirect removed)', async () => {
+  const temp = tempGroup();
+  const relay = await startHttpTestRelay(temp.file);
+  try {
+    for (const options of [
+      { path: '/', hostHeader: 'relay.test' },
+      { path: '/__admin/', hostHeader: 'relay.test' },
+      { path: '/?foo=bar', hostHeader: 'relay.test' },
+      { method: 'POST', path: '/healthz' },
+    ]) {
+      const response = await request(relay.httpPort, options);
+      assert.equal(response.status, 404, `${options.method ?? 'GET'} ${options.path} must be 404`);
+      assert.equal(response.headers.location, undefined, 'no classic 301 Location header');
+      assert.equal(JSON.parse(response.body).error.code, 'not_found');
+    }
+  } finally {
+    await relay.close();
+    temp.cleanup();
   }
 });

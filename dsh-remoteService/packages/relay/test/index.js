@@ -7,11 +7,17 @@
  * 与
  *   node --test packages/relay/test/*.test.js
  * 行为一致（后者按文件逐个跑，推荐 CI 用 glob）。
+ *
+ * 0.3.0 起只保留群体版测试：classic 的 data-plane / sni / push / limits / tokens 文件存储
+ * 测试已随功能删除（tokens.test.js 现在只覆盖 hostId / host token 生成辅助）。
  */
-import './sni.test.js';
 import './tokens.test.js';
 import './control.test.js';
 import './http.test.js';
-import './data-plane.test.js';
-import './push.test.js';
-import './limits.test.js';
+import './edge-tunnel-head.test.js';
+import './group-registration.test.js';
+import './group-auth.test.js';
+import './group-admin.test.js';
+import './group-surfaces.test.js';
+import './group-tunnel.test.js';
+import './group-env-config.test.js';

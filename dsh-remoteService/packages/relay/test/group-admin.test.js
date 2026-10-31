@@ -62,19 +62,19 @@ async function startGroupRelay(overrides = {}) {
   const group = {
     file,
     mobilePort: 11443,
+    // 本文件测后台/注册，不需要手机数据面：显式关闭默认开启的 edge
+    edge: { enabled: false },
     registration: { enabled: true, maxAttemptsPerMinutePerIp: 50, maxAttemptsPerMinute: 500, bodyLimitBytes: 8192 },
     adminToken: ADMIN_TOKEN,
     ...(overrides.group ?? {}),
   };
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
     group,
     ...(overrides.relay ?? {}),
   });
@@ -175,14 +175,12 @@ test('admin：未配置 token 时首次启动自动生成 0600 文件', async ()
     const tokenFile = join(temp.dir, 'admin-token');
     const relay = await createRelay({
       domain: 'relay.test',
-      dataPort: 0,
       controlPort: 0,
       httpPort: 0,
-      dataHost: '127.0.0.1',
+      listenHost: '127.0.0.1',
       dev: true,
       logger: silentLogger,
-      mode: 'group',
-      group: { file, adminTokenFile: tokenFile },
+      group: { file, adminTokenFile: tokenFile, edge: { enabled: false } },
     });
     try {
       if (process.platform !== 'win32') assert.equal(statSync(tokenFile).mode & 0o777, 0o600);
@@ -198,21 +196,29 @@ test('admin：未配置 token 时首次启动自动生成 0600 文件', async ()
   }
 });
 
-test('admin：classic 模式没有 /__admin（404）', async () => {
+test('admin：未带 admin token 时 401（来源 IP / 查询参数不算身份）', async () => {
+  const temp = tempDir();
+  const file = join(temp.dir, 'group.json');
+  const tokenFile = join(temp.dir, 'admin-token');
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
+    group: { file, adminTokenFile: tokenFile, edge: { enabled: false } },
   });
   try {
-    const res = await request(relay.controlPort, { path: '/__admin/api/state' });
-    assert.equal(res.status, 404);
+    assert.equal((await request(relay.controlPort, { path: '/__admin/api/state' })).status, 401);
+    const token = readFileSync(tokenFile, 'utf8').trim();
+    const queryAuth = await request(relay.controlPort, {
+      path: `/__admin/api/state?token=${encodeURIComponent(token)}`,
+    });
+    assert.equal(queryAuth.status, 401, 'query param token must not authenticate');
   } finally {
     await relay.close();
+    temp.cleanup();
   }
 });
 

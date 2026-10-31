@@ -2,7 +2,7 @@
  * 群体服务版（A 模式）P1 切片：邀请码 → 主机自助注册。
  *
  * 覆盖：存储 hash/权限、邀请消费/过期/撤销、hostId 分配、host token 校验与撤销、
- * relay 注册 HTTP 端点（成功/错误码/限流/关闭注册/上限）、classic 模式不受影响、CLI。
+ * relay 注册 HTTP 端点（成功/错误码/限流/关闭注册/上限）、classic 模式已删除（拒绝启动）、CLI。
  */
 
 import assert from 'node:assert/strict';
@@ -55,6 +55,7 @@ async function startGroupRelay(overrides = {}) {
     file,
     mobilePort: 11443,
     maxHosts: 50,
+    edge: { enabled: false },
     registration: {
       enabled: true,
       maxAttemptsPerMinutePerIp: 20,
@@ -65,13 +66,11 @@ async function startGroupRelay(overrides = {}) {
   };
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
     group,
     ...(overrides.relay ?? {}),
   });
@@ -266,22 +265,25 @@ test('relay group mode: POST /__group/register issues hostId/token/port and enfo
   }
 });
 
-test('classic mode: /__group/register stays 404 (main behaviour unchanged)', async () => {
-  const relay = await createRelay({
-    domain: 'relay.test',
-    dataPort: 0,
-    controlPort: 0,
-    httpPort: 0,
-    dataHost: '127.0.0.1',
-    dev: true,
-    logger: silentLogger,
-  });
+test('classic 模式已在 0.3.0 删除：mode=classic 直接拒绝启动', async () => {
+  const temp = tempDir();
   try {
-    assert.equal(relay.mode, 'classic');
-    const response = await postRegister(relay.controlPort, { inviteCode: 'x' });
-    assert.equal(response.status, 404);
+    const file = join(temp.dir, 'group.json');
+    await assert.rejects(
+      createRelay({
+        domain: 'relay.test',
+        controlPort: 0,
+        httpPort: 0,
+        listenHost: '127.0.0.1',
+        dev: true,
+        logger: silentLogger,
+        group: { file, edge: { enabled: false } },
+        mode: 'classic',
+      }),
+      /classic 单机模式已在 relay 0\.3\.0 删除/,
+    );
   } finally {
-    await relay.close();
+    temp.cleanup();
   }
 });
 
@@ -326,9 +328,9 @@ test('group registration can be disabled and enforces maxHosts', async () => {
   }
 });
 
-test('config: group mode requires group.file and rejects invalid mode', async () => {
-  const base = { domain: 'relay.test', dataPort: 0, controlPort: 0, httpPort: 0, dataHost: '127.0.0.1', dev: true, logger: silentLogger };
-  await assert.rejects(createRelay({ ...base, mode: 'group' }), /requires group\.file/);
+test('config: group.file is required and unknown modes are rejected', async () => {
+  const base = { domain: 'relay.test', controlPort: 0, httpPort: 0, listenHost: '127.0.0.1', dev: true, logger: silentLogger };
+  await assert.rejects(createRelay(base), /requires group\.file/);
   await assert.rejects(createRelay({ ...base, mode: 'weird' }), /invalid mode/);
 });
 
@@ -369,7 +371,10 @@ test('CLI: invite create/list/revoke and host list/revoke', () => {
     const help = runCli(['--help']);
     assert.equal(help.status, 0);
     assert.match(help.stdout, /invite create/);
-    assert.match(help.stdout, /--mode <mode>/);
+    assert.match(help.stdout, /--listen-host/);
+    assert.match(help.stdout, /--no-group-edge/);
+    assert.doesNotMatch(help.stdout, /--mode/);
+    assert.doesNotMatch(help.stdout, /token create/);
     assert.match(help.stdout, /--group-file/);
   } finally {
     temp.cleanup();

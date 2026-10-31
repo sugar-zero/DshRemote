@@ -64,13 +64,11 @@ async function startEdgeRelay(overrides = {}) {
   };
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
     group,
     handshakeTimeoutMs: 3000,
     heartbeatIntervalMs: 20,
@@ -203,27 +201,56 @@ function edgeHttp(port, servername, ca) {
   });
 }
 
-test('config: edge requires TLS and unauthenticated edge is dev-only', async () => {
-  const base = { domain: 'relay.test', dataPort: 0, controlPort: 0, httpPort: 0, dataHost: '127.0.0.1', logger: silentLogger };
+test('config: edge 默认开启（必须 TLS）、显式 false 才关闭、未认证仅 dev 可用', async () => {
+  const base = { domain: 'relay.test', controlPort: 0, httpPort: 0, listenHost: '127.0.0.1', logger: silentLogger };
   const cert = generateSelfSignedCert({ commonName: '*.relay.test', sans: ['*.relay.test'] });
+  const temp = tempDir();
+  const file = join(temp.dir, 'group.json');
   try {
-    const file = join(tmpdir(), `dsh-edge-config-${process.pid}.json`);
+    // 默认开启：不写 edge.enabled 但缺通配证书 → 拒绝启动（手机数据面是核心功能）
+    await assert.rejects(createRelay({ ...base, dev: true, group: { file } }), /edge requires TLS/);
     await assert.rejects(
-      createRelay({ ...base, dev: true, mode: 'group', group: { file, edge: { enabled: true, port: 0 } } }),
+      createRelay({ ...base, dev: true, group: { file, edge: { enabled: true, port: 0 } } }),
       /edge requires TLS/,
     );
+
+    // 默认开启：给通配证书（不写 enabled）→ 边缘 TLS 实际监听
+    const defaultOn = await createRelay({
+      ...base,
+      dev: true,
+      group: { file, edge: { port: 0, tls: { cert: cert.cert, key: cert.key } } },
+    });
+    try {
+      assert.ok(defaultOn.edgePort > 0, 'edge 默认应开启并监听');
+    } finally {
+      await defaultOn.close();
+    }
+
+    // 显式 false 才关闭：允许只跑控制面/注册/后台（会打 warn，测试里 logger 静默）
+    const disabled = await createRelay({
+      ...base,
+      dev: true,
+      group: { file, edge: { enabled: false } },
+    });
+    try {
+      assert.equal(disabled.edgePort, 0, '显式关闭后不应监听边缘端口');
+    } finally {
+      await disabled.close();
+    }
+
+    // 生产不允许 allowUnauthenticated
     await assert.rejects(
       createRelay({
         ...base,
         dev: false,
         tls: { cert: cert.cert, key: cert.key },
-        mode: 'group',
         group: { file, edge: { enabled: true, port: 0, tls: { cert: cert.cert, key: cert.key }, allowUnauthenticated: true } },
       }),
       /allowUnauthenticated is dev-only/,
     );
   } finally {
     cert.cleanup();
+    temp.cleanup();
   }
 });
 

@@ -1,8 +1,12 @@
 /**
- * dsh-remote-protocol —— DSH 远程访问（方案 B2）共享协议。
+ * dsh-remote-protocol —— DSH 群体服务版（A 模式）共享协议。
  *
  * 本文件保持零外部依赖（仅 node:crypto），可同时被 relay、host plugin 与 POC 脚本使用。
  * App（React Native）内部有一份等价实现：packages 不跨运行时共享代码，但语义/常量必须一致。
+ *
+ * 0.2.0 起 protocol 只服务群体版：classic 单机（B2）专用的配对 URI v1、隧道 HTTP 路径
+ * （pair/approve、push-token、devices、audit、restart）、relay push 控制消息与 classic
+ * 管理路由常量已删除。
  */
 import { createHash, createHmac, createPrivateKey, createPublicKey, randomBytes, sign, timingSafeEqual, verify } from 'node:crypto';
 
@@ -13,22 +17,14 @@ export const PROTOCOL_VERSION = 1;
 export const CONTROL_PATH = '/control';
 /** 主机插件在 DSH 本机 webServer 上注册的管理 API 前缀（仅本机浏览器可访问）。 */
 export const ADMIN_BASE = '/api/remote-access';
-/** 主机插件 TLS 监听上的远程内部路径前缀（App 经中继访问）。 */
+/** 主机插件 loopback 明文代理上的远程内部路径前缀（relay 边缘隧道转发，App 经中继访问）。 */
 export const TUNNEL_BASE = '/__dsh_remote';
 export const PAIR_PATH = `${TUNNEL_BASE}/pair`;
 export const PAIR_STATUS_PATH = `${TUNNEL_BASE}/pair/status`;
-export const PAIR_APPROVE_PATH = `${TUNNEL_BASE}/pair/approve`;
-export const PUSH_TOKEN_PATH = `${TUNNEL_BASE}/push-token`;
 export const STATUS_PATH = `${TUNNEL_BASE}/status`;
-export const AUDIT_PATH = `${TUNNEL_BASE}/audit`;
-export const DEVICES_PATH = `${TUNNEL_BASE}/devices`;
-export const DEVICE_REVOKE_PATH_PREFIX = `${TUNNEL_BASE}/devices/`;
-/** 远程触发主机 DSH 客户端重启（App「重启主机」入口；仅 POST，成功 202）。 */
-export const RESTART_PATH = `${TUNNEL_BASE}/restart`;
 
-/** 配对二维码 URI scheme。 */
+/** 配对二维码 URI scheme（群体版统一使用 v2：`dshremote://pair?v=2&auth=token`）。 */
 export const PAIR_URI_SCHEME = 'dshremote';
-export const PAIR_URI_VERSION = 1;
 /** 群体版（A 模式）配对 URI v2：带服务端下发的端口与 auth=token。 */
 export const PAIR_URI_VERSION_GROUP = 2;
 export const PAIR_AUTH_TOKEN = 'token';
@@ -109,21 +105,6 @@ export function safeEqualStrings(a, b) {
 }
 
 /**
- * 构造配对二维码 URI（单行、百分号编码）。
- * @param {{host: string, secret: string, hostFingerprint: string, expiresAt: number, relayDomain?: string}} opts
- */
-export function buildPairingUri({ host, secret, hostFingerprint, expiresAt, relayDomain }) {
-  const url = new URL(`${PAIR_URI_SCHEME}://pair`);
-  url.searchParams.set('v', String(PAIR_URI_VERSION));
-  url.searchParams.set('host', host);
-  url.searchParams.set('secret', secret);
-  url.searchParams.set('hostfp', hostFingerprint);
-  url.searchParams.set('exp', String(Math.floor(expiresAt / 1000)));
-  if (relayDomain) url.searchParams.set('relay', relayDomain);
-  return url.href;
-}
-
-/**
  * 构造群体版配对 URI（v2）：host 为 `<hostId>.<relayDomain>`，port 为服务端下发的手机访问端口，
  * auth=token 表示设备用 P-256 密钥 + 短时 token 而不是 mTLS 证书。
  * @param {{host: string, port?: number, secret: string, hostFingerprint: string, expiresAt: number, relayDomain?: string, hostId?: string}} opts
@@ -171,21 +152,6 @@ export function parseGroupPairingUri(uri) {
   };
 }
 
-/** 解析配对 URI；无效时抛错。 */
-export function parsePairingUri(uri) {
-  const url = new URL(String(uri));
-  if (url.protocol !== `${PAIR_URI_SCHEME}:`) throw new Error('不是 DSH 远程配对 URI');
-  if (url.hostname !== 'pair') throw new Error('配对 URI 必须使用 dshremote://pair');
-  const version = Number(url.searchParams.get('v') ?? '0');
-  if (version !== PAIR_URI_VERSION) throw new Error(`不支持的配对协议版本 ${String(version)}`);
-  const host = url.searchParams.get('host');
-  const secret = url.searchParams.get('secret');
-  const hostFingerprint = url.searchParams.get('hostfp');
-  const exp = Number(url.searchParams.get('exp') ?? '0');
-  if (!host || !secret || !hostFingerprint || !Number.isFinite(exp)) throw new Error('配对 URI 缺少字段');
-  return { version, host, secret, hostFingerprint, expiresAt: exp * 1000, relayDomain: url.searchParams.get('relay') ?? undefined };
-}
-
 /** relay 控制面消息类型（JSON text frame）。 */
 export const RELAY_MSG = Object.freeze({
   HOST_HELLO: 'host.hello',
@@ -194,10 +160,6 @@ export const RELAY_MSG = Object.freeze({
   HOST_OPEN: 'host.open',
   HOST_OPENED: 'host.opened',
   HOST_CLOSE: 'host.close',
-  PUSH_REGISTER: 'push.register',
-  PUSH_SEND: 'push.send',
-  PUSH_RESULT: 'push.result',
-  HOST_STATUS: 'host.status',
   DEVICE_SYNC: 'device.sync',
   DEVICE_SYNCED: 'device.synced',
   DEVICE_REVOKE: 'device.revoke',
@@ -228,34 +190,13 @@ export function decodeFrame(buf) {
   };
 }
 
-/** 规范化 relay 根地址（ws/wss → http/https 无关；只接受 scheme + host[:port]）。 */
-export function normalizeRelayUrl(raw) {
-  const url = new URL(String(raw));
-  if (!['wss:', 'ws:', 'https:', 'http:'].includes(url.protocol)) throw new Error('relay 地址必须是 ws(s):// 或 http(s)://');
-  return `${url.protocol}//${url.host}`;
-}
-
-/** 默认管理 API 路径（与 docs/ADMIN-API.md 保持一致）。 */
-export const ADMIN_ROUTES = Object.freeze({
-  status: `${ADMIN_BASE}/status`,
-  config: `${ADMIN_BASE}/config`,
-  pairingStart: `${ADMIN_BASE}/pairing/start`,
-  pairingCancel: `${ADMIN_BASE}/pairing/cancel`,
-  pairingApprove: `${ADMIN_BASE}/pairing/approve`,
-  pairingQrSvg: `${ADMIN_BASE}/pairing/qr.svg`,
-  devices: `${ADMIN_BASE}/devices`,
-  revokeDevice: `${ADMIN_BASE}/devices/:id/revoke`,
-  audit: `${ADMIN_BASE}/audit`,
-});
-
 // ---------------------------------------------------------------------------
-// 群体服务版（A 模式，2026-10-27 起）
+// 群体服务版（A 模式）
 // ---------------------------------------------------------------------------
-// 与 main 的 B2 协议并存：main 用配对 URI v1 + 设备 mTLS；群体版用服务端
-// 自助注册（邀请码 → 服务端分配 hostId/hostToken）+ 短时 token（QR v2）。
+// 服务端自助注册（邀请码 → 服务端分配 hostId/hostToken）+ 短时 token（QR v2）。
 // 常量由 relay / host plugin / App 共用；App 内部需保持等价实现。
 
-/** 群体服务版注册协议版本。 */
+/** 群体服务版注册协议版本（注册响应里下发；预留，当前 relay/host 均用 PROTOCOL_VERSION 握手）。 */
 export const GROUP_PROTOCOL_VERSION = 1;
 
 /** relay 控制面上的自助注册路径（POST JSON）。 */
@@ -306,7 +247,7 @@ export const GROUP_EDGE_STREAM_KIND = 'group-edge';
 
 
 // ---------------------------------------------------------------------------
-// 群体服务版：设备会话鉴权（P1 切片 3）
+// 群体服务版：设备会话鉴权
 // ---------------------------------------------------------------------------
 // 设备密钥 = P-256（Secure Enclave / Keystore）；配对时把公钥（未压缩点 65B，
 // base64url）注册给主机，主机同步到 relay；设备用私钥签 nonce 换短时 token；

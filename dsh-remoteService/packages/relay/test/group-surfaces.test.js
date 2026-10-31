@@ -63,13 +63,11 @@ test('职责分离：控制面 WSS-only；注册 API / 后台各自独立监听'
   const temp = tempGroup();
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
     group: {
       file: temp.file,
       mobilePort: 1443,
@@ -77,6 +75,7 @@ test('职责分离：控制面 WSS-only；注册 API / 后台各自独立监听'
       apiPort: 0,
       adminPort: 0,
       adminBind: '127.0.0.1',
+      edge: { enabled: false },
     },
   });
   try {
@@ -163,14 +162,12 @@ test('职责分离：adminBind 默认回环（不配 apiPort/adminPort 时仍走
   const temp = tempGroup();
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
-    group: { file: temp.file, adminToken: ADMIN_TOKEN },
+    group: { file: temp.file, adminToken: ADMIN_TOKEN, edge: { enabled: false } },
   });
   try {
     // 兼容旧行为：未配置独立监听 → 控制面继续提供注册/后台

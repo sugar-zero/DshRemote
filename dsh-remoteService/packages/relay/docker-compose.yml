@@ -1,47 +1,63 @@
-# DSH 自托管盲中继（方案 B2）—— 单机 docker compose 部署示例。
+# DSH 群体服务版（A 模式）relay —— 单容器 docker compose 部署示例。
+#
+# 0.3.0 起 relay 只服务群体版：边缘 TLS（手机）+ 控制面 WSS（主机）+ 注册 API + 部署方后台；
+# classic 单机盲中继的 443 TLS 透传 / 80 跳转 / tokens.json 已删除。
 #
 # 目录约定（宿主机，对应容器内 /data）：
-#   ./data/config/relay.json                          relay 配置
-#   ./data/certs/relay.example.com/fullchain.pem      控制面 TLS 证书链（Let's Encrypt）
-#   ./data/certs/relay.example.com/privkey.pem        控制面 TLS 私钥
-#   ./data/tokens.json                                 host token（首次 token create 生成，0600）
+#   ./data/config/relay.json                         relay 配置（首次启动按 .env 自动生成，0600）
+#   ./data/certs/relay.example.com/fullchain.pem     控制面 TLS 证书链（relay 域名）
+#   ./data/certs/relay.example.com/privkey.pem       控制面 TLS 私钥
+#   ./data/certs/wildcard/fullchain.pem              边缘通配证书（*.relay.example.com）
+#   ./data/certs/wildcard/privkey.pem                边缘通配证书私钥
+#   ./data/group.json                                邀请码/主机注册表（首次启动自动创建，0600）
 #
 # 使用：
-#   mkdir -p data/{config,certs/relay.example.com}
-#   cp relay.example.json data/config/relay.json && 修改 domain/证书路径
+#   mkdir -p data/{config,certs/relay.example.com,certs/wildcard}
+#   cp relay.example.json data/config/relay.json && 修改 domain/证书路径（或删掉让 entrypoint 生成）
 #   docker compose up -d --build
-#   docker compose exec relay node packages/relay/bin/relay.js token create h_xxx --config /data/config/relay.json
+#   docker compose exec relay node packages/relay/bin/relay.js invite create --config /data/config/relay.json
 #
 # 构建上下文是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol）。
 
-name: dsh-remote-relay
+name: dsh-remote-group-relay
 
 services:
   relay:
     build:
       context: ../..
       dockerfile: packages/relay/Dockerfile
-    image: dsh-remote-relay:0.1.0
-    container_name: dsh-relay
+    image: dsh-remote-relay:0.3.0-group
+    container_name: dsh-relay-group
     restart: unless-stopped
     ports:
-      - "80:80"       # 只做 301 → https（也是 /healthz 的入口）
-      - "443:443"     # TLS 透传，按 SNI 路由到 <hostId>.<domain>
-      - "8443:8443"   # 控制面 WSS：只给 host 插件连，App 不连
+      # 手机访问（relay 边缘终止 TLS，通配证书）
+      - "443:443"
+      # 控制面 WSS：只给 host 插件连，App 不连
+      - "8443:8443"
+      # 主机自助注册 API（主机插件「服务地址」填它）
+      - "9443:9443"
+      # 部署方后台：只绑回环，经 SSH 隧道/nginx 访问
+      - "127.0.0.1:9444:9444"
+      # /healthz（容器 HEALTHCHECK / 同机探针）
+      - "127.0.0.1:18080:80"
     environment:
-      # 不在 config 文件里写 domain 时可用环境变量（等价于 relay.json.domain）
-      RELAY_DOMAIN: relay.example.com
-      RELAY_DATA_PORT: "443"
+      # 首次启动按这些变量自动生成 /data/config/relay.json（已存在则不覆盖）
+      # 部署时请通过 --env-file / shell 环境覆盖为真实域名（占位符仅用于 compose config 校验）
+      RELAY_DOMAIN: ${RELAY_DOMAIN:-relay.example.com}
       RELAY_CONTROL_PORT: "8443"
       RELAY_HTTP_PORT: "80"
-      RELAY_DATA_HOST: "0.0.0.0"
-      RELAY_TOKENS_FILE: /data/tokens.json
-      RELAY_TLS_CERT_FILE: /data/certs/relay.example.com/fullchain.pem
-      RELAY_TLS_KEY_FILE: /data/certs/relay.example.com/privkey.pem
+      RELAY_LISTEN_HOST: "0.0.0.0"
+      RELAY_GROUP_MOBILE_PORT: "443"
+      RELAY_GROUP_PUBLIC_CONTROL_PORT: "8443"
+      RELAY_GROUP_API_PORT: "9443"
+      RELAY_GROUP_API_BIND: "0.0.0.0"
+      RELAY_GROUP_ADMIN_PORT: "9444"
+      RELAY_GROUP_ADMIN_BIND: "0.0.0.0"   # host publish 已限制 127.0.0.1
+      RELAY_GROUP_EDGE_PORT: "443"
       RELAY_LOG_LEVEL: info
     volumes:
       - ./data:/data
-    # 容器内以非 root 用户绑定 80/443；Docker 默认 unprivileged_port_start=0，显式声明更稳。
+    # 容器内以非 root 用户绑定 80/443 等低端口；Docker 默认 unprivileged_port_start=0，显式声明更稳。
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
     healthcheck:

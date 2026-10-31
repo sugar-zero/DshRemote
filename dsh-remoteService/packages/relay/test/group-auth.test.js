@@ -32,6 +32,7 @@ import {
   GroupAuthService,
   createInvite,
   createRelay,
+  registerHost,
 } from '../index.js';
 import { ControlClient } from './helpers/control-client.js';
 import { generateSelfSignedCert, silentLogger } from './helpers/certs.js';
@@ -93,13 +94,11 @@ async function startAuthRelay(overrides = {}) {
   };
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    mode: 'group',
     group,
     handshakeTimeoutMs: 3000,
     heartbeatIntervalMs: 50,
@@ -615,21 +614,30 @@ test('GroupAuthService：challenge 过期/重放、token 过期、撤销与限�
   }
 });
 
-test('classic 模式：host 发 device.sync 得到 group_auth_unavailable', async () => {
+test('edge 未启用时 host 发 device.sync 得到 group_auth_unavailable', async () => {
+  const temp = tempDir();
+  const file = join(temp.dir, 'group.json');
+  const invite = createInvite(file, { maxUses: 1 });
+  const registration = registerHost({ file, inviteCode: invite.code, hostName: 'No Edge' });
   const relay = await createRelay({
     domain: 'relay.test',
-    dataPort: 0,
     controlPort: 0,
     httpPort: 0,
-    dataHost: '127.0.0.1',
+    listenHost: '127.0.0.1',
     dev: true,
     logger: silentLogger,
-    hostTokens: { h_classic01: 'classic-token' },
+    group: { file, edge: { enabled: false } },
   });
   let client;
   try {
     client = await ControlClient.connect(`ws://127.0.0.1:${relay.controlPort}/control`);
-    client.sendJson({ t: RELAY_MSG.HOST_HELLO, protocolVersion: 1, hostId: 'h_classic01', token: 'classic-token', hostName: 'Classic' });
+    client.sendJson({
+      t: RELAY_MSG.HOST_HELLO,
+      protocolVersion: 1,
+      hostId: registration.hostId,
+      token: registration.hostToken,
+      hostName: 'No Edge',
+    });
     assert.equal((await client.nextJson()).t, RELAY_MSG.HOST_READY);
     client.sendJson({ t: RELAY_MSG.DEVICE_SYNC, devices: [] });
     const response = await client.nextJson();
@@ -639,6 +647,7 @@ test('classic 模式：host 发 device.sync 得到 group_auth_unavailable', asyn
   } finally {
     client?.close();
     await relay.close();
+    temp.cleanup();
   }
 });
 

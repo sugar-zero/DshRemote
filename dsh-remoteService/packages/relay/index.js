@@ -1,49 +1,54 @@
 /**
- * dsh-remote-relay —— 自托管盲中继（方案 B2）。
+ * dsh-remote-relay —— 群体服务版（A 模式）relay。
  *
- * 对外只暴露两个工厂：
- *   - createRelay(options) → { dataPort, controlPort, httpPort, domain, dev, close(), health(), onlineHostIds() }
+ * 0.3.0 起只服务群体版产品线：classic 单机盲中继（443 TLS 透传 / 80 跳转 /
+ * tokens.json / Expo 推送）已全部删除。relay 现在提供四个面：
+ *   - 边缘 TLS（group.edge）：relay 用通配证书终止手机 TLS，鉴权后经控制面隧道到主机；
+ *   - 控制面 WSS（/control）：主机插件出站隧道（host.hello / 心跳 / host.open / 流帧）；
+ *   - 注册 API（/__group/register、/__group/refresh）：邀请码 → 主机自助注册；
+ *   - 部署方后台（/__admin）：邀请码/主机管理；
+ *   - health：httpPort 上只保留 GET/HEAD /healthz（容器 HEALTHCHECK 用）。
+ *
+ * 对外工厂：
+ *   - createRelay(options) → { controlPort, httpPort, groupApiPort, groupAdminPort, edgePort,
+ *                             domain, dev, close(), health(), onlineHostIds() }
  *   - startRelay(config)   → 同上（CLI / 配置文件入口语义）
  *
  * 端口可以传 0 让系统分配临时端口（测试用）；实际端口从返回值 / health() 读取。
  *
- * 典型用法：
+ * 典型用法（生产：控制面证书 + 边缘通配证书）：
  *   import { createRelay } from 'dsh-remote-relay';
  *   const relay = await createRelay({
  *     domain: 'relay.example.com',
- *     hostTokens: { h_ab12cd34: process.env.HOST_TOKEN },
- *     tls: { certFile: '/etc/dsh-relay/fullchain.pem', keyFile: '/etc/dsh-relay/privkey.pem' },
+ *     tls: { certFile: '/data/certs/relay.example.com/fullchain.pem',
+ *            keyFile:  '/data/certs/relay.example.com/privkey.pem' },
+ *     group: {
+ *       file: '/data/group.json',
+ *       mobilePort: 443,
+ *       edge: {
+ *         enabled: true,
+ *         port: 443,
+ *         tls: { certFile: '/data/certs/wildcard/fullchain.pem',
+ *                keyFile:  '/data/certs/wildcard/privkey.pem' },
+ *       },
+ *     },
  *   });
- *   // relay.dataPort / relay.controlPort / relay.httpPort
  *   await relay.close();
  */
 
 import { createRelay, startRelay } from './lib/server.js';
 
 export { createRelay, startRelay };
-export { parseClientHello, extractSni, SNI_STATUS, MAX_CLIENT_HELLO_BYTES } from './lib/sni.js';
-export {
-  createHostToken,
-  defaultTokensFile,
-  generateHostToken,
-  isValidHostId,
-  listHostTokens,
-  loadHostTokens,
-  maskToken,
-  normalizeHostId,
-  readTokenStore,
-  resolveTokensFile,
-  revokeHostToken,
-  writeTokenStore,
-} from './lib/tokens.js';
+export { HOST_TOKEN_BYTES, generateHostToken, isValidHostId, normalizeHostId } from './lib/tokens.js';
 export {
   RELAY_DEFAULTS,
   RELAY_GROUP_DEFAULTS,
-  RELAY_MODES,
+  RELAY_LIMIT_DEFAULTS,
   RELAY_TIMINGS,
   createConsoleLogger,
   normalizeConfig,
   normalizeDomain,
+  normalizeLimits,
   readTlsMaterial,
 } from './lib/config.js';
 export {

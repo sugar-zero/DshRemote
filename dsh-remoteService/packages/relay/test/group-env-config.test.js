@@ -28,7 +28,6 @@ function tempDir() {
 function runEntrypoint(dir, overrides, configPath = join(dir, 'config', 'relay.json')) {
   const env = {
     ...process.env,
-    RELAY_MODE: 'group',
     ...overrides,
   };
   // 参数：带 --config 让 entrypoint 走「配置缺失则自动生成」路径，再 exec 空命令避免真启动 relay。
@@ -70,7 +69,12 @@ test('group entrypoint：按 .env 自动生成 relay.json（0600），且不覆�
 
     const generated = JSON.parse(readFileSync(configPath, 'utf8'));
     assert.equal(generated.domain, 'relay.test');
-    assert.equal(generated.mode, 'group');
+    assert.equal(generated.controlPort, 8443);
+    assert.equal(generated.httpPort, 80);
+    assert.equal(generated.listenHost, '0.0.0.0');
+    assert.equal(generated.mode, undefined, '0.3.0 起配置不再有 mode（只有群体版）');
+    assert.equal(generated.dataPort, undefined, 'classic 数据面端口已删除');
+    assert.equal(generated.tokensFile, undefined, 'classic tokens.json 已删除');
     assert.equal(generated.group.mobilePort, 1443);
     assert.equal(generated.group.apiPort, 9443);
     assert.equal(generated.group.adminPort, 9444);

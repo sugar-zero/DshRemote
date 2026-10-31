@@ -1,10 +1,17 @@
 /**
- * relay 配置校验/规范化。
+ * relay 配置校验/规范化（群体服务版，A 模式）。
  *
- * createRelay(options) 与 startRelay(config)、CLI、docker 都走这一层，保证：
+ * 0.3.0 起 relay 只服务「群体服务版」产品线：classic 单机盲中继（443 TLS 透传 /
+ * 80 跳转 / tokens.json）已删除。本文件只保留群体版配置：
  *   - domain 合法（决定 <hostId>.<domain> 路由与 host.ready 回包）；
- *   - 生产必须提供 TLS 证书，dev 模式才允许 ws:// 控制面；
+ *   - group.file 必填（邀请/主机注册表，0600）；
+ *   - 生产必须提供控制面 TLS 证书，dev 模式才允许 ws:// 控制面；
+ *   - group.edge（手机数据面）默认开启：必须提供覆盖 *.<domain> 的通配证书；
+ *     只有显式 `"enabled": false` 才关闭（仅控制面/注册/后台，会打 warn）；
  *   - 端口允许 0（测试用临时端口），其余必须 0..65535 整数。
+ *
+ * 向后兼容：旧配置里的 classic 字段（mode/dataPort/tokensFile/hostTokens/push）
+ * 会被**忽略并告警**，不再实现其行为；`mode` 只接受 "group"（classic 显式报错）。
  */
 
 import { readFileSync } from 'node:fs';
@@ -15,29 +22,22 @@ import {
   GROUP_SESSION_DEFAULT_TTL_MS,
 } from 'dsh-remote-protocol';
 
-/** 公开配置默认值。 */
-export const RELAY_PUSH_DEFAULTS = Object.freeze({
-  endpoint: 'https://exp.host/--/api/v2/push/send',
-  title: 'DSH',
-  body: '有任务需要你',
-});
-
-export const RELAY_LIMIT_DEFAULTS = Object.freeze({
-  maxConnectionsPerIp: 64,
-  maxDataConnections: 1024,
-});
-
+/** 默认端口/监听地址（控制面 + health；数据面只有 group.edge）。 */
 export const RELAY_DEFAULTS = Object.freeze({
-  dataPort: 443,
   controlPort: 8443,
   httpPort: 80,
-  dataHost: '0.0.0.0',
+  listenHost: '0.0.0.0',
 });
 
-/** 运行模式：classic = main 的 B2 盲中继；group = 群体服务版（A 模式）。 */
-export const RELAY_MODES = Object.freeze(['classic', 'group']);
+/** 已删除的 classic 配置字段（只告警、不生效）。 */
+const REMOVED_CLASSIC_FIELDS = Object.freeze([
+  'dataPort',
+  'tokensFile',
+  'hostTokens',
+  'push',
+]);
 
-/** 群体服务版配置默认值（P1 切片：注册/开通；边缘 TLS 与隧道在后续切片接管）。 */
+/** 群体服务版配置默认值。 */
 export const RELAY_GROUP_DEFAULTS = Object.freeze({
   mobilePort: GROUP_DEFAULT_MOBILE_PORT,
   maxHosts: 200,
@@ -60,6 +60,12 @@ export const RELAY_TIMINGS = Object.freeze({
   heartbeatIntervalMs: 10_000,
   heartbeatTimeoutMs: 30_000,
   openTimeoutMs: 20_000,
+});
+
+/** 边缘连接限制默认值（DoS 兜底；不替代主机侧设备鉴权）。 */
+export const RELAY_LIMIT_DEFAULTS = Object.freeze({
+  maxConnectionsPerIp: 64,
+  maxEdgeConnections: 1024,
 });
 
 const DOMAIN_LABEL_RE = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
@@ -133,30 +139,6 @@ function normalizeTls(raw) {
 }
 
 /**
- * @param {unknown} raw
- * @returns {Record<string, string>}
- */
-function normalizeHostTokens(raw) {
-  if (raw === undefined || raw === null) return {};
-  if (typeof raw !== 'object' || Array.isArray(raw)) {
-    throw new Error('hostTokens must be an object mapping hostId → token');
-  }
-  /** @type {Record<string, string>} */
-  const out = {};
-  for (const [key, value] of Object.entries(raw)) {
-    if (typeof value !== 'string' || value.length === 0) {
-      throw new Error(`hostTokens[${JSON.stringify(key)}] must be a non-empty string`);
-    }
-    const hostId = String(key).trim().toLowerCase();
-    if (!/^[a-z0-9](?:[a-z0-9_-]{0,61}[a-z0-9])?$/.test(hostId)) {
-      throw new Error(`hostTokens key ${JSON.stringify(key)} is not a valid hostId`);
-    }
-    out[hostId] = value;
-  }
-  return out;
-}
-
-/**
  * 读取 TLS 材料（路径 → Buffer，内联 → Buffer）。
  * @param {{certFile: string, keyFile: string} | {cert: Buffer, key: Buffer} | undefined} tls
  * @returns {{cert: Buffer, key: Buffer} | undefined}
@@ -168,7 +150,7 @@ export function readTlsMaterial(tls) {
     return { cert: readFileSync(tls.certFile), key: readFileSync(tls.keyFile) };
   } catch (err) {
     const detail = err && err.message ? err.message : String(err);
-    throw new Error(`cannot load control-plane TLS certificate: ${detail}`);
+    throw new Error(`cannot load TLS certificate: ${detail}`);
   }
 }
 
@@ -194,24 +176,30 @@ export function createConsoleLogger(level = 'info', scope = 'relay') {
   };
 }
 
-/** @param {unknown} raw @returns {'classic'|'group'} */
+/**
+ * 0.3.0 起 relay 只服务群体版：旧配置里的 `mode` 只接受 "group"。
+ * @param {unknown} raw
+ * @returns {'group'}
+ */
 function normalizeMode(raw) {
-  if (raw === undefined || raw === null || raw === '') return 'classic';
+  if (raw === undefined || raw === null || raw === '') return 'group';
   const mode = String(raw).trim().toLowerCase();
-  if (!RELAY_MODES.includes(mode)) throw new Error(`invalid mode ${JSON.stringify(raw)}: expected classic|group`);
-  return mode;
+  if (mode === 'group') return 'group';
+  throw new Error(
+    `invalid mode ${JSON.stringify(raw)}: classic 单机模式已在 relay 0.3.0 删除，只支持 group（群体服务版）`,
+  );
 }
 
 /**
- * 规范化 group 配置（mode=group 时必须有 store 文件路径；classic 下忽略）。
+ * 规范化 group 配置（群体版唯一产品线；group.file 必填）。
  * @param {unknown} raw
- * @param {'classic'|'group'} mode
+ * @param {boolean} dev
  */
-function normalizeGroup(raw, mode, dev = false) {
+function normalizeGroup(raw, dev = false) {
   const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
   const file = input.file === undefined || input.file === null || input.file === '' ? undefined : String(input.file);
-  if (mode === 'group' && !file) {
-    throw new Error('group mode requires group.file (group.json path; CLI default: <config dir>/group.json)');
+  if (!file) {
+    throw new Error('group relay requires group.file (group.json path; CLI default: <config dir>/group.json)');
   }
   const mobilePort = input.mobilePort === undefined ? RELAY_GROUP_DEFAULTS.mobilePort : Number(input.mobilePort);
   if (!Number.isInteger(mobilePort) || mobilePort < 1 || mobilePort > 65535) {
@@ -232,12 +220,12 @@ function normalizeGroup(raw, mode, dev = false) {
   if (!Number.isSafeInteger(bodyLimit) || bodyLimit < 1024) throw new Error('group.registration.bodyLimitBytes 必须 >= 1024');
 
   // 群体版边缘 TLS（A 模式）：relay 终止手机 TLS，流的明文经控制面隧道转发到主机。
-  // 本切片只实现「隧道 + 边缘 TLS」骨架；设备鉴权（短时 token/签名断言）在下一片接入，
-  // 因此 allowUnauthenticated 仅允许 dev/test，绝不能用于生产。
+  // 这是本产品线唯一的数据面；部署产品时必须 enabled 且提供覆盖 *.<domain> 的通配证书。
   const edgeInput = input.edge && typeof input.edge === 'object' && !Array.isArray(input.edge)
     ? /** @type {Record<string, any>} */ (input.edge)
     : {};
-  const edgeEnabled = edgeInput.enabled === true;
+  // 群体版 relay 的唯一数据面：默认**开启**（显式 false 才关闭，关闭时打 warn）。
+  const edgeEnabled = edgeInput.enabled !== false;
   const edgeTls = normalizeTls(edgeInput.tls);
   if (edgeEnabled && !edgeTls) {
     throw new Error('group edge requires TLS: group.edge.tls = {"certFile","keyFile"} (通配证书) 或 {"cert","key"}');
@@ -282,8 +270,8 @@ function normalizeGroup(raw, mode, dev = false) {
     ? undefined
     : String(input.adminTokenFile);
 
-  // 职责分离（P1 切片 9）：控制面只做 WSS 隧道；注册 API 与部署方后台各自独立监听。
-  // 不配置时保留旧的「都挂在控制面」行为（向后兼容 / 测试）。
+  // 职责分离：控制面只做 WSS 隧道；注册 API 与部署方后台各自独立监听。
+  // 不配置时保留「都挂在控制面」的行为（兼容旧部署 / 测试）。
   const optionalPort = (value, label) => {
     if (value === undefined || value === null || value === '') return undefined;
     const port = Number(value);
@@ -332,6 +320,25 @@ function normalizeGroup(raw, mode, dev = false) {
 }
 
 /**
+ * 规范化边缘连接限制（DoS 兜底；不替代主机侧设备鉴权）。
+ * 0.3.0 起只有边缘连接：maxEdgeConnections；旧名 maxDataConnections 作为别名接受。
+ * @param {unknown} raw
+ */
+export function normalizeLimits(raw) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const maxConnectionsPerIp = input.maxConnectionsPerIp === undefined
+    ? RELAY_LIMIT_DEFAULTS.maxConnectionsPerIp
+    : Number(input.maxConnectionsPerIp);
+  const maxEdgeConnectionsRaw = input.maxEdgeConnections === undefined ? input.maxDataConnections : input.maxEdgeConnections;
+  const maxEdgeConnections = maxEdgeConnectionsRaw === undefined
+    ? RELAY_LIMIT_DEFAULTS.maxEdgeConnections
+    : Number(maxEdgeConnectionsRaw);
+  if (!Number.isSafeInteger(maxConnectionsPerIp) || maxConnectionsPerIp < 1) throw new Error('limits.maxConnectionsPerIp 必须是正整数');
+  if (!Number.isSafeInteger(maxEdgeConnections) || maxEdgeConnections < 1) throw new Error('limits.maxEdgeConnections 必须是正整数');
+  return { maxConnectionsPerIp, maxEdgeConnections };
+}
+
+/**
  * @param {unknown} raw
  * @returns {object} 规范化后的配置
  */
@@ -342,8 +349,8 @@ export function normalizeConfig(raw = {}) {
   const input = /** @type {Record<string, any>} */ (raw);
 
   const dev = Boolean(input.dev);
-  const mode = normalizeMode(input.mode);
-  const group = normalizeGroup(input.group, mode, dev);
+  normalizeMode(input.mode);
+  const group = normalizeGroup(input.group, dev);
   const tls = normalizeTls(input.tls);
   if (!tls && !dev) {
     throw new Error(
@@ -353,10 +360,14 @@ export function normalizeConfig(raw = {}) {
     );
   }
 
-  const dataHost = input.dataHost === undefined || input.dataHost === null || input.dataHost === ''
-    ? RELAY_DEFAULTS.dataHost
-    : String(input.dataHost).trim();
-  if (!dataHost) throw new Error('invalid dataHost: expected an interface address such as 0.0.0.0 or 127.0.0.1');
+  // 0.3.0 起叫 listenHost；旧配置里的 dataHost 继续作为别名（classic 字段已删、行为不变）。
+  const listenHostRaw = input.listenHost === undefined || input.listenHost === null || input.listenHost === ''
+    ? input.dataHost
+    : input.listenHost;
+  const listenHost = listenHostRaw === undefined || listenHostRaw === null || listenHostRaw === ''
+    ? RELAY_DEFAULTS.listenHost
+    : String(listenHostRaw).trim();
+  if (!listenHost) throw new Error('invalid listenHost: expected an interface address such as 0.0.0.0 or 127.0.0.1');
 
   const logLevel = input.logLevel === undefined ? 'info' : String(input.logLevel);
   const logger = input.logger && typeof input.logger === 'object'
@@ -364,22 +375,27 @@ export function normalizeConfig(raw = {}) {
     ? input.logger
     : createConsoleLogger(LOG_LEVELS.has(logLevel) ? logLevel : 'info');
 
+  // 旧配置里的 classic 字段只告警、不生效（不实现 classic 行为）。
+  const ignored = REMOVED_CLASSIC_FIELDS.filter((key) => Object.hasOwn(input, key) && input[key] !== undefined);
+  if (ignored.length > 0) {
+    logger.warn(`relay 0.3.0 removed classic config field(s): ${ignored.join(', ')} — ignored (only group mode is served)`);
+  }
+  if (!group.edge.enabled) {
+    logger.warn(
+      'group.edge.enabled=false: relay has no phone data plane (only control plane / registration API / admin). '
+      + '群体版生产部署应配置通配证书并开启 edge；显式关闭仅用于特殊/测试场景。',
+    );
+  }
+
   return {
     domain: normalizeDomain(input.domain),
-    mode,
     group,
-    push: normalizePush(input.push),
     limits: normalizeLimits(input.limits),
-    dataPort: normalizePort(input.dataPort, 'dataPort', RELAY_DEFAULTS.dataPort),
     controlPort: normalizePort(input.controlPort, 'controlPort', RELAY_DEFAULTS.controlPort),
     httpPort: normalizePort(input.httpPort, 'httpPort', RELAY_DEFAULTS.httpPort),
-    dataHost,
+    listenHost,
     dev,
     tls,
-    tokensFile: input.tokensFile === undefined || input.tokensFile === null || input.tokensFile === ''
-      ? undefined
-      : String(input.tokensFile),
-    hostTokens: normalizeHostTokens(input.hostTokens),
     logger,
     timings: {
       handshakeTimeoutMs: normalizeTiming(input.handshakeTimeoutMs, 'handshakeTimeoutMs', RELAY_TIMINGS.handshakeTimeoutMs),
@@ -388,46 +404,4 @@ export function normalizeConfig(raw = {}) {
       openTimeoutMs: normalizeTiming(input.openTimeoutMs, 'openTimeoutMs', RELAY_TIMINGS.openTimeoutMs),
     },
   };
-}
-
-
-/**
- * 规范化 push 配置；`push: false` 或 `enabled:false` 关闭推送。
- * @param {unknown} raw
- */
-export function normalizePush(raw) {
-  if (raw === false) return { enabled: false };
-  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
-  const endpoint = input.endpoint === undefined ? RELAY_PUSH_DEFAULTS.endpoint : String(input.endpoint);
-  let url;
-  try {
-    url = new URL(endpoint);
-  } catch {
-    throw new Error(`invalid push.endpoint: ${JSON.stringify(endpoint)}`);
-  }
-  if (!['http:', 'https:'].includes(url.protocol)) throw new Error('push.endpoint must be http(s)');
-  const accessToken = input.accessToken === undefined || input.accessToken === null || input.accessToken === ''
-    ? undefined
-    : String(input.accessToken);
-  const title = input.title === undefined ? RELAY_PUSH_DEFAULTS.title : String(input.title).slice(0, 80);
-  const body = input.body === undefined ? RELAY_PUSH_DEFAULTS.body : String(input.body).slice(0, 200);
-  return { enabled: input.enabled !== false, endpoint, accessToken, title, body };
-}
-
-
-/**
- * 规范化数据面连接限制（DoS 兜底；不替代 host 侧配对/反代鉴权）。
- * @param {unknown} raw
- */
-export function normalizeLimits(raw) {
-  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
-  const maxConnectionsPerIp = input.maxConnectionsPerIp === undefined
-    ? RELAY_LIMIT_DEFAULTS.maxConnectionsPerIp
-    : Number(input.maxConnectionsPerIp);
-  const maxDataConnections = input.maxDataConnections === undefined
-    ? RELAY_LIMIT_DEFAULTS.maxDataConnections
-    : Number(input.maxDataConnections);
-  if (!Number.isSafeInteger(maxConnectionsPerIp) || maxConnectionsPerIp < 1) throw new Error('limits.maxConnectionsPerIp 必须是正整数');
-  if (!Number.isSafeInteger(maxDataConnections) || maxDataConnections < 1) throw new Error('limits.maxDataConnections 必须是正整数');
-  return { maxConnectionsPerIp, maxDataConnections };
 }
