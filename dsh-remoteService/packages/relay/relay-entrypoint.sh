@@ -10,6 +10,22 @@ set -eu
 
 cd /app
 
+# 预检：显式 `--config <file>` 指定的配置文件必须存在，否则给出可操作提示（而不是裸 ENOENT）。
+# 注意：不检查 RELAY_CONFIG 环境变量——classic 的 Dockerfile 默认设了它但通常不挂配置文件。
+if [ "$#" -gt 0 ]; then
+  prev=""
+  for arg in "$@"; do
+    if [ "$prev" = "--config" ] && [ ! -f "$arg" ]; then
+      echo "relay-entrypoint: 找不到配置文件：$arg" >&2
+      echo "  首次部署需要先创建 data/config/relay.json（模板：仓库 server/group/relay.group.example.json），" >&2
+      echo "  并确认 compose 的 ./data 挂载到容器 /data（路径相对 compose 文件所在目录）。" >&2
+      echo "  示例：mkdir -p data/config && cp relay.group.example.json data/config/relay.json" >&2
+      exit 1
+    fi
+    prev="$arg"
+  done
+fi
+
 # 群体服务版（A 模式）：主机通过邀请码自助注册，不再需要预置 RELAY_HOST_ID/token。
 if [ "${RELAY_MODE:-}" = "group" ] || [ -n "${RELAY_GROUP_FILE:-}" ]; then
   echo "relay-entrypoint: group 模式（主机自助注册，跳过 host token 预置）"
