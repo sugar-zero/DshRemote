@@ -279,6 +279,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   host-plugin **0.1.23** 起群体版鉴权成功时更新设备 lastSeen（管理台不再显示「从未连接」）；
   镜像 **0.2.10** 起记录所有到达边缘的 `/__group/` 请求（定位 App 请求是否到 relay）；镜像
   **0.2.11** 起额外记录 auth 分支命中与隧道放行路径（判断 challenge 是否被误当业务流量转到主机）；
+  镜像 **0.2.13** 起对隧道化的首个请求强制 `Connection: close`（避免客户端 keep-alive 复用连接，
+  把 pairing 之后的 challenge 直接透传到主机明文代理 → 「配对后立刻 401、点重试又能进」）；
   镜像 **0.2.6** 起新增 `POST /__group/refresh`（hostToken 鉴权、不消耗邀请码）：服务端改
   `mobilePort`/`publicControlPort` 后，主机插件「重试连接」/重启会自动同步最新 mobilePort/controlUrl，
   无需重置注册；
