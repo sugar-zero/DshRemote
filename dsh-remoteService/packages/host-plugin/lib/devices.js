@@ -63,6 +63,15 @@ export class DeviceStore {
     return device;
   }
 
+  /** 群体版：按设备 ID 更新 lastSeenAt（无 mTLS 证书可 touch）。 */
+  touchById(id) {
+    const device = this.get(id);
+    if (!device) return undefined;
+    device.lastSeenAt = Date.now();
+    this.save();
+    return device;
+  }
+
   revoke(id) {
     const device = this.get(id);
     if (!device) return undefined;

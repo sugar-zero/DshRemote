@@ -568,7 +568,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 > 用邀请码自助注册；relay 侧提供邀请码/主机管理后台 `/__admin`。设计见
 > [`docs/group-service-design.zh.md`](../docs/group-service-design.zh.md)。**部署方可见明文，责任由部署方承担。**
 
-镜像：`dsh-remote-relay:0.2.9-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.9-group-linux-amd64.tar`）。
+镜像：`dsh-remote-relay:0.2.10-group`（构建产物；x86_64 离线包 `server/dsh-relay-0.2.10-group-linux-amd64.tar`）。
 
 1. **准备环境变量模板**（不要复用 classic 的 `.env`）：
 
@@ -676,7 +676,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 
    # B. 服务器离线镜像
-   docker load -i dsh-relay-0.2.9-group-linux-amd64.tar
+   docker load -i dsh-relay-0.2.10-group-linux-amd64.tar
    docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
    ```
 
@@ -754,7 +754,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 ```bash
 cd /opt/dsh-group
 chmod 600 .env
-docker load -i /path/to/dsh-relay-0.2.9-group-linux-amd64.tar
+docker load -i /path/to/dsh-relay-0.2.10-group-linux-amd64.tar
 docker compose config          # 先确认变量插值（镜像/端口/挂载）
 docker compose up -d --no-build
 docker compose ps && docker compose logs -f relay

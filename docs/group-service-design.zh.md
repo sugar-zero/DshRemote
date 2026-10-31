@@ -276,6 +276,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   「替换/短暂重连」时不再清空 relay 设备表（避免主机重连、device.sync 到达前的边缘请求瞬时 401，
   表现为首次进入白屏、返回重进才正常）；host-plugin **0.1.22** 起群体版 loopback 明文代理同时
   代理 WebSocket 升级（DSH UI 的实时通道，避免「页面能开但暂无会话/一直重新连接中」）；
+  host-plugin **0.1.23** 起群体版鉴权成功时更新设备 lastSeen（管理台不再显示「从未连接」）；
+  镜像 **0.2.10** 起记录所有到达边缘的 `/__group/` 请求（定位 App 请求是否到 relay）；
   镜像 **0.2.6** 起新增 `POST /__group/refresh`（hostToken 鉴权、不消耗邀请码）：服务端改
   `mobilePort`/`publicControlPort` 后，主机插件「重试连接」/重启会自动同步最新 mobilePort/controlUrl，
   无需重置注册；
