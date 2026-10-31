@@ -68,7 +68,8 @@ services:
       RELAY_MODE: group
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
       # 域名/证书：首次启动据此自动生成 data/config/relay.json
-      RELAY_DOMAIN: ${RELAY_DOMAIN:-}
+      # 未设置时 compose 直接报错（避免容器起来后才报「RELAY_DOMAIN 为空」）
+      RELAY_DOMAIN: ${RELAY_DOMAIN:?RELAY_DOMAIN 未设置：请在 .env/.env.group 里配置，并用 --env-file .env.group（或把文件命名为 .env）}
       RELAY_TLS_CERT_FILE: ${RELAY_TLS_CERT_FILE:-}
       RELAY_TLS_KEY_FILE: ${RELAY_TLS_KEY_FILE:-}
       RELAY_GROUP_EDGE_CERT_FILE: ${RELAY_GROUP_EDGE_CERT_FILE:-}
