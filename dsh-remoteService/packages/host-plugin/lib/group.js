@@ -32,6 +32,7 @@ import {
 } from 'dsh-remote-protocol';
 import { RelayConnector } from './connector.js';
 import { paths, readJson, writeJson } from './paths.js';
+import { REMOTE_STREAM_MUX_PATH } from './proxy.js';
 import { pathnameOf, readJsonBody, sendError, sendJson } from './http-utils.js';
 
 /** group.json 版本。 */
@@ -174,8 +175,15 @@ export class GroupHostRuntime {
     this.plainPort = 0;
     /** 活跃的 loopback 代理连接（全部）。 */
     this.plainSockets = new Set();
-    /** 活跃的 Upgrade（WebSocket）连接——组件开关变化时只断开这些，触发 App 即时刷新。 */
-    this.plainUpgradeSockets = new Set();
+    /**
+     * 活跃的 Upgrade（WebSocket）连接：socket → 请求 pathname。
+     *
+     * 组件开关变化时只断开 DSH **主实时通道**（`/api/remote.mux`），其它插件/子页面 WS 保留。
+     * 一次保存同时断多条 WS 会让 App 在同一瞬间收到多个 `dsh-ws-close`，把它的自动恢复
+     * 预算（60s 内 2 次）一次耗尽，表现为「自动重连未恢复，请点击刷新重试」。
+     * @type {Map<import('node:net').Socket, string>}
+     */
+    this.plainUpgradeConnections = new Map();
     /** @type {RelayConnector | undefined} */
     this.connector = undefined;
     this.lastError = null;
@@ -345,8 +353,17 @@ export class GroupHostRuntime {
     // 把 upgrade 交给 'upgrade' 事件，没有监听器会直接销毁 socket，页面表现为「暂无会话 /
     // 重新连接中」。这里与 #handlePlain 同一套鉴权后交给 DshProxy.handleUpgrade。
     this.plainServer.on('upgrade', (req, socket, head) => {
-      this.plainUpgradeSockets.add(socket);
-      socket.once('close', () => this.plainUpgradeSockets.delete(socket));
+      // 记录 Upgrade 的请求路径：保存「组件」开关时只断主实时通道（/api/remote.mux），
+      // 其它 WebSocket（插件面板等）保持连接，避免 App 一次收到多条 ws-close。
+      this.plainUpgradeConnections.set(socket, pathnameOf(req.url) ?? '');
+      const forget = () => this.plainUpgradeConnections.delete(socket);
+      socket.once('close', forget);
+      // 已升级的 socket 是 half-open：对端 FIN 只触发 'end'，不会自动 close。
+      // 主动 destroy，避免跟踪表残留“假活”连接（stop()/重建运行时还会多等一条）。
+      socket.once('end', () => {
+        try { socket.destroy(); } catch { /* ignore */ }
+        forget();
+      });
       this.#handlePlainUpgrade(req, socket, head).catch((error) => {
         this.log(`group: plain upgrade proxy error: ${error && error.message ? error.message : String(error)}`);
         if (!socket.destroyed) socket.destroy();
@@ -391,28 +408,36 @@ export class GroupHostRuntime {
     return devices.length;
   }
 
-  /** 停止隧道与明文代理。 */
   /**
-   * 主动断开当前 loopback 代理的 Upgrade（WebSocket）连接。
+   * 主动断开 loopback 代理上的 Upgrade（WebSocket）连接；**默认只断 DSH 主实时通道**
+   * （`/api/remote.mux`）。
    *
-   * 用途：配置保存后（如切换「允许手机重启主机」组件）让 App 的 WebView WS 立刻断开，
+   * 用途：配置保存后（如切换「允许手机重启主机」组件）让 App 的 WebView 主 WS 断开，
    * App 的 ws-close 自动恢复会重载页面并重新拉 `/__dsh_remote/status`，从而像单机版一样
-   * 「主机保存 → App 立刻刷新顶栏 ⏻」，而不需要退出主机或等轮询。
+   * 「主机保存 → App 立刻刷新顶栏 ⏻」，又不需要重建隧道。
    *
-   * 只断 WS/Upgrade 连接：relay↔主机隧道与普通 HTTP keep-alive 不受影响，重连后继续用同一
-   * plain 端口。
-   * @returns {number} 断开的连接数
+   * 为什么只断一条：App 会为每个 WebSocket 上报 `dsh-ws-close`，一次保存同时断开多条
+   * （DSH mux + 各插件面板 WS）会在同一瞬间耗尽它的自动恢复预算（60s 内 2 次），
+   * 表现为「自动重连未恢复，请点击刷新重试」。普通 HTTP keep-alive 与 relay↔主机隧道
+   * 始终不受影响。
+   *
+   * @param {{path?: string}} [options] `path` 默认 `/api/remote.mux`；传其它路径可定向断开
+   * @returns {number} 实际断开的连接数
    */
-  closeUpgradedConnections() {
+  closeUpgradedConnections({ path = REMOTE_STREAM_MUX_PATH } = {}) {
+    const wanted = String(path ?? '').trim();
+    if (wanted === '') return 0;
     let count = 0;
-    for (const socket of [...this.plainUpgradeSockets]) {
+    for (const [socket, pathname] of [...this.plainUpgradeConnections]) {
+      if (pathname !== wanted) continue;
+      this.plainUpgradeConnections.delete(socket);
       count += 1;
       try { socket.destroy(); } catch { /* ignore */ }
     }
-    this.plainUpgradeSockets.clear();
     return count;
   }
 
+  /** 停止隧道与明文代理。 */
   async stop() {
     this.closed = true;
     this.connector?.stop();
@@ -421,15 +446,23 @@ export class GroupHostRuntime {
     this.plainServer = undefined;
     this.plainPort = 0;
     if (server) {
+      // 主动销毁本代理上仍存活的连接（含已 Upgrade 的 WebSocket）：
+      // Node 的 server.close() 不跟踪已升级的 socket，closeAllConnections() 也覆盖不到它们；
+      // 不主动断会一直等连接自然结束（配置保存重建运行时 → 卡住/超时）。
+      for (const socket of [...this.plainSockets]) {
+        try { socket.destroy(); } catch { /* ignore */ }
+      }
+      for (const socket of [...this.plainUpgradeConnections.keys()]) {
+        try { socket.destroy(); } catch { /* ignore */ }
+      }
       await new Promise((resolve) => {
         server.close(() => resolve(undefined));
-        // 配置保存会重建运行时（stop→start）：把残留的 keep-alive / 活跃连接一并断开，
-        // 否则 close() 可能一直等到连接自然结束，表现为「保存很慢/超时失败」。
+        // 普通 HTTP keep-alive 同样一并断开，避免 close() 等连接自然结束。
         try { server.closeAllConnections?.(); } catch { /* ignore */ }
       });
     }
     this.plainSockets.clear();
-    this.plainUpgradeSockets.clear();
+    this.plainUpgradeConnections.clear();
   }
 
   status() {

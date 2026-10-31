@@ -6,11 +6,11 @@ import { loadOrCreateHostIdentity } from './identity.js';
 import { DeviceStore } from './devices.js';
 import { AuditLog } from './audit.js';
 import { PairingManager } from './pairing.js';
-import { DshProxy } from './proxy.js';
+import { DshProxy, REMOTE_STREAM_MUX_PATH } from './proxy.js';
 import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 
 /**
  * 会影响「群体运行时（隧道 / loopback 代理 / 配对）」装配的配置字段。
@@ -404,13 +404,14 @@ export class RemoteService {
     if (applied) await this.#apply();
 
     // 「组件」开关变化时，隧道本身不重建（避免保存慢/失败），但要让 App 立刻感知：
-    // 主动断开当前 loopback 客户端连接 → App 的 WebView WS 断线自动重载 → 重新拉 status →
-    // 顶栏 ⏻ 立即出现/消失（等价单机版「主机保存 → App 立即刷新」，不用等轮询/退出重进）。
+    // 只断开 DSH **主实时通道**（/api/remote.mux）→ App 的 ws-close 自动恢复重载 → 重新拉 status
+    // → 顶栏 ⏻ 立即出现/消失。**不能断所有 WS**：App 会为每个 WS 上报 dsh-ws-close，多条同时
+    // 断开会把它的自动恢复预算（60s 内 2 次）一次耗尽（用户实测 0.2.3「自动重连未恢复」）。
     if (!applied && changedKeys.includes('restartHostEnabled')) {
       const dropped = this.groupRuntime?.closeUpgradedConnections?.() ?? 0;
       this.log(
         `config: restartHostEnabled=${this.config.restartHostEnabled}；`
-        + `已断开 ${dropped} 条 WebSocket 连接以触发 App 即时刷新`,
+        + `已断开 ${dropped} 条主实时通道（${REMOTE_STREAM_MUX_PATH}）连接以触发 App 即时刷新`,
       );
     }
 

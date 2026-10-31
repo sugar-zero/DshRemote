@@ -151,9 +151,10 @@ test('仅改 restartHostEnabled：只持久化，不 stop/重建 group 运行时
       const fakeRuntime = {
         stopped: 0,
         closedClients: 0,
+        closeOptions: undefined,
         config: { restartHostEnabled: false },
         async stop() { this.stopped += 1; },
-        closeUpgradedConnections() { this.closedClients += 1; return 1; },
+        closeUpgradedConnections(options) { this.closedClients += 1; this.closeOptions = options; return 1; },
         status() { return { registered: false, connected: false }; },
       };
       service.groupRuntime = fakeRuntime;
@@ -173,6 +174,11 @@ test('仅改 restartHostEnabled：只持久化，不 stop/重建 group 运行时
         '运行中实例的 config 引用应同步（隧道内 status/restart 立即生效，不等下次重建）',
       );
       assert.equal(fakeRuntime.closedClients, 1, '组件开关变化应断开 WebSocket 连接以触发 App 即时刷新');
+      assert.equal(
+        fakeRuntime.closeOptions,
+        undefined,
+        '应按默认行为调用（只断 /api/remote.mux 主实时通道，不传 path 表示默认值）',
+      );
 
       // 对照：运行时相关字段变化才 rebuild（此时 enabled=false→true，会先 stop 旧 fake runtime）
       const next = await service.updateConfig({ enabled: true });

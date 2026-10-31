@@ -56,8 +56,8 @@ export function splitUpgradeResponseHead(buffer, maxBytes = MAX_UPGRADE_RESPONSE
  */
 const DEFAULT_MAX_REQUEST_BYTES = 256 * 1024 * 1024;
 
-/** DSH Web 的 Remote stream mux 路径：需要心跳中间盒。 */
-const REMOTE_STREAM_MUX_PATH = '/api/remote.mux';
+/** DSH Web 的 Remote stream mux 路径：主实时通道（需要心跳中间盒；保存组件后只断它）。 */
+export const REMOTE_STREAM_MUX_PATH = '/api/remote.mux';
 /** 下行积压超过该字节数就认为链路拥塞（开始主动代答心跳）。 */
 const KEEPALIVE_CONGESTION_BYTES = 64 * 1024;
 /** 拥塞期间主动代答 Pong 的间隔（DSH 心跳 2s / 忍 2 个周期）。 */
