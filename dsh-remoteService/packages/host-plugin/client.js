@@ -421,10 +421,18 @@ window.__ModuleLoader__.load({
 
     /* ────────────────────────── 数据小工具 ────────────────────────── */
 
+    /**
+     * 错误 → 可读文案：带上服务端 `error.message` 与 `error.code`（如 `invalid-config`），
+     * 便于用户反馈「保存失败」时直接看出原因（设置页 toast / 加载错误共用）。
+     */
     function formatError(error) {
       if (!error) return 'unknown error';
-      if (error.message) return String(error.message);
-      if (error.code) return String(error.code);
+      const message = error.message ? String(error.message) : '';
+      const code = error.code ? String(error.code) : '';
+      if (message !== '') {
+        return code !== '' && !message.includes(code) ? `${message}（${code}）` : message;
+      }
+      if (code !== '') return code;
       return String(error);
     }
 

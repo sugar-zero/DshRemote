@@ -1308,3 +1308,57 @@ test('设置页：组件区可开启「允许手机重启主机 DSH」并保存 
   const refreshed = findRestartToggle(renderer.render());
   assert.equal(refreshed.props['aria-checked'], true);
 });
+
+test('设置页：保存失败时 toast 带服务端 detail（invalid-config 文案 + code）', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: {
+      registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443',
+      hostId: 'h_test1234', fqdn: 'h_test1234.relay.example.com', mobilePort: 11443, plainPort: 34567,
+      controlUrl: '', lastError: null,
+    },
+    host: { id: 'h_test1234', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    restart: { enabled: false },
+    config: {
+      enabled: true, hostName: 'Example Mac', requireApproval: true, restartHostEnabled: false,
+      groupServiceUrl: '', groupPlainPort: 34567, groupInsecure: false,
+    },
+  };
+  const fetchImpl = async (url, options = {}) => {
+    if (String(url).includes('/config') && options.method === 'POST') {
+      return {
+        ok: false,
+        status: 400,
+        async json() {
+          return { ok: false, error: { code: 'invalid-config', message: 'groupServiceUrl（服务地址）未配置' } };
+        },
+      };
+    }
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data: baseStatus }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  tree = renderer.render();
+
+  const toggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '').includes('允许手机重启主机 DSH'))[0];
+  assert.ok(toggle, '组件区应有「允许手机重启主机 DSH」开关');
+  toggle.props.onClick();
+  await flushAsync();
+  tree = renderer.render();
+  const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
+  saveButtons.at(-1).props.onClick();
+  await flushAsync();
+
+  const text = collectText(renderer.render());
+  assert.match(text, /保存失败/, '失败时应显示保存失败 toast');
+  assert.match(text, /groupServiceUrl（服务地址）未配置/, 'toast 应带服务端错误 detail');
+  assert.match(text, /invalid-config/, 'toast 应带错误 code，便于用户反馈定位');
+});

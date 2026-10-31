@@ -10,7 +10,39 @@ import { DshProxy } from './proxy.js';
 import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
+
+/**
+ * 会影响「群体运行时（隧道 / loopback 代理 / 配对）」装配的配置字段。
+ *
+ * 只有这些字段变化才需要重建 `GroupHostRuntime`（会断开重连隧道、重新刷新注册信息）；
+ * 其余字段（典型：`restartHostEnabled` 这类组件开关）**只持久化**，不重启运行时——
+ * 否则只是切一下「允许手机重启主机 DSH」也会把隧道断开重连，保存慢且可能失败。
+ */
+export const RUNTIME_CONFIG_KEYS = Object.freeze([
+  'enabled', 'groupServiceUrl', 'groupInviteCode', 'hostName', 'groupPlainPort', 'groupInsecure',
+  'requireApproval', 'denyPrefixes', 'maxRequestBytes',
+]);
+
+/** 数组按元素、对象按 JSON 比较（配置值都是 JSON 可序列化的原始类型/数组）。 */
+function configValuesEqual(left, right) {
+  if (Array.isArray(left) && Array.isArray(right)) {
+    return left.length === right.length && left.every((value, index) => String(value) === String(right[index]));
+  }
+  if (left !== null && right !== null && typeof left === 'object' && typeof right === 'object') {
+    try { return JSON.stringify(left) === JSON.stringify(right); } catch { return false; }
+  }
+  return left === right;
+}
+
+/** group.json 里登记的注册服务地址（迁移回填用；没有则空串）。 */
+function registrationServiceUrl() {
+  try {
+    return String(loadGroupRegistration()?.serviceUrl ?? '').trim();
+  } catch {
+    return '';
+  }
+}
 
 /**
  * 群体服务版主机插件运行时装配：
@@ -100,10 +132,29 @@ export class RemoteService {
     return this.ctx.connection.authenticatedUrl(origin);
   }
 
+  /**
+   * 历史配置迁移：早期/异常状态下注册信息只在 `group.json`，`config.groupServiceUrl` 为空。
+   * 而 `validateConfig` 要求 enabled 时 serviceUrl 非空 → 不回填的话**任何保存**都会
+   * 400 `invalid-config`（保存「组件」开关也会失败），隧道也起不来。
+   *
+   * 用 registration.serviceUrl 回填并落盘（幂等；config 已有值时不覆盖用户输入）。
+   * @returns {boolean} 是否发生回填
+   */
+  #backfillGroupServiceUrl() {
+    if (String(this.config?.groupServiceUrl ?? '').trim() !== '') return false;
+    const fallback = registrationServiceUrl();
+    if (fallback === '') return false;
+    this.config = saveConfig({ groupServiceUrl: fallback });
+    this.log('config: 已从 group.json 回填 groupServiceUrl（历史配置迁移）');
+    return true;
+  }
+
   /** 按当前配置启动/停止群体隧道与 loopback 明文代理。 */
   async #apply() {
     await this.#stopRuntime();
     this.lastError = null;
+    // 历史配置迁移：先补 groupServiceUrl，避免「已注册但 config 缺服务地址」导致永远起不来。
+    this.#backfillGroupServiceUrl();
     const config = this.config;
     if (!config.enabled) return;
     const errors = validateConfig(config);
@@ -315,10 +366,46 @@ export class RemoteService {
     };
   }
 
-  async updateConfig(patch) {
-    this.config = saveConfig(patch);
-    await this.#apply();
-    return { config: this.config, errors: validateConfig(this.config) };
+  /**
+   * 更新配置（管理 API `/config`）。
+   *
+   * 行为约定（0.2.2 修复「组件开关保存失败」）：
+   * 1. **历史迁移**：config.groupServiceUrl 为空但 group.json 有注册时，保存前用
+   *    registration.serviceUrl 回填，避免任何保存都被 `validateConfig` 判成非法配置；
+   * 2. **按需重建**：只有 `RUNTIME_CONFIG_KEYS` 里的字段真的变化才 `#apply()`（重建运行时）；
+   *    `restartHostEnabled` 这类纯状态字段只持久化，保存立即返回，隧道不断；
+   * 3. **只对重建返回校验错误**：没重建运行时的保存不再被历史遗留校验问题阻塞（否则
+   *    只切一个组件开关也会 400 → 客户端「保存失败」）。
+   *
+   * @param {Record<string, any>} [patch]
+   * @returns {{config: Record<string, any>, errors: string[], applied: boolean}}
+   *   `applied=true` 表示本次保存重建了群体运行时（隧道会短暂重连）。
+   */
+  async updateConfig(patch = {}) {
+    const previous = this.config ?? loadConfig();
+    const requested = { ...(patch ?? {}) };
+
+    // 迁移回填：只有调用方没显式改 groupServiceUrl 时才补（避免覆盖用户清空/换服务地址的意图）。
+    const nextUrl = Object.hasOwn(requested, 'groupServiceUrl')
+      ? String(requested.groupServiceUrl ?? '').trim()
+      : String(previous.groupServiceUrl ?? '').trim();
+    if (nextUrl === '' && !Object.hasOwn(requested, 'groupServiceUrl')) {
+      const fallback = registrationServiceUrl();
+      if (fallback !== '') requested.groupServiceUrl = fallback;
+    }
+
+    this.config = saveConfig(requested);
+    // 运行时若在跑：把最新配置对象交给它。纯状态字段（如 restartHostEnabled）不重建运行时，
+    // 但隧道内的 `/__dsh_remote/status` 与 `POST /__dsh_remote/restart` 必须立刻看到新值，
+    // 否则要等下次重建运行时 / 重启 DSH 才生效（App 顶栏 ⏻ 与重启接口都会滞后）。
+    if (this.groupRuntime) this.groupRuntime.config = this.config;
+    const changedKeys = Object.keys(requested).filter((key) => !configValuesEqual(previous[key], this.config[key]));
+    const applied = changedKeys.some((key) => RUNTIME_CONFIG_KEYS.includes(key));
+    if (applied) await this.#apply();
+
+    const errors = applied ? validateConfig(this.config) : [];
+    if (errors.length > 0) this.log(`config: 保存后校验未通过: ${errors.join('; ')}`);
+    return { config: this.config, errors, applied };
   }
 
   async dispose() {

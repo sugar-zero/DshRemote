@@ -390,7 +390,12 @@ export class GroupHostRuntime {
     this.plainServer = undefined;
     this.plainPort = 0;
     if (server) {
-      await new Promise((resolve) => server.close(() => resolve(undefined)));
+      await new Promise((resolve) => {
+        server.close(() => resolve(undefined));
+        // 配置保存会重建运行时（stop→start）：把残留的 keep-alive / 活跃连接一并断开，
+        // 否则 close() 可能一直等到连接自然结束，表现为「保存很慢/超时失败」。
+        try { server.closeAllConnections?.(); } catch { /* ignore */ }
+      });
     }
   }
 
