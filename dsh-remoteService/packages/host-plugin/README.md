@@ -283,6 +283,11 @@ volumes:
 
 设置页（Client 半）：group 模式下新增「群体服务（实验）」卡片——启用开关、服务地址 + 邀请码、
 注册/隧道状态、**注册并连接** / **重置注册** 按钮；classic 的 TLS/APNs 字段在该模式下不生效（有提示）。
+**常见错误**：注册时报 `not_found（control plane only accepts WebSocket upgrades on /control）`
+→ 「服务地址」填成了**控制面 WSS 端口**（18443/8443）。注册必须走**注册 API 地址**
+（直连 `https://<relayDomain>:19443`，或 nginx 暴露的 API 入口）；控制面只接受 WebSocket upgrade，
+不能发 `POST /__group/register`。注册成功后隧道地址由响应里的 `controlUrl` 自动下发，不用手填。
+
 管理 API（本机已认证浏览器）：
 
 - `POST /api/remote-access/group/register`（body `{serviceUrl, inviteCode, hostName?}`）→ 注册并连接；
