@@ -587,21 +587,27 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    chown -R 100:101 data      # 镜像内 relay 用户 UID/GID
    ```
 
-   **职责分离（四个面各用各的端口）**：
+   **端口只分两类：★ 公网入口（要放行/转发） vs 内部端口（不要放行）**：
 
-   | 面 | 容器内 | 默认宿主映射 | 谁访问 | 说明 |
+   | 变量 | 谁访问 | 直连（无 nginx） | nginx 前置（推荐） | ★ 要放行/转发？ |
    |---|---|---|---|---|
-   | 手机 edge | `443` | `1443`（或 nginx 443） | 手机 App | relay 终止手机 TLS；二维码/注册下发端口 = `RELAY_GROUP_MOBILE_PORT` |
-   | 控制面 WSS | `8443` | `18443`（或 nginx 8443） | 主机隧道 | **只接受 WebSocket upgrade**，不再承载注册/后台 |
-   | 注册 API | `9443` | `19443` | 主机插件注册 | 公网可达；主机「服务地址」填它 |
-   | 部署方后台 | `9444` | `127.0.0.1:19444` | 部署方浏览器 | 默认只绑回环，建议经 nginx（basic auth/IP 白名单）或 SSH 隧道 |
+   | `RELAY_GROUP_MOBILE_PORT` | 手机 App | `1443` | `443`（= nginx listen） | ★ 是 |
+   | `RELAY_GROUP_PUBLIC_CONTROL_PORT` | 主机 WSS 隧道 | `18443` | `8443`（= nginx listen） | ★ 是 |
+   | `RELAY_GROUP_API_HOST_PORT` | 主机注册 API | `19443` | `19443` | ★ 是 |
+   | `RELAY_GROUP_ADMIN_HOST_PORT` | 部署方浏览器 | `19444` | `19444` | ✗ 只绑回环，别放行 |
+   | `RELAY_GROUP_EDGE_HOST_PORT` | 本机 nginx → relay | `1443` | `1443`（bind 127.0.0.1） | ✗ nginx 内部 |
+   | `RELAY_GROUP_CONTROL_HOST_PORT` | 本机 nginx → relay | `18443` | `18443`（bind 127.0.0.1） | ✗ nginx 内部 |
+
+   容器内端口固定：edge=`443`、控制面 WSS=`8443`、注册 API=`9443`、后台=`9444`、healthz=`80`（不用改）。
 
    规则：
    - **`RELAY_GROUP_MOBILE_PORT`（= `group.mobilePort`）必须等于手机实际访问的公网端口**，不是容器宿主映射端口
      （常见错误：nginx 监听 443 → 转发 127.0.0.1:1443，却把 mobilePort 留成 1443，手机会去连公网 1443）。
-   - 注册 API 与控制面 WSS 端口必须分开：注册响应会下发 `controlUrl`（= `RELAY_GROUP_PUBLIC_CONTROL_PORT` 指定的公网端口），
+   - 注册 API 与控制面 WSS 必须分开：注册响应会下发 `controlUrl`（= `RELAY_GROUP_PUBLIC_CONTROL_PORT` 端口），
      主机用它回连隧道，不再从服务地址推导。
-   - 后台默认只绑 `127.0.0.1:19444`；如需浏览器直连，用 SSH 隧道或 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 反代到 admin 域名。
+   - 后台只绑 `127.0.0.1:19444`；用 SSH 隧道或 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 反代到 admin 域名。
+   - **nginx 前置时只需要转发两个端口**：公网 `443 → 127.0.0.1:1443`、`8443 → 127.0.0.1:18443`；
+     API（19443）直接对公网；后台（19444）不要转发到公网。
 
 3. **启动**（二选一）：
 
@@ -614,10 +620,11 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
    ```
 
-   默认端口：宿主 `1443`（edge，手机）、`18443`（控制面 WSS，主机隧道）、`19443`（注册 API，主机）、
-   `127.0.0.1:19444`（部署方后台）、`18080`（/healthz，默认只回环）。
-   edge / WSS / 注册 API 都必须公网可达（手机、主机从外网连）；后台只绑回环，用 nginx/SSH 隧道访问。
-   **不要把后台端口直接暴露公网**；也不要用防火墙封掉 WSS/API 来源（会挡主机）。
+   **端口速查（`.env.group` 顶部也有同样一张表）**：
+   - ★ 公网入口：`RELAY_GROUP_MOBILE_PORT`、`RELAY_GROUP_PUBLIC_CONTROL_PORT`、`RELAY_GROUP_API_HOST_PORT`；
+   - ✗ 仅本机：`RELAY_GROUP_ADMIN_HOST_PORT`（回环）、`RELAY_GROUP_EDGE_HOST_PORT` / `RELAY_GROUP_CONTROL_HOST_PORT`
+     （直连时对公网，nginx 前置时只绑 127.0.0.1 供 nginx 转发）。
+   **不要把后台端口暴露公网**；也不要用防火墙封掉 WSS/API 来源（会挡主机）。
 
    **与已有 nginx / classic relay 共存**：group 模式不需要 nginx 做 TLS 终止/证书（relay 自己终止手机 TLS）。
    nginx 只能有一份 `stream {}`，443/8443 每个端口只能 listen 一次，所以：
@@ -627,7 +634,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    - **同机已有 classic**：用 [`nginx/host-nginx-stream.combined.conf`](nginx/host-nginx-stream.combined.conf)
      一份合并配置（classic/group/现有网站按 SNI 分流）；**不能**同时 include 两个单版本文件。
      group compose 的宿主端口也要避开 classic 已占用的 1443/18443，例如
-     `RELAY_GROUP_EDGE_PORT_HOST=16443`、`RELAY_GROUP_CONTROL_PORT_HOST=18444`，并把
+     `RELAY_GROUP_EDGE_HOST_PORT=16443`、`RELAY_GROUP_CONTROL_HOST_PORT=18444`，并把
      `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`
      （注册 API/后台默认 19443/19444，不与 classic 冲突）；
    - group 必须有**自己的 relay 域名**（不能用 classic 的域名，通配证书也不同）。
