@@ -652,6 +652,22 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
 
    第一/二步能看到值、第三步为空 → 说明启动容器时没带对 env 文件；`docker compose ... up -d --force-recreate` 重建。
 
+   **常见问题：改了 `RELAY_GROUP_API_HOST_BIND=127.0.0.1`，`docker ps` 里还是 `0.0.0.0`**：
+
+   ```bash
+   grep -n 'RELAY_GROUP_API_HOST_BIND' docker-compose.group.yml
+   docker compose --env-file .env -f docker-compose.group.yml config | grep -B4 'published: "19443"'
+   docker compose --env-file .env -f docker-compose.group.yml up -d --force-recreate
+   docker ps --filter name=dsh-relay-group --format '{{.Ports}}'
+   ```
+
+   - 第一步没有输出 → compose 文件是旧版（API 端口那行写死了 `0.0.0.0:`），
+     改成 `"${RELAY_GROUP_API_HOST_BIND:-0.0.0.0}:${RELAY_GROUP_API_HOST_PORT:-19443}:9443"`；
+   - 第二步 `host_ip` 是 `127.0.0.1`、但第四步仍是 `0.0.0.0` → 容器没重建（`restart` 不更新端口映射）；
+   - 第二步也是 `0.0.0.0` → env 文件没被读取（工作目录 / `--env-file`）。
+   - 容器**日志**里 relay 在 `0.0.0.0:9443` 监听是正常的（容器内必须这样，Docker 才能转发）；
+     宿主机绑定地址只看 `docker ps` 的 `127.0.0.1:19443->9443/tcp`。
+
 3. **启动**（二选一）：
 
    ```bash
