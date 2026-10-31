@@ -107,6 +107,8 @@ export function DevicesScreen({
   onConnectionUpdated,
 }: DevicesScreenProps) {
   const insets = useSafeAreaInsets();
+  // token 模式（群体服务）：没有 mTLS 客户端证书，设备身份是 P-256 密钥 + 短时 token。
+  const isGroupMode = connection.authMode === 'token';
   const [certificate, setCertificate] = useState<StoredCertificate | null>(null);
   const [diagnostics, setDiagnostics] = useState<DshMtlsDiagnostics | null>(null);
   const [loading, setLoading] = useState(true);
@@ -125,6 +127,8 @@ export function DevicesScreen({
   const [auditEntries, setAuditEntries] = useState<AuditEntry[] | null>(null);
 
   useEffect(() => {
+    // 群体模式不使用 mTLS，跳过 classic 的主机状态/设备列表同步
+    if (isGroupMode) return undefined;
     if (!canManageRemoteDevices()) return undefined;
     let cancelled = false;
     void (async () => {
@@ -161,7 +165,7 @@ export function DevicesScreen({
       }
     })();
     return () => { cancelled = true; };
-  }, [connection, onConnectionUpdated]);
+  }, [connection, onConnectionUpdated, isGroupMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -279,7 +283,15 @@ export function DevicesScreen({
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>当前主机</Text>
           <DetailRow label="主机" value={connection.hostName || connection.host} />
-          <DetailRow label="隧道地址" value={`https://${connection.host}/`} mono />
+          <DetailRow
+            label="隧道地址"
+            value={
+              isGroupMode && connection.port && connection.port !== 443
+                ? `https://${connection.host}:${connection.port}/`
+                : `https://${connection.host}/`
+            }
+            mono
+          />
           <DetailRow label="中继域名" value={connection.relayDomain} mono />
           <DetailRow label="短指纹" value={shortFingerprint(connection.hostFingerprint)} mono />
           <DetailRow
@@ -295,7 +307,17 @@ export function DevicesScreen({
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>主机状态</Text>
-          {remoteDevicesError ? (
+          {isGroupMode ? (
+            <>
+              <DetailRow label="认证模式" value="token（短时令牌，无需本地证书）" />
+              <DetailRow label="主机 ID" value={connection.hostId ?? '—'} mono />
+              <DetailRow label="手机访问端口" value={connection.port ? String(connection.port) : '—'} />
+              <Text style={styles.hint}>
+                群体模式由 relay 终止手机 TLS，主机只做出站隧道；本机使用 Secure Enclave / Keystore 中的
+                P-256 设备密钥对 challenge 签名换取短时 token。主机侧设备列表请在桌面 DSH「远程访问」里查看。
+              </Text>
+            </>
+          ) : remoteDevicesError ? (
             <Text style={styles.statusError}>{remoteDevicesError}</Text>
           ) : hostStatus ? (
             <>
@@ -328,23 +350,40 @@ export function DevicesScreen({
           <Text style={styles.sectionTitle}>本机设备身份</Text>
           <DetailRow label="设备名称" value={connection.deviceName} />
           <DetailRow label="设备 ID" value={truncateMiddle(connection.deviceId, 8)} mono />
-          <DetailRow label="证书引用" value={connection.certRef ?? '（未安装原生身份）'} mono />
-          <View style={styles.divider} />
-          <Text style={styles.sectionSubtitle}>设备证书</Text>
           <DetailRow
-            label="证书状态"
-            value={certificate ? '已保存（SecureStore）' : '未保存'}
+            label={isGroupMode ? '设备密钥标签' : '证书引用'}
+            value={connection.certRef ?? '（未安装原生身份）'}
+            mono
           />
-          <DetailRow label="保存时间" value={formatTimestamp(certificate?.storedAt)} />
-          <DetailRow
-            label="证书长度"
-            value={certificate ? `${certificate.certPem.length} 字符` : '—'}
-          />
-          <Text style={styles.hint}>
-            设备私钥由原生模块保存在 Keychain / Android Keystore 中，App 与 JS 层都无法读取或导出。
-          </Text>
+          {isGroupMode ? (
+            <>
+              <DetailRow label="认证模式" value="token（短时令牌）" />
+              <Text style={styles.hint}>
+                群体模式不保存设备证书；P-256 私钥在 Secure Enclave / Keychain 中，只用于对 relay 下发的
+                challenge 签名，App 与 JS 层都无法读取或导出。
+              </Text>
+            </>
+          ) : (
+            <>
+              <View style={styles.divider} />
+              <Text style={styles.sectionSubtitle}>设备证书</Text>
+              <DetailRow
+                label="证书状态"
+                value={certificate ? '已保存（SecureStore）' : '未保存'}
+              />
+              <DetailRow label="保存时间" value={formatTimestamp(certificate?.storedAt)} />
+              <DetailRow
+                label="证书长度"
+                value={certificate ? `${certificate.certPem.length} 字符` : '—'}
+              />
+              <Text style={styles.hint}>
+                设备私钥由原生模块保存在 Keychain / Android Keystore 中，App 与 JS 层都无法读取或导出。
+              </Text>
+            </>
+          )}
         </View>
 
+        {isGroupMode ? null : (
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>原生 mTLS 模块</Text>
           <DetailRow
@@ -369,6 +408,7 @@ export function DevicesScreen({
             onReceivedClientCertRequest。
           </Text>
         </View>
+        )}
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>解除本机配对</Text>
@@ -391,8 +431,9 @@ export function DevicesScreen({
         </View>
 
         <Text style={styles.footnote}>
-          DSH Remote · 远程访问采用 mTLS 设备证书；主机侧可随时撤销。安全模型详见
-          docs/remote-access-evaluation.zh.md。
+          {isGroupMode
+            ? 'DSH Remote · 群体模式：P-256 设备密钥 + 短时 token 会话；主机侧可随时撤销设备。'
+            : 'DSH Remote · 远程访问采用 mTLS 设备证书；主机侧可随时撤销。安全模型详见 docs/remote-access-evaluation.zh.md。'}
         </Text>
       </ScrollView>
     </View>

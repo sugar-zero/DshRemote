@@ -35,10 +35,10 @@ import {
   formatPairingCode,
   isCompletePairingCode,
   pairingTimeLeftMs,
-  parsePairingUri,
+  parseAnyPairingUri,
   PairingUriError,
   shortFingerprint,
-  type PairingUri,
+  type AnyPairingUri,
 } from '../lib/protocol';
 import {
   currentPairPlatform,
@@ -47,6 +47,11 @@ import {
   POC_PLACEHOLDER_CSR,
   toPairingError,
 } from '../lib/pairing';
+import {
+  defaultGroupDeviceLabel,
+  GroupPairingError,
+  pairGroupDevice,
+} from '../lib/group';
 import { defaultDeviceName, isLegacyDefaultDeviceName } from '../lib/deviceName';
 import { loadDeviceName, saveDeviceName, clearDeviceName, type StoredConnection } from '../lib/store';
 import { isDshMtlsAvailable } from '../../modules/dsh-mtls/src';
@@ -66,10 +71,16 @@ interface ScreenError {
   code?: string;
 }
 
-const PHASE_LABELS = [
+const CLASSIC_PHASE_LABELS = [
   { key: 'requesting', label: '生成设备密钥并提交配对请求' },
   { key: 'pending', label: '等待桌面端确认' },
   { key: 'paired', label: '保存设备证书' },
+] as const;
+
+const GROUP_PHASE_LABELS = [
+  { key: 'requesting', label: '生成 P-256 设备密钥并提交配对请求' },
+  { key: 'pending', label: '等待桌面端确认（核对 SAS）' },
+  { key: 'paired', label: '保存连接（token 认证）' },
 ] as const;
 
 function phaseMessage(phase: 'requesting' | 'pending' | 'polling' | 'paired'): string {
@@ -109,6 +120,27 @@ function errorTitle(error: PairingError): string {
   }
 }
 
+function groupErrorTitle(error: GroupPairingError): string {
+  switch (error.code) {
+    case 'native_unavailable':
+      return '当前构建缺少原生能力';
+    case 'network':
+      return '网络连接失败';
+    case 'timeout':
+      return '连接超时';
+    case 'denied':
+      return '配对被拒绝';
+    case 'expired':
+      return '配对已过期';
+    case 'fingerprint_mismatch':
+      return '主机指纹不匹配';
+    case 'pending_timeout':
+      return '等待确认超时';
+    default:
+      return '配对失败';
+  }
+}
+
 function formatCountdown(seconds: number): string {
   const safe = Math.max(0, seconds);
   const minutes = Math.floor(safe / 60);
@@ -123,7 +155,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
   const [manualOpen, setManualOpen] = useState(false);
   const [manualUri, setManualUri] = useState('');
   const [deviceName, setDeviceName] = useState(defaultDeviceName());
-  const [pairing, setPairing] = useState<PairingUri | null>(null);
+  const [pairing, setPairing] = useState<AnyPairingUri | null>(null);
   const [parseError, setParseError] = useState<string | null>(null);
   const [pairingMessage, setPairingMessage] = useState(phaseMessage('requesting'));
   const [error, setError] = useState<ScreenError | null>(null);
@@ -132,6 +164,8 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
   const [now, setNow] = useState(() => Date.now());
   const scanLockRef = useRef(false);
   const abortRef = useRef<AbortController | null>(null);
+  /** 群体版配对 pending 时桌面端展示的 SAS（用于轮询期间持续提示）。 */
+  const pendingSasRef = useRef<string | null>(null);
 
   // 恢复上一次用户自定义的设备名；旧版本写死的默认名不再沿用（改用系统设备名）。
   useEffect(() => {
@@ -173,7 +207,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
       return;
     }
     try {
-      const parsed = parsePairingUri(raw);
+      const parsed = parseAnyPairingUri(raw);
       setPairing(parsed);
       setParseError(null);
       setManualOpen(false);
@@ -202,6 +236,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
 
   const resetToScan = useCallback(() => {
     abortRef.current?.abort();
+    pendingSasRef.current = null;
     setPairing(null);
     setError(null);
     setParseError(null);
@@ -216,32 +251,63 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
     setError(null);
     setPairingMessage(phaseMessage('requesting'));
     setPhase('pairing');
+    pendingSasRef.current = null;
     const controller = new AbortController();
     abortRef.current = controller;
     // 只持久化用户真正改过的名字：默认名每次配对都重新取系统设备名。
     if (name === defaultDeviceName()) await clearDeviceName().catch(() => undefined);
     else await saveDeviceName(name).catch(() => undefined);
     try {
-      const result = await pairDevice({
-        pairing,
-        deviceName: name,
-        platform: currentPairPlatform(),
-        allowPlaceholderCsr: usePlaceholderCsr,
-        pollIntervalMs: 1500,
-        signal: controller.signal,
-        onPhase: (nextPhase) => setPairingMessage(phaseMessage(nextPhase)),
-      });
-      onPaired(result.connection);
+      if (pairing.mode === 'group') {
+        // 群体服务版（A 模式）：P-256 设备密钥 + 短时 token，无 CSR/证书。
+        const result = await pairGroupDevice({
+          pairing,
+          deviceName: name,
+          platform: currentPairPlatform(),
+          label: defaultGroupDeviceLabel(pairing.host),
+          pollIntervalMs: 1500,
+          signal: controller.signal,
+          onPhase: (nextPhase) => {
+            const sas = pendingSasRef.current;
+            setPairingMessage(
+              nextPhase === 'polling' && sas
+                ? `等待桌面端确认（核对 SAS：${sas}）…`
+                : phaseMessage(nextPhase),
+            );
+          },
+          onPending: ({ sas }) => {
+            if (!sas) return;
+            pendingSasRef.current = sas;
+            setPairingMessage(`等待桌面端确认（核对 SAS：${sas}）…`);
+          },
+        });
+        onPaired(result.connection);
+      } else {
+        const result = await pairDevice({
+          pairing,
+          deviceName: name,
+          platform: currentPairPlatform(),
+          allowPlaceholderCsr: usePlaceholderCsr,
+          pollIntervalMs: 1500,
+          signal: controller.signal,
+          onPhase: (nextPhase) => setPairingMessage(phaseMessage(nextPhase)),
+        });
+        onPaired(result.connection);
+      }
     } catch (pairingFailure) {
+      if (pairingFailure instanceof GroupPairingError && pairingFailure.code === 'aborted') {
+        setPhase('review');
+        return;
+      }
       const normalized = toPairingError(pairingFailure);
       if (normalized.code === 'aborted') {
         setPhase('review');
         return;
       }
       setError({
-        title: errorTitle(normalized),
+        title: pairingFailure instanceof GroupPairingError ? groupErrorTitle(pairingFailure) : errorTitle(normalized),
         message: normalized.message,
-        code: normalized.code,
+        code: pairingFailure instanceof GroupPairingError ? pairingFailure.code : normalized.code,
       });
       setPhase('error');
     } finally {
@@ -316,14 +382,15 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
             multiline
             autoCapitalize="none"
             autoCorrect={false}
-            placeholder="dshremote://pair?v=1&host=…"
+            placeholder="dshremote://pair?v=1… / ?v=2&auth=token…"
             placeholderTextColor={colors.textFaint}
           />
           <TouchableOpacity style={styles.primaryButton} onPress={() => handleUri(manualUri)}>
             <Text style={styles.primaryButtonText}>解析链接</Text>
           </TouchableOpacity>
           <Text style={styles.hint}>
-            链接里只有一次性配对密钥（约 120 秒有效），不含账号或长期令牌。
+            支持 v1（自托管 mTLS）与 v2（群体服务 token）两种配对链接；链接里只有一次性配对密钥
+            （约 120 秒有效），不含账号或长期令牌。
           </Text>
         </View>
       ) : null}
@@ -408,6 +475,18 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           <Text style={styles.monoValue} selectable>
             {pairing.relayDomain}
           </Text>
+          {pairing.mode === 'group' ? (
+            <>
+              <View style={sharedStyles.divider} />
+              <Text style={styles.inputLabel}>服务端口</Text>
+              <Text style={styles.monoValue} selectable>
+                {pairing.port}
+              </Text>
+              <Text style={styles.hint}>
+                群体服务版：使用 P-256 设备密钥 + 短时 token 认证（不使用设备 mTLS 证书）。
+              </Text>
+            </>
+          ) : null}
           <View style={sharedStyles.divider} />
           <Text style={styles.inputLabel}>主机指纹（短）</Text>
           <Text style={styles.shortFingerprint}>{shortFingerprint(pairing.hostFingerprint)}</Text>
@@ -477,7 +556,9 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
         </View>
 
         <Text style={styles.footnote}>
-          配对会生成设备密钥对；私钥保存在系统安全区，永远不会离开手机。
+          {pairing.mode === 'group'
+            ? '配对会生成 P-256 设备密钥；私钥保存在系统安全区，访问 token 只存在内存与 `__Host-` cookie 中。'
+            : '配对会生成设备密钥对；私钥保存在系统安全区，永远不会离开手机。'}
         </Text>
       </>
     );
@@ -496,7 +577,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           <Text style={styles.hint}>链接剩余有效期：{formatCountdown(secondsLeft)}</Text>
         ) : null}
         <View style={styles.steps}>
-          {PHASE_LABELS.map((step) => (
+          {(pairing?.mode === 'group' ? GROUP_PHASE_LABELS : CLASSIC_PHASE_LABELS).map((step) => (
             <Text key={step.key} style={styles.stepText}>
               · {step.label}
             </Text>

@@ -31,6 +31,8 @@ import {
   pairStatusUrl,
   pairUrl,
   pushTokenUrl,
+  type GroupPairedDeviceData,
+  type GroupPairingUri,
   type PairedDeviceData,
   type PairingUri,
   type PairRequestBody,
@@ -745,3 +747,32 @@ export function currentPairPlatform(): PairPlatform {
  * 默认设备名（系统设备名，取不到时回退旧文案）已移到 `./deviceName`：
  * 配对页需要它，而不需要整个 pairing 传输层。
  */
+
+/**
+ * 群体版配对成功后持久化连接（无证书；authMode='token'，端口/主机 ID 来自服务端下发）。
+ * 私钥只在系统安全区（Keychain/Keystore），这里只存 label；token 不落盘。
+ */
+export async function persistGroupPairedDevice(params: {
+  pairing: GroupPairingUri;
+  device: GroupPairedDeviceData;
+  deviceName: string;
+  /** Keychain/Keystore label of the group device key (see group.ts). */
+  deviceKeyLabel: string;
+}): Promise<StoredConnection> {
+  const { pairing, device, deviceName } = params;
+  const connection: StoredConnection = {
+    host: pairing.host,
+    relayDomain: pairing.relayDomain,
+    hostFingerprint: device.hostFingerprint || pairing.hostFingerprint,
+    deviceId: device.deviceId,
+    deviceName,
+    hostName: device.hostName,
+    authMode: 'token',
+    port: device.mobilePort || pairing.port,
+    hostId: device.hostId || pairing.hostId,
+    certRef: params.deviceKeyLabel,
+    pairedAt: Date.now(),
+  };
+  await saveConnection(connection);
+  return connection;
+}

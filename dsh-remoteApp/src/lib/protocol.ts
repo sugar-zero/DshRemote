@@ -518,3 +518,296 @@ export interface AdminStatusData {
   } | null;
   devices: DeviceRecord[];
 }
+
+// ---------------------------------------------------------------------------
+// Group service (A mode, token auth) — pairing URI v2, session API, URLs
+// ---------------------------------------------------------------------------
+//
+// Group mode replaces the device mTLS certificate with:
+//   - pairing: POST /__dsh_remote/pair with a P-256 public key (no CSR/cert)
+//   - session: challenge -> ECDSA signature -> short-lived token -> __Host- cookie
+// The wire protocol is documented in `docs/group-service-design.zh.md` and
+// `dsh-remoteService/packages/relay/README.md` §10.
+
+/** Pairing URI protocol version for the group (A-mode) flow. */
+export const PAIRING_URI_VERSION_GROUP = 2;
+/** `auth=token` marker in a v2 pairing URI. */
+export const PAIR_AUTH_TOKEN = 'token';
+/** Session cookie name; must stay `__Host-` prefixed (host-only, Secure). */
+export const GROUP_SESSION_COOKIE = '__Host-dsh_session';
+/** Relay edge auth endpoints (terminated by the deployment's relay, not the host). */
+export const GROUP_PATHS = {
+  challenge: '/__group/auth/challenge',
+  token: '/__group/auth/token',
+} as const;
+
+const GROUP_HOST_ID_RE = /^h_[a-z0-9]{6,30}$/;
+
+/** Parsed group-mode pairing URI (`dshremote://pair?v=2&...&auth=token`). */
+export interface GroupPairingUri {
+  mode: 'group';
+  version: typeof PAIRING_URI_VERSION_GROUP;
+  /** `<hostId>.<relayDomain>` (no port; the port is carried separately). */
+  host: string;
+  /** Mobile access port assigned by the service (default 11443). */
+  port: number;
+  /** One-time pairing secret (base64url, 32 random bytes). Never log it. */
+  secret: string;
+  /** Full SHA-256 host identity fingerprint, base64url. */
+  hostFingerprint: string;
+  /** Expiry in **milliseconds** (wire value is seconds). */
+  expiresAt: number;
+  relayDomain: string;
+  hostId: string;
+  raw: string;
+}
+
+/** Classic (v1/mTLS) or group (v2/token) pairing URI. */
+export type AnyPairingUri = (PairingUri & { mode: 'mtls' }) | GroupPairingUri;
+
+const GROUP_URI_VERSION_RE = /[?&]v=([^&#]*)/;
+
+function rawUriVersion(raw: string): string {
+  const match = GROUP_URI_VERSION_RE.exec(raw);
+  if (!match || match[1] === undefined) return '';
+  try {
+    return decodeURIComponent(match[1].replace(/\+/g, ' '));
+  } catch {
+    return '';
+  }
+}
+
+/** Parse a v2 group-mode pairing URI; throws {@link PairingUriError}. */
+export function parseGroupPairingUri(input: string, options: ParsePairingUriOptions = {}): GroupPairingUri {
+  const now = options.now ?? Date.now();
+  const raw = input.trim().replace(/^["'<]+|["'>]+$/g, '').trim();
+  if (!raw) throw new PairingUriError('invalid_uri', '配对链接为空。');
+  const uriMatch = PAIRING_URI_RE.exec(raw);
+  if (!uriMatch) {
+    throw new PairingUriError('invalid_uri', '无法解析配对链接。链接应以 dshremote://pair?v=2&... 开头。');
+  }
+  const scheme = uriMatch[1] ?? '';
+  const authority = uriMatch[2] ?? '';
+  const path = uriMatch[3] ?? '';
+  const query = uriMatch[4];
+  if (scheme.toLowerCase() !== PAIRING_SCHEME) {
+    throw new PairingUriError('unsupported_scheme', `不支持的链接协议 "${scheme}"，应为 ${PAIRING_SCHEME}://。`);
+  }
+  if (authority.toLowerCase() !== PAIRING_AUTHORITY) {
+    throw new PairingUriError('invalid_uri', '这不是配对链接（dshremote://pair/...）。', 'authority');
+  }
+  if (path !== '' && path !== '/') throw new PairingUriError('invalid_uri', `配对链接包含未知路径 "${path}"。`, 'path');
+  if (query === undefined || query === '') {
+    throw new PairingUriError('missing_field', '配对链接缺少参数。请在主机上重新生成二维码。', 'query');
+  }
+
+  const params = parseQueryString(query);
+  const require = (name: string): string => {
+    const value = params.get(name);
+    if (value === undefined || value === '') {
+      throw new PairingUriError('missing_field', `配对链接缺少参数 "${name}"，请重新生成二维码。`, name);
+    }
+    return value;
+  };
+
+  const versionRaw = require('v');
+  if (versionRaw !== String(PAIRING_URI_VERSION_GROUP)) {
+    throw new PairingUriError(
+      'unsupported_version',
+      `配对链接协议版本为 v${versionRaw}，当前 App 仅支持 v${PAIRING_URI_VERSION_GROUP}（群体版）。`,
+      'v',
+    );
+  }
+  const auth = require('auth');
+  if (auth !== PAIR_AUTH_TOKEN) {
+    throw new PairingUriError('invalid_field', `群体版配对链接的 auth 参数应为 "${PAIR_AUTH_TOKEN}"。`, 'auth');
+  }
+
+  const host = require('host');
+  if (!isValidTunnelHost(host) || host.includes(':')) {
+    throw new PairingUriError('invalid_field', `配对链接中的主机地址无效："${host}"。`, 'host');
+  }
+
+  const portRaw = require('port');
+  if (!/^\d{1,5}$/.test(portRaw)) {
+    throw new PairingUriError('invalid_field', '配对链接中的端口格式无效。', 'port');
+  }
+  const port = Number(portRaw);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new PairingUriError('invalid_field', `配对链接中的端口无效："${portRaw}"。`, 'port');
+  }
+
+  const secret = require('secret');
+  if (!isBase64UrlOfLength(secret, 32)) {
+    throw new PairingUriError('invalid_field', '配对密钥格式无效（应为 32 字节 base64url）。', 'secret');
+  }
+  const hostFingerprint = require('hostfp');
+  if (!isBase64UrlOfLength(hostFingerprint, 32)) {
+    throw new PairingUriError('invalid_field', '主机指纹格式无效（应为 43 位 base64url）。', 'hostfp');
+  }
+  const expiresAtSecondsRaw = require('exp');
+  if (!/^\d{1,12}$/.test(expiresAtSecondsRaw)) {
+    throw new PairingUriError('invalid_field', '配对链接的过期时间格式无效。', 'exp');
+  }
+  const expiresAt = Number(expiresAtSecondsRaw) * 1000;
+  if (!options.allowExpired && expiresAt <= now) {
+    throw new PairingUriError('expired', '配对二维码已过期，请在主机上重新生成。', 'exp');
+  }
+
+  const relayDomain = require('relay');
+  if (!HOSTNAME_RE.test(relayDomain) || relayDomain.length > 253) {
+    throw new PairingUriError('invalid_field', `配对链接中的中继域名无效："${relayDomain}"。`, 'relay');
+  }
+  const hostId = require('hostid');
+  if (!GROUP_HOST_ID_RE.test(hostId)) {
+    throw new PairingUriError('invalid_field', `配对链接中的主机 ID 无效："${hostId}"。`, 'hostid');
+  }
+
+  const hostname = hostnameOf(host);
+  const relayLower = relayDomain.toLowerCase();
+  const expectedHost = `${hostId}.${relayLower}`.toLowerCase();
+  if (hostname !== expectedHost) {
+    throw new PairingUriError(
+      'invalid_field',
+      `主机地址 "${host}" 与服务端下发的主机 ID/中继域名（${expectedHost}）不一致，链接可能被篡改。`,
+      'host',
+    );
+  }
+
+  return {
+    mode: 'group',
+    version: PAIRING_URI_VERSION_GROUP,
+    host: hostname,
+    port,
+    secret,
+    hostFingerprint,
+    expiresAt,
+    relayDomain: relayLower,
+    hostId,
+    raw,
+  };
+}
+
+/**
+ * Parse either a classic v1/mTLS URI or a v2/group URI.
+ * The returned object is discriminated by `mode`.
+ */
+export function parseAnyPairingUri(input: string, options: ParsePairingUriOptions = {}): AnyPairingUri {
+  const raw = input.trim().replace(/^["'<]+|["'>]+$/g, '').trim();
+  if (rawUriVersion(raw) === String(PAIRING_URI_VERSION_GROUP)) {
+    return parseGroupPairingUri(raw, options);
+  }
+  return { ...parsePairingUri(raw, options), mode: 'mtls' };
+}
+
+/** Serialize a v2 group pairing URI (dev tools / tests; never used by the normal UI). */
+export function buildGroupPairingUri(pairing: Omit<GroupPairingUri, 'raw' | 'mode' | 'version' | 'hostId' | 'relayDomain'> & {
+  relayDomain: string;
+  hostId: string;
+}): string {
+  const params = [
+    `v=${PAIRING_URI_VERSION_GROUP}`,
+    `host=${encodeURIComponent(pairing.host)}`,
+    `port=${pairing.port}`,
+    `secret=${encodeURIComponent(pairing.secret)}`,
+    `hostfp=${encodeURIComponent(pairing.hostFingerprint)}`,
+    `exp=${Math.floor(pairing.expiresAt / 1000)}`,
+    `auth=${PAIR_AUTH_TOKEN}`,
+    `relay=${encodeURIComponent(pairing.relayDomain)}`,
+    `hostid=${encodeURIComponent(pairing.hostId)}`,
+  ];
+  return `${PAIRING_SCHEME}://${PAIRING_AUTHORITY}?${params.join('&')}`;
+}
+
+// --- Group URLs -------------------------------------------------------------
+
+/** Origin of the group tunnel for a host/port (`https://<host>[:<port>]`, 443 omitted). */
+export function groupOrigin(host: string, port: number): string {
+  const safePort = Number.isInteger(port) && port > 0 && port <= 65535 ? port : 443;
+  return safePort === 443 ? `https://${host}` : `https://${host}:${safePort}`;
+}
+
+export function groupPairUrl(host: string, port: number): string {
+  return `${groupOrigin(host, port)}${REMOTE_PATHS.pair}`;
+}
+
+export function groupPairStatusUrl(host: string, port: number, ticket: string): string {
+  return `${groupOrigin(host, port)}${REMOTE_PATHS.pairStatus}?ticket=${encodeURIComponent(ticket)}`;
+}
+
+export function groupAuthChallengeUrl(host: string, port: number): string {
+  return `${groupOrigin(host, port)}${GROUP_PATHS.challenge}`;
+}
+
+export function groupAuthTokenUrl(host: string, port: number): string {
+  return `${groupOrigin(host, port)}${GROUP_PATHS.token}`;
+}
+
+/** Main WebView URL for group mode: same mobile shell, but with the assigned port. */
+export function groupWebUiUrl(host: string, port: number, options: { mobile?: boolean } = {}): string {
+  const mobile = options.mobile ?? true;
+  return `${groupOrigin(host, port)}/${mobile ? '?dsh_mobile=1' : ''}`;
+}
+
+// --- Group API payload types ------------------------------------------------
+
+export interface GroupPairRequestBody {
+  secret: string;
+  /** P-256 uncompressed point (65 bytes), base64url. */
+  publicKey: string;
+  deviceName: string;
+  platform: PairPlatform;
+}
+
+export interface GroupPairedDeviceData {
+  status: 'paired';
+  auth: 'token';
+  deviceId: string;
+  hostId: string;
+  relayDomain: string;
+  mobilePort: number;
+  devicePublicKey?: string;
+  hostName?: string;
+  hostFingerprint?: string;
+}
+
+export interface GroupPendingPairData {
+  status: 'pending';
+  ticket: string;
+  sas?: string;
+  expiresAt?: number;
+  hostName?: string;
+  hostFingerprint?: string;
+}
+
+export type GroupPairStartData = GroupPairedDeviceData | GroupPendingPairData;
+
+export type GroupPairTicketStatus = 'pending' | 'paired' | 'denied' | 'expired';
+
+export interface GroupPairStatusData {
+  status: GroupPairTicketStatus;
+  ticket?: string;
+  sas?: string;
+  expiresAt?: number;
+  deviceId?: string;
+  hostId?: string;
+  relayDomain?: string;
+  mobilePort?: number;
+  hostName?: string;
+  hostFingerprint?: string;
+  message?: string;
+}
+
+/** Short-lived edge session returned by `POST /__group/auth/token`. */
+export interface GroupSessionToken {
+  token: string;
+  /** Epoch ms when the token expires (refresh before this). */
+  expiresAt: number;
+}
+
+export interface GroupChallengeData {
+  nonce: string;
+  expiresAt: number;
+  hostId?: string;
+  deviceId?: string;
+}

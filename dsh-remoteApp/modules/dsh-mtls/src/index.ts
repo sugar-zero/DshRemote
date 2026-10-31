@@ -72,6 +72,37 @@ export interface P12ImportResult {
   nativeBuild?: string;
 }
 
+/** 群体版（A 模式）设备密钥：公钥为 base64url(未压缩 P-256 点，65 字节 0x04||X||Y)。 */
+export interface GroupDeviceKeyResult {
+  /** base64url(未压缩 P-256 点，65 字节)。 */
+  publicKey: string;
+  /** Keychain/Keystore alias（幂等 key 的稳定标识）。 */
+  label: string;
+  /** iOS：true = 私钥由 Secure Enclave 持有；false = 软件 Keychain 回退。Android 恒为 AndroidKeyStore。 */
+  secureEnclave?: boolean;
+  /** true = 复用了同 label 已存在的密钥（幂等，不会重新生成）。 */
+  reused: boolean;
+}
+
+/** 群体版 challenge 签名：base64url(X9.62 DER ECDSA-SHA256)。 */
+export interface GroupChallengeSignature {
+  signature: string;
+}
+
+/** 群体版会话 cookie 注入参数（`__Host-` host-only）。 */
+export interface GroupSessionCookieOptions {
+  /** 目标 origin，如 `https://<hostId>.<relayDomain>:<port>`。 */
+  url: string;
+  /** Cookie 名（群体版为 `__Host-dsh_session`）。 */
+  name: string;
+  /** 会话 token 值。 */
+  value: string;
+  /** 有效期（秒）。 */
+  maxAgeSeconds: number;
+  /** 必须 host-only（固定 true；不设 Domain）。 */
+  hostOnly?: true;
+}
+
 export interface DshMtlsDiagnostics {
   platform: 'ios' | 'android' | 'web';
   moduleAvailable: boolean;
@@ -110,6 +141,17 @@ interface NativeDshMtlsModule {
   clearWebCache(): Promise<boolean>;
   /** 在当前 mTLS WebView 里执行一段 JS（点推送后打开对应会话）。 */
   evaluateJavaScript(script: string): Promise<boolean>;
+  // ---- 群体服务版（A 模式，token 鉴权）----
+  /** 生成/复用 P-256 设备密钥（iOS Secure Enclave 优先，Android AndroidKeyStore）。 */
+  generateGroupDeviceKey?(label?: string): Promise<GroupDeviceKeyResult>;
+  /** 读取已存在的设备公钥；不存在返回 null。 */
+  getGroupDevicePublicKey?(label?: string): Promise<string | null>;
+  /** 用设备私钥对 challenge 原始字节做 ECDSA-SHA256 签名。 */
+  signGroupChallenge?(label: string, messageBase64: string): Promise<GroupChallengeSignature>;
+  /** 删除本机设备密钥（幂等）。 */
+  clearGroupDeviceKey?(label?: string): Promise<boolean>;
+  /** 把 relay 下发的短时 token 注入 WebView cookie（`__Host-` host-only）。 */
+  setSessionCookie?(options: GroupSessionCookieOptions): Promise<boolean>;
 }
 
 const nativeModule = requireOptionalNativeModule<NativeDshMtlsModule>(DSH_MTLS_MODULE_NAME);
@@ -270,6 +312,67 @@ export function getDshMtlsWebView(): React.ComponentType<DshMtlsWebViewProps> | 
     return null;
   }
 }
+
+// ---------------------------------------------------------------------------
+// 群体服务版（A 模式，token 鉴权）
+// ---------------------------------------------------------------------------
+// 群体版不签设备证书：配对时提交 P-256 公钥，之后用私钥签 relay challenge 换短时
+// token（15 分钟级），token 放进 `__Host-dsh_session` cookie（见 docs/group-service-design.zh.md §7）。
+// 私钥永远留在 Secure Enclave / AndroidKeyStore，不返回 JS。
+
+/** 群体版设备密钥的默认 label（与原生侧 `defaultLabel` 保持一致）。 */
+export const GROUP_DEVICE_KEY_LABEL = 'com.dsh.remote.group.device';
+
+/**
+ * 生成或复用群体版 P-256 设备密钥（幂等：同 label 已存在则返回既有公钥）。
+ * 返回的 publicKey 为 base64url(未压缩点，65 字节)，配对时提交给主机。
+ */
+export async function generateGroupDeviceKey(label?: string): Promise<GroupDeviceKeyResult> {
+  const module = requireModule();
+  if (typeof module.generateGroupDeviceKey !== 'function') {
+    throw new DshMtlsUnavailableError('原生模块未实现 generateGroupDeviceKey（需要重新构建 App）。');
+  }
+  return module.generateGroupDeviceKey(label);
+}
+
+/** 读取已存在的群体版设备公钥；原生模块未链接或未生成时返回 null。 */
+export async function getGroupDevicePublicKey(label?: string): Promise<string | null> {
+  if (!nativeModule || typeof nativeModule.getGroupDevicePublicKey !== 'function') return null;
+  return nativeModule.getGroupDevicePublicKey(label);
+}
+
+/** 用群体版设备私钥对 challenge 原始字节签名（返回 base64url(DER ECDSA-SHA256)）。 */
+export async function signGroupChallenge(label: string, messageBase64: string): Promise<GroupChallengeSignature> {
+  const module = requireModule();
+  if (typeof module.signGroupChallenge !== 'function') {
+    throw new DshMtlsUnavailableError('原生模块未实现 signGroupChallenge（需要重新构建 App）。');
+  }
+  return module.signGroupChallenge(label, messageBase64);
+}
+
+/** 删除群体版设备密钥（解除配对/换身份时用；幂等）。 */
+export async function clearGroupDeviceKey(label?: string): Promise<boolean> {
+  if (!nativeModule || typeof nativeModule.clearGroupDeviceKey !== 'function') return false;
+  return nativeModule.clearGroupDeviceKey(label);
+}
+
+/**
+ * 把 relay 下发的短时会话 token 注入 WebView cookie（`__Host-`，host-only）。
+ *
+ * 注意：iOS 的 `HTTPCookie` 属性 API 无法表达 HttpOnly（WebKit 不允许程序化设置）；
+ * 生产流程应让 relay 的 `Set-Cookie` 在 WebView 内发请求时写入（带 HttpOnly），
+ * 本函数用于 native 侧直接注入/续期（Secure / SameSite=Strict / host-only 仍生效）。
+ */
+export async function setGroupSessionCookie(options: GroupSessionCookieOptions): Promise<boolean> {
+  const module = requireModule();
+  if (typeof module.setSessionCookie !== 'function') {
+    throw new DshMtlsUnavailableError('原生模块未实现 setSessionCookie（需要重新构建 App）。');
+  }
+  return module.setSessionCookie(options);
+}
+
+/** 与原生函数名保持一致的别名（App 侧可任选 setGroupSessionCookie / setSessionCookie）。 */
+export const setSessionCookie = setGroupSessionCookie;
 
 /**
  * Standard Keychain/Keystore label for this app's device identity. Keeping it

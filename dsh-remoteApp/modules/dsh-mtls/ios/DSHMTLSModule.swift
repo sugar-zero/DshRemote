@@ -14,6 +14,13 @@
 //   installCertificate(certPem,label)   — 安装主机签发的证书并关联设备私钥
 //   requestWithClientCert(options)       — 用设备身份发 HTTPS 请求（push token / pair status）
 //   getDiagnostics()                    — label / presence / subject / expiry
+//
+// 群体服务版（A 模式，token 鉴权；与 mTLS 并存）：
+//   generateGroupDeviceKey(label?)       — P-256 设备密钥（Secure Enclave 优先，幂等）
+//   getGroupDevicePublicKey(label?)      — 读取已存在的设备公钥（base64url 未压缩点）
+//   signGroupChallenge(label, messageB64) — ECDSA-SHA256 签 relay challenge（DER→base64url）
+//   clearGroupDeviceKey(label?)          — 删除设备密钥
+//   setSessionCookie({url,name,value,...}) — 注入 `__Host-` 会话 cookie（Secure/SameSite=Strict/host-only）
 
 import Dispatch
 import ExpoModulesCore
@@ -59,6 +66,76 @@ public final class DSHMTLSModule: Module {
     AsyncFunction("installCertificate") { (certPem: String, label: String?) -> [String: Any?] in
       let resolvedLabel = label ?? DSHMTLSIdentityStore.shared.configuredLabel ?? "com.dsh.remote.device"
       return try DSHMTLSIdentityStore.shared.installCertificate(certPem: certPem, label: resolvedLabel)
+    }
+
+    // MARK: - 群体服务版（A 模式）：P-256 设备密钥 / challenge 签名 / 会话 cookie
+    //
+    // 与主线 mTLS 身份并存：群体版不签设备证书，而是把 P-256 公钥登记到主机/relay，
+    // 之后用私钥签 relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
+
+    /// 生成或复用群体版 P-256 设备密钥；返回 base64url 未压缩点公钥（65B）与是否 Secure Enclave。
+    AsyncFunction("generateGroupDeviceKey") { (label: String?) -> [String: Any] in
+      let result = try DSHMTLSGroupKeys.generate(label: label)
+      return [
+        "publicKey": result.publicKey,
+        "label": result.label,
+        "secureEnclave": result.secureEnclave,
+        "reused": result.reused,
+      ]
+    }
+
+    /// 读取已存在的群体版设备公钥；不存在返回 nil。
+    AsyncFunction("getGroupDevicePublicKey") { (label: String?) -> String? in
+      try DSHMTLSGroupKeys.publicKey(label: label)
+    }
+
+    /// 用群体版设备私钥对 message 的原始字节做 ECDSA-SHA256（X9.62 DER），返回 base64url(DER)。
+    AsyncFunction("signGroupChallenge") { (label: String, messageBase64: String) -> [String: Any] in
+      let signature = try DSHMTLSGroupKeys.sign(label: label, messageBase64: messageBase64)
+      return ["signature": signature]
+    }
+
+    /// 删除群体版设备密钥（换身份/重置时用）。
+    AsyncFunction("clearGroupDeviceKey") { (label: String?) -> Bool in
+      DSHMTLSGroupKeys.clear(label: label)
+    }
+
+    /// 把 relay 下发的短时会话 token 写成 `__Host-` host-only cookie（群体版鉴权）。
+    ///
+    /// 说明：iOS 的 `HTTPCookie` 属性 API 无法表达 **HttpOnly**（WebKit 不允许程序化设置
+    /// HttpOnly cookie）；HttpOnly 由 relay 的 `Set-Cookie` 在 WebView 内发请求时写入
+    /// （见设计文档 §7），本方法用于 native 侧直接注入/续期。Secure / SameSite=Strict /
+    /// Path=/ / host-only（不设 domain）均可表达。
+    AsyncFunction("setSessionCookie") { (options: [String: Any], promise: Promise) in
+      guard let urlString = options["url"] as? String,
+            let url = URL(string: urlString),
+            let name = options["name"] as? String, !name.isEmpty,
+            let value = options["value"] as? String else {
+        promise.reject("invalid-cookie-options", "setSessionCookie 需要 { url, name, value }")
+        return
+      }
+      let maxAgeSeconds = (options["maxAgeSeconds"] as? NSNumber)?.doubleValue ?? 15 * 60
+      DispatchQueue.main.async {
+        var properties: [HTTPCookiePropertyKey: Any] = [
+          .name: name,
+          .value: value,
+          .path: "/",
+          .secure: "TRUE",
+          .discard: "FALSE",
+          .maximumAge: maxAgeSeconds,
+          .originURL: url,
+        ]
+        if #available(iOS 13.0, *) {
+          properties[.sameSitePolicy] = HTTPCookieStringPolicy.sameSiteStrict
+        }
+        guard let cookie = HTTPCookie(properties: properties) else {
+          promise.reject("cookie-build-failed", "无法构造 HTTPCookie（url/name/value 是否合法？）")
+          return
+        }
+        WKWebsiteDataStore.default().httpCookieStore.setCookie(cookie) {
+          promise.resolve(true)
+        }
+      }
     }
 
     // MARK: - Authenticated HTTPS (client certificate)

@@ -38,7 +38,10 @@ class DshMtlsModule : Module() {
     Name("DSHMTLS")
 
     OnCreate {
-      appContext.reactContext?.let { DshMtlsIdentityStore.initialize(it) }
+      appContext.reactContext?.let {
+        DshMtlsIdentityStore.initialize(it)
+        DshMtlsGroupKeys.initialize(it)
+      }
     }
 
     // MARK: - Identity configuration
@@ -97,6 +100,59 @@ class DshMtlsModule : Module() {
       val alias = label ?: DshMtlsIdentityStore.configuredLabel
         ?: throw DshMtlsIdentityException("没有可用的设备身份 alias。")
       DshMtlsIdentityStore.installCertificate(context, certPem, alias)
+    }
+
+    // MARK: - 群体服务版（A 模式）：P-256 设备密钥 / challenge 签名 / 会话 cookie
+    //
+    // 与主线 mTLS 身份并存：群体版不签设备证书，只登记 P-256 公钥，之后用私钥签
+    // relay challenge 换短时 token（docs/group-service-design.zh.md §7）。
+
+    /// 生成或复用群体版 P-256 设备密钥；返回 base64url 未压缩点公钥（65B）。
+    AsyncFunction("generateGroupDeviceKey") { label: String? ->
+      val result = DshMtlsGroupKeys.generate(label)
+      mapOf(
+        "publicKey" to result.publicKey,
+        "label" to result.label,
+        "reused" to result.reused
+      )
+    }
+
+    /// 读取已存在的群体版设备公钥；不存在返回 null。
+    AsyncFunction("getGroupDevicePublicKey") { label: String? ->
+      DshMtlsGroupKeys.getPublicKey(label)
+    }
+
+    /// 用群体版设备私钥对 message 原始字节做 ECDSA-SHA256（X9.62 DER），返回 base64url(DER)。
+    AsyncFunction("signGroupChallenge") { label: String, messageBase64: String ->
+      mapOf("signature" to DshMtlsGroupKeys.sign(label, messageBase64))
+    }
+
+    /// 删除群体版设备密钥（换身份/重置时用；幂等）。
+    AsyncFunction("clearGroupDeviceKey") { label: String? ->
+      DshMtlsGroupKeys.clear(label)
+    }
+
+    /// 把 relay 下发的短时会话 token 写成 `__Host-` host-only cookie（群体版鉴权）。
+    /// 不设置 Domain 即 host-only；Secure / HttpOnly / SameSite=Strict 由 CookieManager 字符串写入。
+    AsyncFunction("setSessionCookie") { options: Map<String, Any?> ->
+      val url = options["url"] as? String
+        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
+      val name = options["name"] as? String
+        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
+      val value = options["value"] as? String
+        ?: throw DshMtlsIdentityException("setSessionCookie 需要 { url, name, value }")
+      if (name.isEmpty()) throw DshMtlsIdentityException("setSessionCookie 的 name 不能为空")
+      val maxAgeSeconds = (options["maxAgeSeconds"] as? Number)?.toLong() ?: (15 * 60L)
+      val cookie = buildString {
+        append(name)
+        append('=')
+        append(value)
+        append("; Path=/; Secure; HttpOnly; SameSite=Strict; Max-Age=")
+        append(maxAgeSeconds)
+      }
+      CookieManager.getInstance().setCookie(url, cookie)
+      CookieManager.getInstance().flush()
+      true
     }
 
     // MARK: - Authenticated HTTPS (client certificate)

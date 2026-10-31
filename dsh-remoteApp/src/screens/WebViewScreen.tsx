@@ -46,9 +46,10 @@ import {
 import { WebView, type WebViewNavigation, type WebViewProps } from 'react-native-webview';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
-import { restartHostUrl, webUiUrl } from '../lib/protocol';
+import { groupOrigin, groupWebUiUrl, restartHostUrl, webUiUrl } from '../lib/protocol';
 import { MOBILE_WEB_SHELL_JS } from '../lib/mobileWebShell';
-import type { StoredConnection } from '../lib/store';
+import { connectionAuthMode, connectionPort, type StoredConnection } from '../lib/store';
+import { ensureGroupSessionIfNeeded, GroupPairingError, hasValidGroupSession } from '../lib/group';
 import {
   DshMtlsUnavailableError,
   evaluateJavaScript,
@@ -202,9 +203,20 @@ function hostIdOf(host: string): string {
 
 /** The host's relay domain is the only origin this WebView may navigate to. */
 function isTunnelUrl(url: string, host: string): boolean {
-  const httpsPrefix = `https://${host}/`;
-  const bareHost = `https://${host}`;
-  return url === bareHost || url.startsWith(httpsPrefix);
+  // 群体版/ token 模式的地址带显式端口（https://<fqdn>:<mobilePort>/），而 classic 是
+  // 默认 443，不能再用 `https://${host}/` 前缀比较（否则所有页面内导航会被当成外链，
+  // 被塞进内嵌浏览器 → 出现「跳新网址、返回上一页、手机端侧栏逻辑消失」）。
+  try {
+    const target = new URL(url);
+    if (target.protocol !== 'https:' && target.protocol !== 'http:') return false;
+    const wanted = host.trim().toLowerCase();
+    const wantedHost = wanted.includes(':') && !wanted.startsWith('[')
+      ? wanted.slice(0, wanted.indexOf(':'))
+      : wanted;
+    return target.hostname.toLowerCase() === wantedHost;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -229,12 +241,22 @@ export function WebViewScreen({
   onOpenExternal,
 }: WebViewScreenProps) {
   const insets = useSafeAreaInsets();
+  // 群体服务版（A 模式）：token 认证 + 服务端下发端口；旧记录/classic 一律按 mTLS 处理。
+  const authMode = connectionAuthMode(connection);
+  const isTokenAuth = authMode === 'token';
+  const tunnelPort = isTokenAuth ? connectionPort(connection) : 443;
+  const pageUrl = isTokenAuth ? groupWebUiUrl(connection.host, tunnelPort) : webUiUrl(connection.host);
+  const pageOrigin = isTokenAuth ? groupOrigin(connection.host, tunnelPort) : `https://${connection.host}`;
   const webViewRef = useRef<WebView | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [pageTitle, setPageTitle] = useState<string>('DSH');
-  const [currentUrl, setCurrentUrl] = useState(() => webUiUrl(connection.host));
+  const [currentUrl, setCurrentUrl] = useState(() => pageUrl);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
   const [reloadKey, setReloadKey] = useState(0);
+  // 群体版会话：token 只在内存 + 注入 __Host- cookie（不持久化、不打印）。
+  const [groupSessionReady, setGroupSessionReady] = useState(() => !isTokenAuth);
+  const [groupSessionError, setGroupSessionError] = useState<string | null>(null);
+  const groupSessionRef = useRef<{ token: string; expiresAt: number } | null>(null);
 
   // WebSocket 断开后的自动恢复；隐藏时先记下，等页面重新可见再 reload。
   const [wsRecoveryPending, setWsRecoveryPending] = useState(false);
@@ -276,6 +298,8 @@ export function WebViewScreen({
   // 原生 WebView 崩溃 / 被系统回收后的自动重建预算：60s 内最多 2 次，
   // 避免“重建 → 又崩溃 → 再重建”的死循环（超出后保留错误条，交给用户手动重试）。
   const nativeRecoveryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
+  /** 群体版：页面首次加载偶发 401（主机重连、relay 设备表瞬时为空）时自动重试一次。 */
+  const groupHttpAuthRetryRef = useRef<{ count: number; since: number }>({ count: 0, since: 0 });
 
   const NativeMtlsWebView = useMemo(() => getDshMtlsWebView(), []);
   /**
@@ -283,9 +307,9 @@ export function WebViewScreen({
    * identity label exist. Without a cert the native view would behave like a
    * plain WebView; plain RN WebView is better for the POC until then.
    */
-  const useNativeMtlsView = NativeMtlsWebView !== null && Boolean(connection.certRef);
+  const useNativeMtlsView = !isTokenAuth && NativeMtlsWebView !== null && Boolean(connection.certRef);
 
-  const reload = useCallback(() => {
+  const performReload = useCallback(() => {
     // 「刷新」也是重新读取 Host 组件开关的时机：改了设置后不用退出主机再进。
     refreshRestartAvailabilityRef.current();
     // 重新加载期间旧文档即将被替换：打开会话的注入必须等新页面加载完成。
@@ -306,6 +330,89 @@ export function WebViewScreen({
     }
     webViewRef.current?.reload();
   }, [useNativeMtlsView]);
+
+  /**
+   * 群体版会话保活：challenge → 原生签名 → 短时 token → `__Host-dsh_session` cookie。
+   * 进入主机/回前台/每 30s 调一次；缓存有效时只重放 cookie，不重复请求。
+   */
+  const ensureGroupSessionForConnection = useCallback(async (forceRefresh = false): Promise<boolean> => {
+    if (!isTokenAuth) return true;
+    try {
+      const session = await ensureGroupSessionIfNeeded(
+        {
+          host: connection.host,
+          port: tunnelPort,
+          hostId: connection.hostId ?? '',
+          deviceId: connection.deviceId,
+          label: connection.certRef ?? '',
+        },
+        { forceRefresh },
+      );
+      groupSessionRef.current = session;
+      setGroupSessionReady(true);
+      setGroupSessionError(null);
+      return true;
+    } catch (error) {
+      const pairingError = error instanceof GroupPairingError ? error : undefined;
+      const rawMessage = error instanceof Error ? error.message : '无法获取访问令牌。';
+      // relay 明确返回 unknown_device：这台设备已在主机侧被撤销/重置（通常是主机删了旧设备、
+      // 手机上还留着旧连接），继续重试无意义，直接引导重新配对。
+      const deviceGone = pairingError?.code === 'http'
+        && (pairingError.status === 404 || /not registered|unknown device/i.test(rawMessage));
+      const message = deviceGone
+        ? '这台设备已在主机侧失效（被删除或重置）。\n请返回主机列表删除该主机，然后用 DSH「远程访问」里的新二维码重新配对。'
+        : rawMessage;
+      setGroupSessionError(`无法获取访问令牌：${message}`);
+      setGroupSessionReady(false);
+      return false;
+    }
+  }, [connection.certRef, connection.deviceId, connection.host, connection.hostId, isTokenAuth, tunnelPort]);
+
+  /**
+   * 刷新前先确保群体版 token 有效（classic 路径保持原样，直接 reload）。
+   */
+  const reload = useCallback(() => {
+    if (!isTokenAuth) {
+      performReload();
+      return;
+    }
+    const valid = hasValidGroupSession({
+      host: connection.host,
+      port: tunnelPort,
+      deviceId: connection.deviceId,
+    });
+    if (valid && groupSessionRef.current) {
+      performReload();
+      return;
+    }
+    void ensureGroupSessionForConnection().then((ok) => {
+      if (ok) performReload();
+    });
+  }, [connection.deviceId, connection.host, ensureGroupSessionForConnection, isTokenAuth, performReload, tunnelPort]);
+
+  // 群体版：首次进入 / 重新可见 / 回前台 / 定时续期前确保 token 有效。
+  useEffect(() => {
+    if (!isTokenAuth) return undefined;
+    void ensureGroupSessionForConnection();
+    const timer = setInterval(() => {
+      void ensureGroupSessionForConnection();
+    }, 30_000);
+    return () => clearInterval(timer);
+  }, [ensureGroupSessionForConnection, isTokenAuth]);
+
+  useEffect(() => {
+    if (!isTokenAuth || !isVisible) return undefined;
+    void ensureGroupSessionForConnection();
+    return undefined;
+  }, [ensureGroupSessionForConnection, isTokenAuth, isVisible]);
+
+  useEffect(() => {
+    if (!isTokenAuth) return undefined;
+    const subscription = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active') void ensureGroupSessionForConnection();
+    });
+    return () => subscription.remove();
+  }, [ensureGroupSessionForConnection, isTokenAuth]);
 
   /**
    * 执行「打开推送对应会话」的注入脚本。
@@ -411,6 +518,7 @@ export function WebViewScreen({
     loadingRef.current = false;
     loadedRef.current = true;
     statusRef.current = 'online';
+    groupHttpAuthRetryRef.current = { count: 0, since: 0 };
     setStatus('online');
     setErrorMessage(null);
     flushOpenSession();
@@ -456,6 +564,7 @@ export function WebViewScreen({
     loadingRef.current = false;
     loadedRef.current = true;
     statusRef.current = 'online';
+    groupHttpAuthRetryRef.current = { count: 0, since: 0 };
     setStatus('online');
     setErrorMessage(null);
     flushOpenSession();
@@ -479,17 +588,40 @@ export function WebViewScreen({
   const handleHttpError = useCallback((statusCode: number) => {
     loadingRef.current = false;
     statusRef.current = 'error';
+    if (isTokenAuth && (statusCode === 401 || statusCode === 403)) {
+      // 首次进入/主机重连时偶发：token 刚签发但 relay 设备表/隧道还在恢复，页面请求 401。
+      // 自动刷新一次会话再 reload，避免用户必须「返回再进」。
+      const now = Date.now();
+      const state = groupHttpAuthRetryRef.current;
+      if (now - state.since > 60_000) {
+        state.count = 0;
+        state.since = now;
+      }
+      if (state.count < 1) {
+        state.count += 1;
+        setStatus('connecting');
+        setErrorMessage('会话正在刷新，正在自动重试…');
+        globalThis.setTimeout(() => {
+          void ensureGroupSessionForConnection(true).then((ok) => {
+            if (ok) performReload();
+          });
+        }, 800);
+        return;
+      }
+    }
     if (statusCode === 401 || statusCode === 403) {
       setStatus('error');
       setErrorMessage(
-        '主机拒绝了连接（HTTP 403）：这通常意味着请求没有携带有效的设备证书。' +
-          '请确认已完成配对，并使用包含原生 mTLS WebView 的构建（见 README）。',
+        isTokenAuth
+          ? `主机拒绝了连接（HTTP ${statusCode}）。会话可能已失效，请点「重试」重新获取访问令牌。`
+          : '主机拒绝了连接（HTTP 403）：这通常意味着请求没有携带有效的设备证书。' +
+              '请确认已完成配对，并使用包含原生 mTLS WebView 的构建（见 README）。',
       );
       return;
     }
     setStatus('error');
     setErrorMessage(`主机返回 HTTP ${statusCode}。`);
-  }, []);
+  }, [ensureGroupSessionForConnection, isTokenAuth, performReload]);
 
   /**
    * 收到注入层 / host 插件的桥消息：
@@ -579,6 +711,11 @@ export function WebViewScreen({
    * - 请求失败 / 未就绪 → 先按启用处理（旧行为），避免网络抖动把按钮永久藏掉。
    */
   const refreshRestartAvailability = useCallback(async () => {
+    if (isTokenAuth) {
+      // 群体版目前不支持远程「重启主机」组件（Host 侧返回 501）。
+      setRestartAvailable(false);
+      return;
+    }
     if (!useNativeMtlsView || !connection.certRef) {
       setRestartAvailable(null);
       return;
@@ -602,7 +739,7 @@ export function WebViewScreen({
     } catch {
       // 网络抖动/主机重启中：保持上一次已知状态；页面加载完成/WS 重连后会再刷新。
     }
-  }, [connection.certRef, connection.host, useNativeMtlsView]);
+  }, [connection.certRef, connection.host, isTokenAuth, useNativeMtlsView]);
 
   refreshRestartAvailabilityRef.current = refreshRestartAvailability;
   // 进入主机 / 回到前台时刷新组件状态：Host 侧刚关闭时，重新进入主机即可隐藏按钮。
@@ -882,7 +1019,7 @@ export function WebViewScreen({
             正在使用原生 mTLS WebView（Keychain 身份：{connection.certRef}）
           </Text>
         ) : null
-      ) : (
+      ) : isTokenAuth ? null : (
         <Pressable style={styles.warningBar} onPress={reload}>
           <Text style={styles.warningText}>
             ⚠️ POC：当前使用 react-native-webview，不会出示设备证书；主机要求 mTLS 时页面会显示
@@ -892,7 +1029,20 @@ export function WebViewScreen({
       )}
 
       <View style={styles.webviewWrap}>
-        {useNativeMtlsView && NativeMtlsWebView ? (
+        {isTokenAuth && !groupSessionReady ? (
+          <View style={styles.loadingOverlay}>
+            <ActivityIndicator color={colors.accent} size="large" />
+            <Text style={styles.loadingText}>{groupSessionError ?? '正在获取访问令牌…'}</Text>
+            {groupSessionError ? (
+              <TouchableOpacity
+                style={styles.retryButton}
+                onPress={() => { void ensureGroupSessionForConnection(true); }}
+              >
+                <Text style={styles.retryText}>重试</Text>
+              </TouchableOpacity>
+            ) : null}
+          </View>
+        ) : useNativeMtlsView && NativeMtlsWebView ? (
           <NativeMtlsWebView
             key={reloadKey}
             url={webUiUrl(connection.host)}
@@ -914,11 +1064,11 @@ export function WebViewScreen({
           <DshWebView
             key={reloadKey}
             ref={webViewRef}
-            source={{ uri: webUiUrl(connection.host) }}
+            source={{ uri: pageUrl }}
             injectedJavaScript={MOBILE_WEB_SHELL_JS}
             style={styles.webview}
-            // A secure, cookie-less origin: the host proxies with its own session.
-            sharedCookiesEnabled={false}
+            // classic：不共享 cookie（主机代持会话）；群体版：必须共享以带上 __Host- token cookie。
+            sharedCookiesEnabled={isTokenAuth}
             thirdPartyCookiesEnabled={false}
             javaScriptEnabled
             domStorageEnabled
@@ -938,7 +1088,7 @@ export function WebViewScreen({
               </View>
             )}
             // Never allow http:// downgrades or arbitrary origins inside the shell.
-            originWhitelist={[`https://${connection.host}`]}
+            originWhitelist={[pageOrigin]}
             mixedContentMode="never"
             setSupportMultipleWindows={false}
             onMessage={(event) => handleBridgeMessage(event.nativeEvent.data)}
@@ -955,6 +1105,18 @@ export function WebViewScreen({
           <View style={styles.errorBarOverlay}>
             <Text style={styles.errorText}>{errorMessage}</Text>
             <TouchableOpacity style={styles.retryButton} onPress={reload}>
+              <Text style={styles.retryText}>重试</Text>
+            </TouchableOpacity>
+          </View>
+        ) : null}
+
+        {isTokenAuth && groupSessionError && groupSessionReady ? (
+          <View style={styles.errorBarOverlay}>
+            <Text style={styles.errorText}>{groupSessionError}</Text>
+            <TouchableOpacity
+              style={styles.retryButton}
+              onPress={() => { void ensureGroupSessionForConnection(true); }}
+            >
               <Text style={styles.retryText}>重试</Text>
             </TouchableOpacity>
           </View>

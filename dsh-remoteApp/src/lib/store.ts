@@ -101,6 +101,15 @@ export interface StoredConnection {
   certRef?: string;
   /** Host display name returned by the pairing response, if any. */
   hostName?: string;
+  /**
+   * 群体版（A 模式）认证方式：'mtls' = classic 设备证书；'token' = P-256 设备密钥 +
+   * 短时 token + `__Host-dsh_session` cookie。旧记录缺省按 'mtls' 处理。
+   */
+  authMode?: 'mtls' | 'token';
+  /** 群体版：服务端下发的手机访问端口（默认 11443）；classic 无。 */
+  port?: number;
+  /** 群体版：服务端分配的主机 ID（`h_...`）。 */
+  hostId?: string;
   /** Epoch ms when pairing completed. */
   pairedAt: number;
   /**
@@ -139,6 +148,19 @@ export function connectionKey(connection: StoredConnection): string {
 /** 两条配对记录是否指向同一台主机上的同一设备。 */
 export function isSameConnection(a: StoredConnection, b: StoredConnection): boolean {
   return connectionIdentity(a) === connectionIdentity(b);
+}
+
+/**
+ * 认证方式；旧记录（没有 authMode 字段）一律按 classic mTLS 处理。
+ */
+export function connectionAuthMode(connection: Pick<StoredConnection, 'authMode'>): 'mtls' | 'token' {
+  return connection.authMode === 'token' ? 'token' : 'mtls';
+}
+
+/** 群体版端口（非法/缺省回退 443；classic 记录不使用该字段）。 */
+export function connectionPort(connection: Pick<StoredConnection, 'port'>): number {
+  const port = Number(connection.port ?? 0);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : 443;
 }
 
 /**
