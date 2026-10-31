@@ -591,6 +591,21 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    证书路径不同时，用 `RELAY_TLS_CERT_FILE` / `RELAY_TLS_KEY_FILE` /
    `RELAY_GROUP_EDGE_CERT_FILE` / `RELAY_GROUP_EDGE_KEY_FILE` 指定（容器内路径）。
 
+   **两张证书分别是什么**：
+
+   | 目录 | 证书 | 覆盖域名 | 用途 |
+   |---|---|---|---|
+   | `data/certs/<RELAY_DOMAIN>/` | 控制面证书 | `<RELAY_DOMAIN>`（apex） | 主机 WSS 隧道、注册 API、部署方后台 |
+   | `data/certs/wildcard/` | **边缘通配证书** | `*.<RELAY_DOMAIN>` | 手机访问 `<hostId>.<RELAY_DOMAIN>`；relay 用它终止手机 TLS |
+
+   - `fullchain.pem` = 证书 + 中间链，`privkey.pem` = 对应私钥；生产必须用公网 CA（Let's Encrypt/ZeroSSL 等），
+     手机才信任；自签只适合 POC。
+   - 通配证书**只能 DNS-01 签发**（`*.domain` 无法用 HTTP-01）：
+     `acme.sh --issue --dns dns_xxx -d '<RELAY_DOMAIN>' -d '*.<RELAY_DOMAIN>'`，再 install 到对应目录。
+   - 也可以申请一张同时含 `<RELAY_DOMAIN>` 与 `*.<RELAY_DOMAIN>` 的 SAN 证书，
+     把同一对文件复制到两个目录，省一张证书。
+   - 私钥权限 `600`、目录 `700`，并确保容器用户（默认 uid 100）可读。
+
    **端口只分两类：★ 公网入口（要放行/转发） vs 内部端口（不要放行）**：
 
    | 变量 | 谁访问 | 直连（无 nginx） | nginx 前置（推荐） | ★ 要放行/转发？ |
