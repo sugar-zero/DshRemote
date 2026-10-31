@@ -10,7 +10,7 @@ import { DshProxy } from './proxy.js';
 import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 
 /**
  * 会影响「群体运行时（隧道 / loopback 代理 / 配对）」装配的配置字段。
@@ -402,6 +402,17 @@ export class RemoteService {
     const changedKeys = Object.keys(requested).filter((key) => !configValuesEqual(previous[key], this.config[key]));
     const applied = changedKeys.some((key) => RUNTIME_CONFIG_KEYS.includes(key));
     if (applied) await this.#apply();
+
+    // 「组件」开关变化时，隧道本身不重建（避免保存慢/失败），但要让 App 立刻感知：
+    // 主动断开当前 loopback 客户端连接 → App 的 WebView WS 断线自动重载 → 重新拉 status →
+    // 顶栏 ⏻ 立即出现/消失（等价单机版「主机保存 → App 立即刷新」，不用等轮询/退出重进）。
+    if (!applied && changedKeys.includes('restartHostEnabled')) {
+      const dropped = this.groupRuntime?.closeUpgradedConnections?.() ?? 0;
+      this.log(
+        `config: restartHostEnabled=${this.config.restartHostEnabled}；`
+        + `已断开 ${dropped} 条 WebSocket 连接以触发 App 即时刷新`,
+      );
+    }
 
     const errors = applied ? validateConfig(this.config) : [];
     if (errors.length > 0) this.log(`config: 保存后校验未通过: ${errors.join('; ')}`);

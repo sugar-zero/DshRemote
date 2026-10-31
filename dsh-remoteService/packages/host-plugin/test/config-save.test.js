@@ -150,8 +150,10 @@ test('仅改 restartHostEnabled：只持久化，不 stop/重建 group 运行时
       // 模拟「正在运行的群体运行时」：只关心它是否被 #apply 停掉/替换
       const fakeRuntime = {
         stopped: 0,
+        closedClients: 0,
         config: { restartHostEnabled: false },
         async stop() { this.stopped += 1; },
+        closeUpgradedConnections() { this.closedClients += 1; return 1; },
         status() { return { registered: false, connected: false }; },
       };
       service.groupRuntime = fakeRuntime;
@@ -170,6 +172,7 @@ test('仅改 restartHostEnabled：只持久化，不 stop/重建 group 运行时
         true,
         '运行中实例的 config 引用应同步（隧道内 status/restart 立即生效，不等下次重建）',
       );
+      assert.equal(fakeRuntime.closedClients, 1, '组件开关变化应断开 WebSocket 连接以触发 App 即时刷新');
 
       // 对照：运行时相关字段变化才 rebuild（此时 enabled=false→true，会先 stop 旧 fake runtime）
       const next = await service.updateConfig({ enabled: true });

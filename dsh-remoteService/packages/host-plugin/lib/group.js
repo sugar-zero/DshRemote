@@ -172,6 +172,10 @@ export class GroupHostRuntime {
     /** @type {http.Server | undefined} */
     this.plainServer = undefined;
     this.plainPort = 0;
+    /** 活跃的 loopback 代理连接（全部）。 */
+    this.plainSockets = new Set();
+    /** 活跃的 Upgrade（WebSocket）连接——组件开关变化时只断开这些，触发 App 即时刷新。 */
+    this.plainUpgradeSockets = new Set();
     /** @type {RelayConnector | undefined} */
     this.connector = undefined;
     this.lastError = null;
@@ -341,12 +345,18 @@ export class GroupHostRuntime {
     // 把 upgrade 交给 'upgrade' 事件，没有监听器会直接销毁 socket，页面表现为「暂无会话 /
     // 重新连接中」。这里与 #handlePlain 同一套鉴权后交给 DshProxy.handleUpgrade。
     this.plainServer.on('upgrade', (req, socket, head) => {
+      this.plainUpgradeSockets.add(socket);
+      socket.once('close', () => this.plainUpgradeSockets.delete(socket));
       this.#handlePlainUpgrade(req, socket, head).catch((error) => {
         this.log(`group: plain upgrade proxy error: ${error && error.message ? error.message : String(error)}`);
         if (!socket.destroyed) socket.destroy();
       });
     });
     this.plainServer.on('error', (error) => this.log(`group: plain proxy server error: ${error.code ?? error.message}`));
+    this.plainServer.on('connection', (socket) => {
+      this.plainSockets.add(socket);
+      socket.once('close', () => this.plainSockets.delete(socket));
+    });
     await new Promise((resolve, reject) => {
       this.plainServer.once('error', reject);
       this.plainServer.listen(Number(this.config.groupPlainPort) || 0, '127.0.0.1', () => {
@@ -382,6 +392,27 @@ export class GroupHostRuntime {
   }
 
   /** 停止隧道与明文代理。 */
+  /**
+   * 主动断开当前 loopback 代理的 Upgrade（WebSocket）连接。
+   *
+   * 用途：配置保存后（如切换「允许手机重启主机」组件）让 App 的 WebView WS 立刻断开，
+   * App 的 ws-close 自动恢复会重载页面并重新拉 `/__dsh_remote/status`，从而像单机版一样
+   * 「主机保存 → App 立刻刷新顶栏 ⏻」，而不需要退出主机或等轮询。
+   *
+   * 只断 WS/Upgrade 连接：relay↔主机隧道与普通 HTTP keep-alive 不受影响，重连后继续用同一
+   * plain 端口。
+   * @returns {number} 断开的连接数
+   */
+  closeUpgradedConnections() {
+    let count = 0;
+    for (const socket of [...this.plainUpgradeSockets]) {
+      count += 1;
+      try { socket.destroy(); } catch { /* ignore */ }
+    }
+    this.plainUpgradeSockets.clear();
+    return count;
+  }
+
   async stop() {
     this.closed = true;
     this.connector?.stop();
@@ -397,6 +428,8 @@ export class GroupHostRuntime {
         try { server.closeAllConnections?.(); } catch { /* ignore */ }
       });
     }
+    this.plainSockets.clear();
+    this.plainUpgradeSockets.clear();
   }
 
   status() {
