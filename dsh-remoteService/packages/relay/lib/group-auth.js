@@ -225,9 +225,16 @@ export class GroupAuthService {
     const id = String(deviceId ?? '');
     if (!isValidGroupDeviceId(id)) throw new GroupAuthError('invalid_request', 'invalid deviceId', { status: 400 });
     if (!this.hasDevice(hostId, id)) throw new GroupAuthError('unknown_device', 'device is not registered for this host', { status: 404 });
+    const now = this.now();
+    // 清理过期 challenge，避免 map 增长
+    for (const [key, entry] of this.challenges) {
+      if (entry.expiresAt <= now) this.challenges.delete(key);
+    }
     const nonce = newGroupChallenge();
-    const expiresAt = this.now() + this.challengeTtlMs;
-    this.challenges.set(`${hostId}\u0000${id}`, { hostId, deviceId: id, nonce, expiresAt });
+    const expiresAt = now + this.challengeTtlMs;
+    // 同一设备允许多个未消费的 nonce：App 可能并发/重复请求 challenge，
+    // 不能互相覆盖，否则 token 会因 nonce 不匹配而 401（诊断时实际遇到过）。
+    this.challenges.set(`${hostId}\u0000${id}\u0000${nonce}`, { hostId, deviceId: id, nonce, expiresAt });
     return { ok: true, hostId, deviceId: id, nonce, expiresAt };
   }
 
@@ -241,12 +248,12 @@ export class GroupAuthService {
     if (!isValidGroupDeviceId(id)) throw new GroupAuthError('invalid_request', 'invalid deviceId', { status: 400 });
     const publicKey = this.getDevicePublicKey(hostId, id);
     if (!publicKey) throw new GroupAuthError('unknown_device', 'device is not registered for this host', { status: 404 });
-    const key = `${hostId}\u0000${id}`;
-    const challenge = this.challenges.get(key);
+    const nonceKey = `${hostId}\u0000${id}\u0000${String(nonce ?? '')}`;
+    const challenge = this.challenges.get(nonceKey);
     if (!challenge || challenge.nonce !== String(nonce ?? '') || challenge.expiresAt <= this.now()) {
       throw new GroupAuthError('auth_failed', 'challenge is missing, expired or mismatched', { status: 401 });
     }
-    this.challenges.delete(key);
+    this.challenges.delete(nonceKey);
     const message = groupDeviceChallengeMessage(hostId, id, challenge.nonce);
     if (!verifyGroupDeviceSignature({ publicKey, message, signature: String(signature ?? '') })) {
       throw new GroupAuthError('auth_failed', 'invalid device signature', { status: 401 });
@@ -293,6 +300,7 @@ export class GroupAuthService {
           deviceId: payload.deviceId,
           clientKey,
         });
+        this.logger.info(`group auth: challenge issued host ${hostId} device ${result.deviceId}`);
         return { status: 200, body: result };
       }
       if (path === GROUP_AUTH_TOKEN_PATH) {
@@ -303,6 +311,7 @@ export class GroupAuthService {
           signature: payload.signature,
           clientKey,
         });
+        this.logger.info(`group auth: token issued host ${hostId} device ${result.deviceId}`);
         const { setCookie, ...rest } = result;
         return { status: 200, headers: { 'set-cookie': setCookie }, body: rest };
       }

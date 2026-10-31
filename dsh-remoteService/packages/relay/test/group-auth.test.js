@@ -641,3 +641,36 @@ test('classic 模式：host 发 device.sync 得到 group_auth_unavailable', asyn
     await relay.close();
   }
 });
+
+test('group auth: 同一设备并发 challenge 不互相覆盖（先发的 nonce 仍可换 token）', () => {
+  const temp = tempDir();
+  try {
+    const service = new GroupAuthService({
+      groupFile: join(temp.dir, 'group.json'),
+      signingKeyFile: join(temp.dir, 'signing-key.pem'),
+    });
+    const hostId = 'h_testdevice';
+    const device = makeDevice();
+    service.syncDevices(hostId, [{ deviceId: device.deviceId, publicKey: device.publicKeyRaw }]);
+
+    const first = service.challenge({ hostId, deviceId: device.deviceId, clientKey: '127.0.0.1' });
+    const second = service.challenge({ hostId, deviceId: device.deviceId, clientKey: '127.0.0.1' });
+    assert.notEqual(first.nonce, second.nonce);
+
+    const signature = nodeSign(
+      'sha256',
+      groupDeviceChallengeMessage(hostId, device.deviceId, first.nonce),
+      device.privateKey,
+    ).toString('base64url');
+    const issued = service.issueToken({
+      hostId,
+      deviceId: device.deviceId,
+      nonce: first.nonce,
+      signature,
+      clientKey: '127.0.0.1',
+    });
+    assert.match(issued.token, /^v1\./);
+  } finally {
+    temp.cleanup();
+  }
+});

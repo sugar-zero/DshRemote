@@ -3,12 +3,12 @@
 # DSH 自托管盲中继镜像。
 #
 # 构建上下文必须是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol）：
-#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.2.7-group ../..   # 在 packages/relay 下
+#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.2.8-group ../..   # 在 packages/relay 下
 #   docker compose -f packages/relay/docker-compose.yml build
 #
 # 运行（配置/证书/tokens 都在 /data 卷里）：
 #   docker run -d --name dsh-relay --restart unless-stopped \
-#     -p 80:80 -p 443:443 -p 8443:8443 -v "$PWD/data:/data" dsh-remote-relay:0.2.7-group
+#     -p 80:80 -p 443:443 -p 8443:8443 -v "$PWD/data:/data" dsh-remote-relay:0.2.8-group
 
 # ---- deps: 安装 ws（只复制 workspace 依赖清单，避免把源码/测试带进依赖层） ----
 FROM node:24-alpine AS deps
