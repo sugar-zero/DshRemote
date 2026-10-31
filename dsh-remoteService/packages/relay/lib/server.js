@@ -1059,7 +1059,11 @@ class Relay {
   /** @param {any} host @param {string} reason */
   removeHost(host, reason) {
     if (this.hosts.get(host.hostId) === host) this.hosts.delete(host.hostId);
-    this.groupAuth?.clearHost(host.hostId);
+    // 注意：不要在这里清空 groupAuth 的设备注册表。
+    // 控制连接会被「replace / 短暂断线重连」替换，清空会导致主机重连、device.sync 到达前的
+    // 几百毫秒内所有边缘请求 401（表现为「首次进入白屏 401、返回再进就好」）。
+    // 设备撤销以主机侧设备表为权威（主机代理逐请求检查 device 是否存在），relay 设备表只用于
+    // 校验 token 里的 deviceId 是否仍在册；显式撤销走 device.revoke。
     for (const stream of [...host.streams.values()]) {
       stream.finished = true;
       if (stream.openTimer) clearTimeout(stream.openTimer);
