@@ -272,7 +272,9 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   镜像 **0.2.5** 起后台不再展示邀请码明文，只提供「复制」按钮（防肩窥），CLI `invite list` 仍可查看；
   镜像 **0.2.7** 起 relay 会记录边缘 auth 请求失败日志（`edge: auth <path> -> <status> ... host/device/原因`），
   便于定位 App challenge/token 401；镜像 **0.2.8** 起同一设备允许多个未消费 challenge（并发/重复请求不再
-  互相覆盖），并打印 challenge issued / token issued 日志；
+  互相覆盖），并打印 challenge issued / token issued 日志；镜像 **0.2.9** 起主机控制连接被
+  「替换/短暂重连」时不再清空 relay 设备表（避免主机重连、device.sync 到达前的边缘请求瞬时 401，
+  表现为首次进入白屏、返回重进才正常）；
   镜像 **0.2.6** 起新增 `POST /__group/refresh`（hostToken 鉴权、不消耗邀请码）：服务端改
   `mobilePort`/`publicControlPort` 后，主机插件「重试连接」/重启会自动同步最新 mobilePort/controlUrl，
   无需重置注册；
