@@ -60,8 +60,8 @@ services:
       - "0.0.0.0:${RELAY_GROUP_API_HOST_PORT:-19443}:9443"
       # 仅本机：部署方后台（SSH 隧道 / nginx admin vhost 访问，绝不放公网）
       - "127.0.0.1:${RELAY_GROUP_ADMIN_HOST_PORT:-19444}:9444"
-      # 仅本机：/healthz（不承载业务）
-      - "127.0.0.1:18080:80"
+      # 仅本机：/healthz（不承载业务）；同机 classic 默认也占 18080，冲突时改 RELAY_GROUP_HEALTH_HOST_PORT
+      - "127.0.0.1:${RELAY_GROUP_HEALTH_HOST_PORT:-18080}:80"
     environment:
       RELAY_MODE: group
       RELAY_LOG_LEVEL: ${RELAY_LOG_LEVEL:-info}
