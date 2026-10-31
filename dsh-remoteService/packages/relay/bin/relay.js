@@ -66,7 +66,7 @@ const HELP = `dsh-remote-relay — 自托管中继 (DSH remote access)
   node bin/relay.js token list                   classic：列出已签发 host（token 掩码）
   node bin/relay.js token revoke <hostId>        classic：吊销 token
   node bin/relay.js invite create [options]     group：生成自助注册邀请码（只打印一次）
-  node bin/relay.js invite list                 group：列出邀请（不含明文 code）
+  node bin/relay.js invite list                 group：列出邀请（含邀请码明文，方便复制）
   node bin/relay.js invite revoke <id|code>     group：撤销邀请
   node bin/relay.js host list                   group：列出已注册主机
   node bin/relay.js host revoke <hostId>        group：撤销主机（吊销其 token）
@@ -455,7 +455,7 @@ async function runInviteCommand(flags, positionals) {
     console.log(`Max uses   : ${invite.maxUses}`);
     console.log(`Expires    : ${invite.expiresAt ? new Date(invite.expiresAt).toISOString() : 'never'}`);
     console.log('');
-    console.log('把这个邀请码交给要加入的群成员（只显示一次；不要发到公开渠道）。');
+    console.log('把这个邀请码交给要加入的群成员（也可在后台/`invite list` 再查看；不要发到公开渠道）。');
     console.log(`Group file : ${file} (0600)`);
     return;
   }
@@ -470,12 +470,13 @@ async function runInviteCommand(flags, positionals) {
       console.log(`No invites in ${file}`);
       return;
     }
-    console.log('inviteId              used  max  expires                note');
+    console.log('inviteId              code                                         used max expires                note');
     for (const invite of invites) {
       const expires = invite.expiresAt ? new Date(invite.expiresAt).toISOString() : 'never';
       const status = invite.revoked ? 'REVOKED' : invite.expired ? 'EXPIRED' : '';
+      const code = invite.code ?? '（旧邀请码，不可显示）';
       console.log(
-        `${invite.inviteId.padEnd(21)} ${String(invite.used).padEnd(5)} ${String(invite.maxUses).padEnd(4)} ${expires.padEnd(22)} ${invite.note}${status ? ` [${status}]` : ''}`,
+        `${invite.inviteId.padEnd(21)} ${code.padEnd(43)} ${String(invite.used).padEnd(4)} ${String(invite.maxUses).padEnd(3)} ${expires.padEnd(22)} ${invite.note}${status ? ` [${status}]` : ''}`,
       );
     }
     return;
@@ -593,7 +594,7 @@ async function main(argv) {
     return;
   }
   if (flags.version === true) {
-    console.log('dsh-remote-relay 0.2.3');
+    console.log('dsh-remote-relay 0.2.4');
     return;
   }
   if (positionals[0] === 'token') {

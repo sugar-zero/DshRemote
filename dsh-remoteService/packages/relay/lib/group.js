@@ -7,12 +7,13 @@
  * 存储：单一 JSON 文件（默认 <config 目录>/group.json，0600，原子写）：
  *   {
  *     version: 1,
- *     invites: { [inviteId]: { codeHash, note, createdAt, expiresAt, maxUses, usedBy, revokedAt } },
+ *     invites: { [inviteId]: { code, codeHash, note, createdAt, expiresAt, maxUses, usedBy, revokedAt } },
  *     hosts:   { [hostId]:   { hostTokenHash, hostName, mobilePort, createdAt, updatedAt, revokedAt } }
  *   }
  *
  * 安全约定（与 docs/group-service-design.zh.md 对应）：
- *   - invite code / host token 只存 SHA-256（base64url），明文只在「创建邀请」「注册响应」出现一次；
+ *   - invite code 明文存 group.json（0600）以便后台/CLI 随时查看复制；host token 只存 SHA-256（base64url）。
+ *     group.json 因此属于敏感文件（含邀请码），泄露后应撤销全部邀请码并重建；
  *   - 文件 0600、目录 0700、tmp+rename 原子写；
  *   - relay 进程每次注册请求重读文件，CLI 发放/撤销邀请无需重启 relay；
  *   - 注册是**邀请制**：没有有效邀请码一律拒绝，绝不开放公开注册。
@@ -203,6 +204,8 @@ export function createInvite(file, options = {}) {
   const code = randomBytes(32).toString('base64url');
   const store = readGroupStore(file);
   store.invites[inviteId] = {
+    // 明文保存邀请码：部署方后台/CLI 需要随时查看与复制（group.json 本身 0600）
+    code,
     codeHash: sha256Base64Url(code),
     note,
     createdAt: now,
@@ -223,7 +226,7 @@ export function createInvite(file, options = {}) {
 }
 
 /**
- * 列邀请（不返回明文 code）。
+ * 列邀请（包含明文 code；旧记录只有 codeHash 时 code 为 undefined）。
  * @param {string} file
  * @param {{now?: number}} [options]
  */
@@ -238,6 +241,7 @@ export function listInvites(file, options = {}) {
       const remaining = Math.max(0, Number(invite.maxUses) - usedBy.length);
       return {
         inviteId,
+        code: typeof invite.code === 'string' && invite.code !== '' ? invite.code : undefined,
         note: invite.note ?? '',
         createdAt: Number(invite.createdAt) || 0,
         expiresAt: Number(invite.expiresAt) || 0,
