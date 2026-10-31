@@ -138,6 +138,7 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
   let runtime;
   let groupInfo;
   const seen = [];
+  const seenUpgrades = [];
 
   try {
     relay = await createRelay({
@@ -193,6 +194,14 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
           seen.push({ url: req.url, device: dev?.id, host: req.headers.host });
           res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8' });
           res.end(`ok:${dev?.id}:${req.url}`);
+        },
+        async handleUpgrade(req, socket, head, dev) {
+          seenUpgrades.push({ url: req.url, device: dev?.id, host: req.headers.host });
+          socket.write(
+            'HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n\r\n',
+          );
+          socket.write('ws-hello');
+          socket.end();
         },
       },
       pairing,
@@ -280,6 +289,21 @@ test('群体版主机：注册 → v2 配对 → 隧道 → loopback 代理鉴�
     assert.ok(okResponse.includes(`ok:${pairedDeviceId}:/hello`), okResponse.slice(0, 300));
     assert.equal(seen[0]?.device, pairedDeviceId);
     assert.equal(seen[0]?.host, fqdn);
+
+    // 4b) WebSocket 升级（DSH UI 实时通道）：边缘隧道 → 主机 loopback 明文代理 → DshProxy.handleUpgrade
+    const wsResponse = await tlsRaw({
+      port: relay.edgePort,
+      servername: fqdn,
+      ca: cert.cert,
+      request:
+        `GET /ws HTTP/1.1\r\nHost: ${fqdn}\r\nCookie: ${GROUP_SESSION_COOKIE}=${token}\r\n`
+        + 'Connection: Upgrade\r\nUpgrade: websocket\r\n'
+        + 'Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n\r\n',
+    });
+    assert.ok(wsResponse.startsWith('HTTP/1.1 101'), wsResponse.slice(0, 300));
+    assert.ok(wsResponse.includes('ws-hello'), wsResponse.slice(0, 300));
+    assert.equal(seenUpgrades[0]?.device, pairedDeviceId);
+    assert.equal(seenUpgrades[0]?.url, '/ws');
 
     // 5) Host 与 SNI 不一致 → 主机 loopback 代理 421
     const misdirected = await tlsRaw({

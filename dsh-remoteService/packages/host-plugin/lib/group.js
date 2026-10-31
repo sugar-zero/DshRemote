@@ -290,6 +290,15 @@ export class GroupHostRuntime {
           else res.destroy();
         });
       });
+      // DSH Web 的实时通道（/api/remote.mux 等）是 WebSocket 升级请求；http.Server 默认
+      // 把 upgrade 交给 'upgrade' 事件，没有监听器会直接销毁 socket，页面表现为「暂无会话 /
+      // 重新连接中」。这里与 #handlePlain 同一套鉴权后交给 DshProxy.handleUpgrade。
+      this.plainServer.on('upgrade', (req, socket, head) => {
+        this.#handlePlainUpgrade(req, socket, head).catch((error) => {
+          this.log(`group: plain upgrade proxy error: ${error && error.message ? error.message : String(error)}`);
+          if (!socket.destroyed) socket.destroy();
+        });
+      });
       this.plainServer.on('error', (error) => this.log(`group: plain proxy server error: ${error.code ?? error.message}`));
       await new Promise((resolve, reject) => {
         this.plainServer.once('error', reject);
@@ -373,6 +382,54 @@ export class GroupHostRuntime {
       tokenPublicKeyConfigured: Boolean(registration?.tokenPublicKey),
       lastError: this.lastError ?? this.connector?.lastError ?? null,
     };
+  }
+
+  /**
+   * loopback 明文代理的 WebSocket 升级入口（DSH UI 实时通道）。鉴权逻辑与 #handlePlain 一致，
+   * 通过后交给 DshProxy.handleUpgrade（含 deny list / DSH cookie 注入 / 心跳代答）。
+   * @param {import('node:http').IncomingMessage} req
+   * @param {import('node:net').Socket} socket
+   * @param {Buffer} head
+   */
+  async #handlePlainUpgrade(req, socket, head) {
+    if (this.closed || !this.registration) {
+      socket.end('HTTP/1.1 503 Service Unavailable\r\n\r\n');
+      return;
+    }
+    const expectedHost = `${this.registration.hostId}.${this.registration.relayDomain}`.toLowerCase();
+    const rawHost = String(req.headers.host ?? '').trim().toLowerCase();
+    const hostOnly = rawHost.startsWith('[') ? rawHost : rawHost.split(':')[0];
+    if (hostOnly !== expectedHost) {
+      this.audit?.append({ action: 'group-ws-proxy', result: 'misdirected-host' });
+      socket.end('HTTP/1.1 421 Misdirected Request\r\n\r\n');
+      return;
+    }
+    const cookies = parseCookieHeader(req.headers.cookie);
+    const token = cookies[GROUP_SESSION_COOKIE];
+    const payload = token
+      ? verifyGroupSessionToken({
+        token,
+        publicKey: this.registration.tokenPublicKey,
+        hostId: this.registration.hostId,
+        now: this.now(),
+      })
+      : undefined;
+    if (!payload) {
+      this.audit?.append({ action: 'group-ws-proxy', result: 'unauthenticated' });
+      socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      return;
+    }
+    const device = this.#deviceRecords().find((entry) => entry.deviceId === payload.deviceId);
+    if (!device) {
+      this.audit?.append({ action: 'group-ws-proxy', result: 'unknown-device', deviceId: payload.deviceId });
+      socket.end('HTTP/1.1 401 Unauthorized\r\n\r\n');
+      return;
+    }
+    await this.proxy.handleUpgrade(req, socket, head, {
+      id: payload.deviceId,
+      deviceId: payload.deviceId,
+      name: payload.deviceId,
+    });
   }
 
   /**
