@@ -1152,6 +1152,7 @@ class Relay {
     });
     socket.on('error', (err) => this.logger.debug(`edge: socket error from ${formatPeer(socket)}: ${err.code ?? err.message}`));
     const sni = typeof socket.servername === 'string' && socket.servername !== '' ? socket.servername : null;
+    this.logger.info(`edge: tls ${formatPeer(socket)} sni=${JSON.stringify(sni)}`);
     void this.handleEdgeSession(socket, sni).catch((err) => {
       this.logger.debug(`edge: session error from ${formatPeer(socket)}: ${err && err.message ? err.message : String(err)}`);
       if (!socket.destroyed) socket.destroy();
