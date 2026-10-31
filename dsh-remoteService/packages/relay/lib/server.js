@@ -1222,6 +1222,7 @@ class Relay {
       this.logger.info(`edge: request ${parsedHead.method} ${pathname} for host ${hostId} from ${remote}`);
     }
     if (pathname === GROUP_AUTH_CHALLENGE_PATH || pathname === GROUP_AUTH_TOKEN_PATH) {
+      this.logger.info(`edge: auth-path ${pathname} for host ${hostId} from ${remote}`);
       let body;
       try {
         body = await readHttpJsonBody(socket, parsedHead.headers, rest);
@@ -1276,7 +1277,7 @@ class Relay {
       }
     }
 
-    this.openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId: session?.deviceId, remote });
+    this.openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId: session?.deviceId, remote, pathname });
   }
 
   /**
@@ -1285,7 +1286,7 @@ class Relay {
    * @param {{socket: import('node:tls').TLSSocket, hostId: string, host: any, sni: string | null,
    *          rawHead: Buffer, rest: Buffer, deviceId?: string, remote: string}} input
    */
-  openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId, remote }) {
+  openEdgeTunnel({ socket, hostId, host, sni, rawHead, rest, deviceId, remote, pathname }) {
     if (socket.destroyed || !isWsOpen(host.ws)) {
       this.rejectEdgeHttp(socket, 502, 'host_offline');
       return;
@@ -1321,7 +1322,7 @@ class Relay {
       this.finishStream(stream, 'open_timeout');
     }, this.config.timings.openTimeoutMs);
     stream.openTimer.unref?.();
-    this.logger.debug(`edge: stream ${streamId} → host "${hostId}" (SNI ${JSON.stringify(sni)}${deviceId ? `, device ${deviceId}` : ''}) from ${remote}`);
+    this.logger.info(`edge: tunnel ${pathname ?? '-'} → host "${hostId}" (stream ${streamId}${deviceId ? `, device ${deviceId}` : ''}) from ${remote}`);
     this.sendJson(host.ws, {
       t: RELAY_MSG.HOST_OPEN,
       streamId,
