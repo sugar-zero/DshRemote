@@ -29,8 +29,7 @@ server/
 ├── docker-compose.direct.yml     # 模板 D：直连数据端口，不动 nginx 443
 ├── docker-compose.group.yml      # 模板 E：群体服务版（A 模式）
 ├── .env.example                  # classic：复制为 .env
-├── .env.group.example            # group（独立服务器）：复制为 .env.group
-├── .env.group.classic.example    # group（同机已有 classic）：端口已让开 1443/18443/18080
+├── .env.group.example            # group：复制为 .env.group；同机 classic 时按顶部注释改端口
 ├── group/relay.group.example.json # group：复制为 data/config/relay.json
 ├── nginx/
 │   ├── host-nginx-stream.conf    # classic：已有宿主机 nginx 的 443/8443 L4 透传
@@ -677,9 +676,11 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
      （listen 443/8443 → 容器映射端口，SNI 分流、不解密）；
    - **同机已有 classic**：用 [`nginx/host-nginx-stream.combined.conf`](nginx/host-nginx-stream.combined.conf)
      一份合并配置（classic/group/现有网站按 SNI 分流）；**不能**同时 include 两个单版本文件。
-     **直接用 [`server/.env.group.classic.example`](.env.group.classic.example)**（推荐）：
-     它已把内部端口改成 `16443/18444/18081`、把 edge/control 绑到 `127.0.0.1`，`MOBILE_PORT`/`PUBLIC_CONTROL_PORT`
-     仍保持 nginx 的 `443/8443`；复制为 `.env.group` 后只改域名/镜像即可。
+     **就在同一个 `.env.group` 里改这几行**（主模板顶部也有同款注释块，不用另建模板）：
+     `RELAY_GROUP_EDGE_HOST_PORT=16443`（让开 classic 1443）、`RELAY_GROUP_CONTROL_HOST_PORT=18444`
+     （让开 classic 18443）、`RELAY_GROUP_HEALTH_HOST_PORT=18081`（让开 classic 18080），
+     并把 `RELAY_GROUP_EDGE_BIND` / `RELAY_GROUP_CONTROL_BIND` 设为 `127.0.0.1`；
+     `MOBILE_PORT` / `PUBLIC_CONTROL_PORT` 仍是 nginx 的 `443/8443`，不用动。
      手动对应关系：group 的端口要避开 classic 已占用的 1443/18443/18080，例如
      `RELAY_GROUP_EDGE_HOST_PORT=16443`、`RELAY_GROUP_CONTROL_HOST_PORT=18444`、
      `RELAY_GROUP_HEALTH_HOST_PORT=18081`，并把
