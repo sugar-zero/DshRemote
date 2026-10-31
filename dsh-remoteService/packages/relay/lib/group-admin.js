@@ -306,7 +306,7 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
   <section class="card">
     <h2>邀请码</h2>
     <table><thead><tr><th>备注</th><th>邀请码</th><th>已用/上限</th><th>过期</th><th>状态</th><th></th></tr></thead><tbody id="invites"></tbody></table>
-    <p class="muted">邀请码保存在服务器 group.json（0600），后台可随时复制；列表里的 <code>inv_…</code> 只是内部 ID，不能用于注册。</p>
+    <p class="muted">邀请码保存在服务器 group.json（0600），后台只显示复制按钮、不展示明文；列表里的 <code>inv_…</code> 只是内部 ID，不能用于注册。</p>
   </section>
 
   <section class="card">
@@ -402,10 +402,10 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
 
       var codeCell = el('td');
       if (invite.code) {
-        var codeEl = el('code', invite.code);
-        codeCell.appendChild(codeEl);
+        codeCell.appendChild(el('span', '••••••••', 'muted'));
         var copyBtn = el('button', '复制', 'secondary');
         copyBtn.style.marginLeft = '6px';
+        copyBtn.style.padding = '4px 10px';
         copyBtn.addEventListener('click', function () { copyText(invite.code); });
         codeCell.appendChild(copyBtn);
       } else {
@@ -498,11 +498,8 @@ code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px; 
       .then(function (data) {
         $('new-invite').innerHTML = '';
         var box = el('div');
-        box.appendChild(el('span', '邀请码（只显示一次）：', 'muted'));
-        var code = el('code', data.code);
-        box.appendChild(code);
-        box.appendChild(document.createTextNode('  '));
-        var copy = el('button', '复制', 'secondary');
+        box.appendChild(el('span', '邀请码已生成（已隐藏，点击复制后发给对方）：', 'muted'));
+        var copy = el('button', '复制邀请码', 'secondary');
         copy.addEventListener('click', function () { copyText(data.code); });
         box.appendChild(copy);
         $('new-invite').appendChild(box);
