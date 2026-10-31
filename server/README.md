@@ -612,7 +612,7 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    | 变量 | 谁访问 | 直连（无 nginx） | nginx 前置（推荐） | ★ 要放行/转发？ |
    |---|---|---|---|---|
    | `RELAY_GROUP_MOBILE_PORT` | 手机 App | `1443` | `443`（= nginx listen） | ★ 是 |
-   | `RELAY_GROUP_PUBLIC_CONTROL_PORT` | 主机 WSS 隧道 | `18443` | `8443`（= nginx listen） | ★ 是 |
+   | `RELAY_GROUP_PUBLIC_CONTROL_PORT` | 主机 WSS 隧道 | `18443` | **nginx 实际 listen 端口**（示例 `8443`，可自定义如 `18446`） | ★ 是 |
    | `RELAY_GROUP_API_HOST_PORT` | 主机注册 API | `19443` | `19443` | ★ 是 |
    | `RELAY_GROUP_ADMIN_HOST_PORT` | 部署方浏览器 | `19444` | `19444` | ✗ 只绑回环，别放行 |
    | `RELAY_GROUP_EDGE_HOST_PORT` | 本机 nginx → relay | `1443` | `1443`（bind 127.0.0.1） | ✗ nginx 内部 |
@@ -626,8 +626,9 @@ cat ~/.dsh/remote-access/config.json | jq .publicPort
    规则：
    - **`RELAY_GROUP_MOBILE_PORT`（= `group.mobilePort`）必须等于手机实际访问的公网端口**，不是容器宿主映射端口
      （常见错误：nginx 监听 443 → 转发 127.0.0.1:1443，却把 mobilePort 留成 1443，手机会去连公网 1443）。
-   - 注册 API 与控制面 WSS 必须分开：注册响应会下发 `controlUrl`（= `RELAY_GROUP_PUBLIC_CONTROL_PORT` 端口），
-     主机用它回连隧道，不再从服务地址推导。
+   - 注册 API 与控制面 WSS 必须分开：注册响应会下发 `controlUrl`，端口 = `RELAY_GROUP_PUBLIC_CONTROL_PORT`。
+     **这个值必须等于主机实际连接的公网端口（nginx listen）**；relay 不会自动探测 nginx/端口映射
+     （容器内 8443、宿主映射 18445 都不是公网端口）。改端口后主机要「重置注册」重新注册。
    - 后台只绑 `127.0.0.1:19444`；用 SSH 隧道或 [`nginx/group-admin-http.conf`](nginx/group-admin-http.conf) 反代到 admin 域名。
    - **nginx 前置时最简只转发两个端口**：公网 `443 → 127.0.0.1:1443`、`8443 → 127.0.0.1:18443`；
      API（19443）可以直接对公网，也可以用 nginx 反代（见下）；后台（19444）不要转发到公网。

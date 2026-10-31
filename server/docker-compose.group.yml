@@ -81,7 +81,9 @@ services:
       # 手机实际访问的公网端口（写进配对二维码）：
       #   nginx 前置 = nginx listen（通常 443）；直连 = RELAY_GROUP_EDGE_HOST_PORT
       RELAY_GROUP_MOBILE_PORT: ${RELAY_GROUP_MOBILE_PORT:-443}
-      # 注册响应下发给主机的控制面 WSS 公网端口（nginx 8443 / 直连 18443）
+      # 注册响应下发给主机的控制面 WSS 公网端口：
+      # 必须 = 主机实际连接的公网端口（nginx 实际 listen 端口，或直连时的宿主映射端口）。
+      # 默认 8443 只是示例；relay 不会自动探测 nginx/端口映射，填错会导致 control socket error。
       RELAY_GROUP_PUBLIC_CONTROL_PORT: ${RELAY_GROUP_PUBLIC_CONTROL_PORT:-8443}
       # 容器内固定端口（职责分离；宿主映射见上面 ports，不要在这里改）
       RELAY_GROUP_API_PORT: "9443"

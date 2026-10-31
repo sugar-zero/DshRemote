@@ -463,7 +463,8 @@ Ed25519、0600、首次启动自动生成；**私钥只在 relay，主机只拿�
 ```
 
 容器部署时 `adminBind` 设为 `0.0.0.0`（由 Docker 端口映射限制宿主机只绑回环）。
-`publicControlPort` 是注册响应下发 `controlUrl` 用的公网 WSS 端口（nginx 8443 / 直连映射 18443）。
+`publicControlPort` 是注册响应下发 `controlUrl` 用的**公网** WSS 端口：nginx 前置时 = nginx 实际 listen 的端口
+（如 8443 或自定义 18446），直连时 = 容器 8443 的宿主映射端口。relay 不会自动探测，填错会导致主机 control socket error。
 
 ### 部署方后台（`/__admin`，P1 切片 7）
 
