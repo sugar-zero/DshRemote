@@ -6,7 +6,8 @@
  *   - 对 relay challenge 原始字节做 ECDSA-SHA256 签名（私钥不出安全区）；
  *   - 把短时 token 注入 WebView 的 `__Host-dsh_session` cookie；
  *   - 带会话 cookie 的原生 HTTPS 请求（主机 status / restart 内部接口）；
- *   - 清理 WebView 缓存（设置页「清理缓存」）。
+ *   - 清理 WebView 缓存（设置页「清理缓存」）；
+ *   - 底部边缘系统手势 defer（iOS：页面内悬浮挂件贴到屏幕最底边时仍可拖动）。
  *
  * classic/单体 mTLS 模式的原生能力（CSR / PKCS#12 导入 / 设备证书 / 原生 mTLS
  * WebView / URLSession 客户端证书请求）已从 App 中删除，不再出现在这个 bridge。
@@ -105,6 +106,12 @@ interface NativeDshMtlsModule {
   groupHttpFetch(options: GroupHttpFetchOptions): Promise<GroupHttpFetchResult>;
   /** 清理 WebView 持久化缓存 / Cookie / DOM 存储（设置页“清理缓存”）。 */
   clearWebCache(): Promise<boolean>;
+  /**
+   * 进入主机 WebView 可见时调用：defer iOS 底部边缘（Home 指示条）的
+   * 「上滑回主屏」系统手势，让页面内的悬浮挂件可以从屏幕最底边起手拖动。
+   * 离开主机页面时传 false 恢复系统默认。Android 为 no-op（返回 false）。
+   */
+  setBottomEdgeGestureDeferral(enabled: boolean): Promise<boolean>;
 }
 
 const nativeModule = requireOptionalNativeModule<NativeDshMtlsModule>(DSH_MTLS_MODULE_NAME);
@@ -171,4 +178,18 @@ export async function groupHttpFetch(options: GroupHttpFetchOptions): Promise<Gr
 /** 清理 WebView 缓存/Cookie/本地存储；用于设置页“清理缓存”（清理后调用方应重载 WebView）。 */
 export async function clearWebCache(): Promise<boolean> {
   return requireModule().clearWebCache();
+}
+
+/**
+ * 底部边缘系统手势 defer（仅 iOS 生效）。
+ *
+ * 进入主机 WebView 可见时传 true：iOS 底部边缘（Home 指示条）的「上滑回主屏」手势被
+ * defer 一次——页面里的可拖动悬浮挂件贴到屏幕最底边后，仍能从底边起手拖动，而不会被
+ * 系统手势切到后台；再次上滑才回主屏。离开主机页面时传 false 恢复系统默认。
+ *
+ * Android 的手势导航没有等价接口（原生为 no-op，返回 false）；原生模块未链接时也返回 false。
+ */
+export async function setBottomEdgeGestureDeferral(enabled: boolean): Promise<boolean> {
+  if (!nativeModule) return false;
+  return nativeModule.setBottomEdgeGestureDeferral(enabled);
 }

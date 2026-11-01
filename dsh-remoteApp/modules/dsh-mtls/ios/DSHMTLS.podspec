@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name           = 'DSHMTLS'
-  s.version        = '0.1.5'
+  s.version        = '0.1.7'
   s.summary        = 'DSH Remote group-service device key + session cookie (P-256)'
   s.description    = <<-DESC
     Native helpers for DSH Remote (group service / token auth):
@@ -8,6 +8,7 @@ Pod::Spec.new do |s|
       - ECDSA-SHA256 challenge signing for the relay edge auth flow.
       - `__Host-` session cookie injection into the shared WKWebView cookie store.
       - WebView cache cleanup for the settings screen.
+      - iOS bottom screen-edge gesture deferral (page widgets can be dragged from the very bottom).
     classic/mTLS client-certificate support has been removed from the app.
   DESC
   s.author         = ''

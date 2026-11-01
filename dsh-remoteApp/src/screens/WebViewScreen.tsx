@@ -47,13 +47,18 @@ import {
   groupAuthorizedFetch,
   hasValidGroupSession,
 } from '../lib/group';
+import { isBottomEdgeGestureDeferralEnabled } from '../lib/settings';
+import { setBottomEdgeGestureDeferral } from '../../modules/dsh-mtls/src';
 import { colors, radii, spacing, typography } from '../theme';
 
 interface WebViewScreenProps {
   connection: StoredConnection;
   onClose: () => void;
-  /** 打开 App 设置页（版本/缓存/设备与安全入口）。 */
-  onOpenSettings: () => void;
+  /**
+   * 打开**这台主机**的连接设置（App 的「设备与安全」页：主机信息 / 打开此连接时要求
+   * 面容 / 解除本机配对）。返回时回到当前主机页面，不是 App 的「系统设置」。
+   */
+  onOpenConnectionSettings: () => void;
   /** 设置页清理缓存后递增，触发 WebView 重新加载。 */
   reloadToken?: number;
   /** 当前 WebView 是否在屏幕上可见（隐藏时常驻，用于判断何时重连）。 */
@@ -245,7 +250,7 @@ const DshWebView = WebView as unknown as ComponentType<
 export function WebViewScreen({
   connection,
   onClose,
-  onOpenSettings,
+  onOpenConnectionSettings,
   reloadToken = 0,
   isVisible = true,
   onOpenExternal,
@@ -461,6 +466,35 @@ export function WebViewScreen({
     refreshRestartAvailabilityRef.current();
     return undefined;
   }, [ensureGroupSessionForConnection, isVisible]);
+
+  /**
+   * 底部边缘系统手势 defer（仅 iOS 生效，Android 为 no-op）。
+   *
+   * DSH 页面里有可自由拖动的悬浮挂件；挂件贴到屏幕最底边（Home 指示条区域）后，
+   * 从最底边起手拖动会被 iOS 的「上滑回主屏」手势抢走——页面收不到拖动，App 直接被
+   * 切到后台。App 设置 →「主机页面手势 → 挂件贴底拖动」（默认开启）决定是否在
+   * **主机页面可见**时 defer 底部边缘手势；关闭后恢复系统默认（一次上滑回主屏）。
+   * 离开主机/锁屏时都会恢复系统默认，主页与设置页不受影响。
+   */
+  useEffect(() => {
+    let cancelled = false;
+    if (!isVisible) {
+      void setBottomEdgeGestureDeferral(false).catch(() => {});
+      return undefined;
+    }
+    // 每次进入主机页面都重新读取设置：在设置页改完开关后回来即生效。
+    void isBottomEdgeGestureDeferralEnabled()
+      .then((enabled) => {
+        if (!cancelled) void setBottomEdgeGestureDeferral(enabled).catch(() => {});
+      })
+      .catch(() => {
+        if (!cancelled) void setBottomEdgeGestureDeferral(true).catch(() => {});
+      });
+    return () => {
+      cancelled = true;
+      void setBottomEdgeGestureDeferral(false).catch(() => {});
+    };
+  }, [isVisible]);
 
   useEffect(() => {
     const subscription = AppState.addEventListener('change', (nextState) => {
@@ -868,7 +902,12 @@ export function WebViewScreen({
               </Text>
             </View>
           </View>
-          <TouchableOpacity accessibilityLabel="设置" onPress={onOpenSettings} style={styles.iconButton}>
+          <TouchableOpacity
+            accessibilityLabel="连接设置"
+            accessibilityHint="打开这台主机的设备与安全设置，返回时回到主机页面"
+            onPress={onOpenConnectionSettings}
+            style={styles.iconButton}
+          >
             <Text style={styles.iconGlyphSmall}>⚙︎</Text>
           </TouchableOpacity>
           {/*

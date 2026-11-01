@@ -153,5 +153,13 @@ class DshMtlsModule : Module() {
       }
       true
     }
+
+    // MARK: - 底部边缘系统手势（iOS only）
+
+    /// iOS 用：进入主机 WebView 时 defer 底部「上滑回主屏」系统手势，让页面内悬浮挂件
+    /// 可以从屏幕最底边起手拖动（见 `DSHMTLSBottomEdgeGestures.swift`）。
+    /// Android 的手势导航没有等价的可 defer 接口，这里为 no-op（返回 false），
+    /// 只为保持 JS bridge ↔ 两端原生导出方法一致。
+    AsyncFunction("setBottomEdgeGestureDeferral") { _: Boolean -> false }
   }
 }

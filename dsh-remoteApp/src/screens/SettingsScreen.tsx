@@ -1,11 +1,17 @@
 /**
- * SettingsScreen — App 设置页（版本 / App 锁 / 缓存 / 设备与安全入口）。
+ * SettingsScreen — App「系统设置」页（版本 / App 锁 / 主机页面手势 / 缓存）。
+ *
+ * 只从**主机列表（外面）**右上角的 ⚙ 进入：这里是 App 级配置。
+ * 单台主机的连接设置（设备身份 / 打开此连接时要求面容 / 解除本机配对）不在本页，
+ * 从该主机卡片上的 ⚙ 或**进入主机后**顶栏的 ⚙ 打开「设备与安全」。
  *
  * 群体服务版（A 模式）：
  *   - 全局 App 锁开关在这里（本页）：**只负责 App 冷启动解锁**（Face ID / Touch ID），
  *     打开主机连接、同步信息、心跳、切会话、回前台都不要求识别；
  *   - 单台主机的「打开此连接时要求面容」开关在 DevicesScreen（设备与安全），
  *     仅在全局 App 锁开启时生效；
+ *   - 「挂件贴底拖动」（iOS）：进入主机页面时 defer 底部「上滑回主屏」手势，默认开启；
+ *     关闭后恢复一次上滑回主屏（挂件贴底时从底边起手拖可能被系统手势抢走）；
  *   - 不再有 APNs 推送 / 应用内通知 / 通知权限设置（群体版暂不实现本机推送）；
  *   - 不再有 classic/mTLS/设备证书相关设置项；
  *   - 清理缓存调用原生模块 `clearWebCache()`（WKWebView 的 cache/cookie/存储 + URLCache）。
@@ -24,20 +30,21 @@ import {
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import * as Application from 'expo-application';
 
-import type { StoredConnection } from '../lib/store';
 import {
   getBiometricAvailability,
   isAppLockEnabled,
   setAppLockEnabled,
   type BiometricAvailability,
 } from '../lib/appLock';
+import {
+  isBottomEdgeGestureDeferralEnabled,
+  setBottomEdgeGestureDeferralEnabled,
+} from '../lib/settings';
 import { clearWebCache, isDshMtlsAvailable } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
 interface SettingsScreenProps {
-  connection: StoredConnection | null;
   onCacheCleared: () => void;
-  onOpenDevices?: () => void;
   /** App 锁开关变化（App.tsx 用它同步内存状态；开关本身存 SecureStore）。 */
   onAppLockChanged?: (enabled: boolean) => void;
   onClose: () => void;
@@ -54,9 +61,7 @@ function formatVersion(): string {
 }
 
 export function SettingsScreen({
-  connection,
   onCacheCleared,
-  onOpenDevices,
   onAppLockChanged,
   onClose,
 }: SettingsScreenProps) {
@@ -66,15 +71,27 @@ export function SettingsScreen({
   // App 锁：开关值存 SecureStore；生物识别能力用于提示/阻止在未录入时开启。
   const [appLockEnabled, setAppLockEnabledState] = useState(false);
   const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
+  // 主机页面底部手势 defer（iOS）：默认开启，关闭后恢复一次上滑回主屏。
+  const [bottomEdgeDeferral, setBottomEdgeDeferralState] = useState(true);
 
   useEffect(() => {
     let cancelled = false;
-    void Promise.all([isAppLockEnabled(), getBiometricAvailability()]).then(([enabled, availability]) => {
+    void Promise.all([
+      isAppLockEnabled(),
+      getBiometricAvailability(),
+      isBottomEdgeGestureDeferralEnabled(),
+    ]).then(([enabled, availability, deferral]) => {
       if (cancelled) return;
       setAppLockEnabledState(enabled);
       setBiometrics(availability);
+      setBottomEdgeDeferralState(deferral);
     });
     return () => { cancelled = true; };
+  }, []);
+
+  const handleToggleBottomEdgeDeferral = useCallback(async (enabled: boolean) => {
+    setBottomEdgeDeferralState(enabled);
+    await setBottomEdgeGestureDeferralEnabled(enabled);
   }, []);
 
   const handleToggleAppLock = useCallback(async (enabled: boolean) => {
@@ -177,9 +194,37 @@ export function SettingsScreen({
           <Text style={styles.rowHint}>
             开启后，App 冷启动首次进入时需用 Face ID / Touch ID / 指纹解锁；打开主机连接、
             同步信息、心跳与切换会话均不会再次要求识别。若希望某台主机在打开时也要求识别，
-            请到该主机的「设备与安全」里单独开启「打开此连接时要求面容」。
+            请在该主机卡片上点 ⚙（或进入该主机后点顶栏 ⚙）打开「设备与安全」，再单独开启
+            「打开此连接时要求面容」。
           </Text>
         </View>
+
+        {Platform.OS === 'ios' ? (
+          <View style={sharedStyles.card}>
+            <Text style={styles.sectionTitle}>主机页面手势</Text>
+            <View style={styles.switchRow}>
+              <View style={styles.switchText}>
+                <Text style={styles.rowLabel}>挂件贴底拖动</Text>
+                <Text style={styles.rowHint}>
+                  开启时，主机页面内从屏幕最底边上滑回主屏需连划两次
+                </Text>
+              </View>
+              <Switch
+                value={bottomEdgeDeferral}
+                onValueChange={(enabled) => { void handleToggleBottomEdgeDeferral(enabled); }}
+                trackColor={{ false: colors.borderStrong, true: colors.accentPressed }}
+                thumbColor={bottomEdgeDeferral ? colors.accent : colors.textMuted}
+              />
+            </View>
+            <Text style={styles.rowHint}>
+              开启：进入主机页面时 defer iOS 底部（Home 指示条）的「上滑回主屏」系统手势——页面里
+              可拖动的悬浮挂件贴到屏幕最底边后，仍能按住自由拖动，不会被系统手势切到后台；
+              代价是从最底边上滑回主屏要连划两次（第一次只高亮 Home 指示条）。
+              关闭：恢复系统默认（一次上滑即回主屏）；挂件贴到最底边时从底边起手拖动仍可能被
+              系统手势抢走。两者都只影响「进入主机页面后」，主机列表 / 本设置页不受影响。
+            </Text>
+          </View>
+        ) : null}
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>缓存</Text>
@@ -195,27 +240,6 @@ export function SettingsScreen({
             >
               <Text style={sharedStyles.secondaryButtonText}>
                 {busy ? '清理中…' : '清理 WebView 缓存'}
-              </Text>
-            </TouchableOpacity>
-          </View>
-        </View>
-
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>设备与安全</Text>
-          <Text style={styles.rowHint}>
-            查看本机设备身份（P-256 设备密钥 / 短时 token），或解除本机配对。
-          </Text>
-          <View style={styles.actions}>
-            <TouchableOpacity
-              style={[
-                sharedStyles.secondaryButton,
-                (!connection || !onOpenDevices) ? sharedStyles.disabledButton : null,
-              ]}
-              disabled={!connection || !onOpenDevices}
-              onPress={() => onOpenDevices?.()}
-            >
-              <Text style={sharedStyles.secondaryButtonText}>
-                {connection ? '打开设备与安全' : '尚未配对主机'}
               </Text>
             </TouchableOpacity>
           </View>

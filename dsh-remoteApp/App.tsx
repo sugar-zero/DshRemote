@@ -51,7 +51,12 @@ export default function App() {
   const [connection, setConnection] = useState<StoredConnection | null>(null);
   const [locked, setLocked] = useState(false);
   const lockEnabledRef = useRef(false);
-  const [settingsReturnRoute, setSettingsReturnRoute] = useState<Route>('home');
+  /**
+   * 「设备与安全」（单台主机的连接设置）的返回位置：
+   *  - 从主机列表卡片进入 → 回列表；
+   *  - 进入主机后从顶栏 ⚙ 进入 → 回该主机页面（WebView 常驻，不重新加载）。
+   */
+  const [devicesReturnRoute, setDevicesReturnRoute] = useState<'home' | 'webview'>('home');
   const [webViewReloadToken, setWebViewReloadToken] = useState(0);
   /** App 内嵌浏览器（DSH 页面里的外链，如平台查询用量/充值）；null = 未打开。 */
   const [externalPage, setExternalPage] = useState<{ url: string } | null>(null);
@@ -158,15 +163,29 @@ export default function App() {
     setRoute('webview');
   }, [shouldLockOnOpen]);
 
+  /** 主机列表卡片上的 ⚙：打开这台主机的连接设置，返回时回到列表。 */
   const handleOpenDevices = useCallback((target: StoredConnection) => {
+    setDevicesReturnRoute('home');
     setConnection(target);
     setRoute('devices');
   }, []);
 
+  /**
+   * 进入主机后顶栏的 ⚙：打开**这台主机**的连接设置（设备与安全：主机信息 /
+   * 打开此连接时要求面容 / 解除本机配对），返回时回到当前主机页面。
+   *
+   * 顶栏不再打开 App 的「系统设置」：系统设置是 App 级配置（版本 / App 锁 /
+   * 清理缓存），只从主机列表（外面）的 ⚙ 进入。
+   */
+  const handleOpenConnectionSettings = useCallback(() => {
+    setDevicesReturnRoute('webview');
+    setRoute('devices');
+  }, []);
+
+  /** 主机列表右上角的 ⚙：App 系统设置（版本 / App 锁 / 缓存）。 */
   const handleOpenSettings = useCallback(() => {
-    setSettingsReturnRoute(route === 'webview' ? 'webview' : 'home');
     setRoute('settings');
-  }, [route]);
+  }, []);
 
   const handleCacheCleared = useCallback(() => {
     setWebViewReloadToken((token) => token + 1);
@@ -257,18 +276,16 @@ export default function App() {
       case 'settings':
         return (
           <SettingsScreen
-            connection={connection}
             onCacheCleared={handleCacheCleared}
-            onOpenDevices={() => setRoute('devices')}
             onAppLockChanged={handleAppLockChanged}
-            onClose={() => setRoute(settingsReturnRoute)}
+            onClose={() => setRoute('home')}
           />
         );
       case 'devices':
         return connection ? (
           <DevicesScreen
             connection={connection}
-            onClose={() => setRoute('home')}
+            onClose={() => setRoute(devicesReturnRoute)}
             onDeleteLocal={() => handleDeleteConnection(connection)}
             onRequireBiometricChanged={(enabled) => handleRequireBiometricOnOpenChanged(connection, enabled)}
           />
@@ -305,7 +322,7 @@ export default function App() {
               key={`${connection.host}:${connection.port}`}
               connection={connection}
               onClose={handleCloseWebView}
-              onOpenSettings={handleOpenSettings}
+              onOpenConnectionSettings={handleOpenConnectionSettings}
               reloadToken={webViewReloadToken}
               isVisible={route === 'webview' && !locked}
               onOpenExternal={handleOpenExternal}

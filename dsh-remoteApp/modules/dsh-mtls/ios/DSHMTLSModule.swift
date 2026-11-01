@@ -12,6 +12,8 @@
 //   groupHttpFetch({url,token,method,body?,timeoutMs}) — 带会话 cookie 的 HTTPS 请求
 //                                          （relay 边缘只认 cookie，用于 status/restart）
 //   clearWebCache()                       — 清理 WKWebView 缓存/Cookie/本地存储 + URLCache
+//   setBottomEdgeGestureDeferral(enabled) — iOS：defer 底部边缘「上滑回主屏」系统手势
+//                                          （页面内悬浮挂件贴到屏幕最底边时可拖动）
 //
 // classic/单体 mTLS 原生能力（CSR / PKCS#12 导入 / 设备证书安装 / 原生 mTLS WebView /
 // URLSession 客户端证书请求）已从 App 删除：群体版设备身份只来自 P-256 设备密钥 +
@@ -191,6 +193,19 @@ public final class DSHMTLSModule: Module {
           finish(false)
         }
       }
+    }
+
+    // MARK: - 底部边缘系统手势（iOS only）
+
+    /// 进入主机 WebView 时 defer iOS 底部边缘（Home 指示条）的「上滑回主屏」系统手势：
+    /// 页面里的悬浮挂件被拖到屏幕最底边后，仍可从底边起手拖动，不会被系统手势切到后台。
+    /// 离开主机页面时传 false 恢复系统默认（一次上滑回主屏）。
+    /// 实现见 `DSHMTLSBottomEdgeGestures.swift`；只影响本 App 进程。
+    AsyncFunction("setBottomEdgeGestureDeferral") { (enabled: Bool) -> Bool in
+      DispatchQueue.main.async {
+        DSHMTLSBottomEdgeGestures.setEnabled(enabled)
+      }
+      return true
     }
   }
 }

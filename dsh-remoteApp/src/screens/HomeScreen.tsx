@@ -3,7 +3,8 @@
  *
  * 导航约定：
  *   Home → 点主机卡片 → WebView（返回键回到 Home）
- *   Home → 齿轮 → Devices（返回/解除配对后回 Home）
+ *   Home → 右上角齿轮 → Settings（App 系统设置：版本 / App 锁 / 缓存）
+ *   Home → 主机卡片上的齿轮 → Devices（该主机的连接设置；返回/解除配对后回 Home）
  *   Home → 配对新主机 → PairingScreen
  *
  * 记录管理：

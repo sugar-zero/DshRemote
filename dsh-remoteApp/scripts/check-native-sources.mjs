@@ -28,6 +28,7 @@ function warn(msg) { console.log(`  ⚠️  ${msg}`); warnings += 1; }
 
 const SWIFT_MODULE = 'modules/dsh-mtls/ios/DSHMTLSModule.swift';
 const SWIFT_GROUP_KEYS = 'modules/dsh-mtls/ios/DSHMTLSGroupKeys.swift';
+const SWIFT_BOTTOM_EDGE = 'modules/dsh-mtls/ios/DSHMTLSBottomEdgeGestures.swift';
 const KOTLIN_MODULE = 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsModule.kt';
 const KOTLIN_GROUP_KEYS = 'modules/dsh-mtls/android/src/main/java/com/dsh/remote/mtls/DshMtlsGroupKeys.kt';
 
@@ -55,6 +56,7 @@ const expectedFunctions = [
   'setSessionCookie',
   'groupHttpFetch',
   'clearWebCache',
+  'setBottomEdgeGestureDeferral',
 ];
 for (const name of expectedFunctions) {
   const missing = [];
@@ -85,6 +87,7 @@ console.log('== 群体版关键实现文件 / API ==');
 const requiredFiles = [
   SWIFT_MODULE,
   SWIFT_GROUP_KEYS,
+  SWIFT_BOTTOM_EDGE,
   KOTLIN_MODULE,
   KOTLIN_GROUP_KEYS,
 ];
@@ -102,6 +105,9 @@ const apiChecks = [
   ['Android ECDSA-SHA256 签名', KOTLIN_GROUP_KEYS, 'SHA256withECDSA'],
   ['Android 会话 Cookie（Secure/HttpOnly/SameSite=Strict）', KOTLIN_MODULE, 'HttpOnly; SameSite=Strict'],
   ['Android WebView Cookie/存储清理', KOTLIN_MODULE, 'WebStorage'],
+  ['iOS 底部边缘手势 defer（preferredScreenEdgesDeferringSystemGestures）', SWIFT_BOTTOM_EDGE, 'preferredScreenEdgesDeferringSystemGestures'],
+  ['iOS 底部边缘手势 defer 开启值 `.bottom`', SWIFT_BOTTOM_EDGE, 'UIRectEdge.bottom.rawValue'],
+  ['iOS 底部边缘手势 defer 类型替换（runtime）', SWIFT_BOTTOM_EDGE, 'class_replaceMethod'],
 ];
 for (const [label, file, needle] of apiChecks) {
   if (read(file).includes(needle)) ok(label);
