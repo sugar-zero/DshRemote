@@ -112,7 +112,7 @@ class DshMtlsWebView(context: Context, appContext: AppContext) : ExpoView(contex
       onMessage(mapOf("data" to data, "url" to webView.url))
     }, BRIDGE_NAME)
 
-    backgroundColor = 0x00000000
+    setBackgroundColor(0x00000000)
   }
 
   fun applyUrl(url: String?) {

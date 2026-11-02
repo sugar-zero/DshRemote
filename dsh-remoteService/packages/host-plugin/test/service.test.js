@@ -212,9 +212,16 @@ test('RemoteService: 装配远程重启端点（去重 + 审计 + 注入 spawn�
     assert.equal(first.status, 202);
     assert.equal(JSON.parse(first.body).data.mode, 'node', '测试进程是 Node CLI，应为 node 模式');
     assert.equal(spawnCalls.length, 1);
-    assert.equal(spawnCalls[0].command, '/bin/sh');
-    assert.equal(spawnCalls[0].args[0], '-c');
-    assert.ok(spawnCalls[0].args[1].includes(`kill -TERM ${process.pid}`));
+    if (process.platform === 'win32') {
+      assert.equal(spawnCalls[0].command, 'cmd.exe');
+      assert.deepEqual(spawnCalls[0].args.slice(0, 3), ['/d', '/s', '/c']);
+      assert.ok(spawnCalls[0].args[3].includes(`taskkill /PID ${process.pid} /F`), 'Windows helper 用 taskkill 结束当前进程');
+      assert.equal(spawnCalls[0].options.windowsVerbatimArguments, true);
+    } else {
+      assert.equal(spawnCalls[0].command, '/bin/sh');
+      assert.equal(spawnCalls[0].args[0], '-c');
+      assert.ok(spawnCalls[0].args[1].includes(`kill -TERM ${process.pid}`));
+    }
     assert.equal(spawnCalls[0].options.detached, true);
 
     // 第二次（10s 去重窗口内）：仍 202，但不得再调度一次

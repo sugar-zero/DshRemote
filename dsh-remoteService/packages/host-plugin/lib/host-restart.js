@@ -103,12 +103,28 @@ function normalizeCommand(value) {
 }
 
 /**
- * 默认的父进程命令行读取（POSIX `ps -o comm=`；Windows 无对应命令，返回 undefined）。
+ * 读取指定 pid 的可执行文件（调用方传入的是父进程 pid）。
+ * POSIX 用 `ps -o comm=`；Windows 用进程镜像路径。查不到时返回 undefined，不阻断重启。
  * @param {number} pid
  * @returns {string|undefined}
  */
 export function readParentCommand(pid) {
-  if (process.platform === 'win32') return undefined;
+  const id = Number(pid);
+  if (!Number.isInteger(id) || id <= 0) return undefined;
+  if (process.platform === 'win32') {
+    try {
+      const output = execFileSync('powershell.exe', [
+        '-NoProfile',
+        '-NonInteractive',
+        '-Command',
+        `(Get-CimInstance Win32_Process -Filter "ProcessId=${id}").ExecutablePath`,
+      ], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+      const text = normalizeCommand(String(output).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) ?? '');
+      return text === '' ? undefined : text;
+    } catch {
+      return undefined;
+    }
+  }
   try {
     const output = execFileSync('ps', ['-o', 'comm=', '-p', String(pid)], { encoding: 'utf8', timeout: 2000 });
     const text = normalizeCommand(output);
@@ -143,8 +159,9 @@ export function isDesktopHostEntry(argv) {
  * 1. 运行在 Electron 里，且 argv 里有 `dsh-desktop-host/lib/index.js` 入口
  *    （旧版/特殊启动器可能改为注入 `DSH_DESKTOP_NODE_EXECUTABLE` 环境标记，两种都认）；
  * 2. `process.ppid` 合法（>1 且不是自己）；
- * 3. POSIX 下父进程的可执行文件是同一个 Electron 可执行文件 / 标记值
+ * 3. 父进程的可执行文件是同一个 Electron 可执行文件 / 标记值
  *    （防止在 DSH 内开的终端里再起 `dsh web` 时误把终端 shell 当 DSH shell）。
+ *    查不到父进程映像时不阻断（Windows 查询失败与 POSIX `ps` 失败同一姿态）。
  *
  * @param {{
  *   platform?: string,
@@ -177,15 +194,13 @@ export function detectDesktopShell({
   }
   // 桌面端 shell 就是启动本进程的 Electron 可执行文件（标记值或 execPath）。
   const expected = marker !== '' ? marker : normalizeCommand(execPath);
-  if (platform !== 'win32') {
-    const command = readCommand ? readCommand(parentPid) : undefined;
-    if (command !== undefined) {
-      const normalized = normalizeCommand(command);
-      const expectedBase = expected === '' ? '' : expected.split(/[\\/]/).pop();
-      const samePath = normalized !== ''
-        && (normalized === expected || (expectedBase !== '' && normalized.split(/[\\/]/).pop() === expectedBase));
-      if (!samePath) return { desktopHost: false, reason: `父进程不是 DSH 桌面端 shell：${normalized}` };
-    }
+  const command = readCommand ? readCommand(parentPid) : undefined;
+  if (command !== undefined) {
+    const normalized = normalizeCommand(command);
+    const expectedBase = expected === '' ? '' : expected.split(/[\\/]/).pop();
+    const samePath = normalized !== ''
+      && (normalized === expected || (expectedBase !== '' && normalized.split(/[\\/]/).pop() === expectedBase));
+    if (!samePath) return { desktopHost: false, reason: `父进程不是 DSH 桌面端 shell：${normalized}` };
   }
   return { desktopHost: true, shellPid: parentPid };
 }

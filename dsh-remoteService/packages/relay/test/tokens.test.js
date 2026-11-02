@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
 import {
@@ -70,7 +70,10 @@ test('normalizeHostId enforces DNS-label-safe ids and defaultTokensFile follows 
   for (const bad of ['', 'has space', 'dot.separated', 'x'.repeat(64), '-leading', 'trailing-']) {
     assert.throws(() => normalizeHostId(bad), /invalid hostId/);
   }
-  assert.equal(defaultTokensFile('/etc/dsh-relay/relay.json'), '/etc/dsh-relay/tokens.json');
+  const configPath = process.platform === 'win32'
+    ? 'C:\\etc\\dsh-relay\\relay.json'
+    : '/etc/dsh-relay/relay.json';
+  assert.equal(defaultTokensFile(configPath), join(dirname(resolve(configPath)), 'tokens.json'));
   assert.equal(defaultTokensFile(undefined), join(process.cwd(), 'tokens.json'));
 });
 

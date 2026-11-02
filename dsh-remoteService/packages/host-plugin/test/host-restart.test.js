@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync } from 'node:fs';
 import {
   DESKTOP_HOST_ENV,
   DESKTOP_RELAUNCH_DELAY_MS,
@@ -70,6 +71,8 @@ function winDesktopPlan() {
     env: {},
     ppid: SHELL_PID,
     selfPid: HOST_PID,
+    // 单元测试不查询真实进程表；父进程映像与 Electron 可执行文件一致。
+    readParentCommand: () => WIN_EXEC,
   });
 }
 
@@ -252,10 +255,14 @@ test('script: 桌面端 POSIX helper 先 SIGKILL shell（无弹窗）→清理�
   assert.ok(script.includes('/bin/sleep 3'), '桌面端默认多等约 2.5s 让端口释放后再拉起（ceil → 3）');
 });
 
-test('script: 生成的桌面端 helper 脚本通过 sh -n 语法检查', async () => {
+const POSIX_SH = process.platform === 'win32'
+  ? ['C:\\Program Files\\Git\\usr\\bin\\sh.exe', 'C:\\Program Files\\Git\\bin\\sh.exe'].find((path) => existsSync(path))
+  : '/bin/sh';
+
+test('script: 生成的桌面端 helper 脚本通过 sh -n 语法检查', { skip: !POSIX_SH && '没有可用的 POSIX sh' }, async () => {
   const { spawnSync } = await import('node:child_process');
   const script = buildHostRestartScript(macPlan(), { delayMs: 1000, killGraceMs: 10_000 });
-  const check = spawnSync('/bin/sh', ['-n'], { input: script, encoding: 'utf8' });
+  const check = spawnSync(POSIX_SH, ['-n'], { input: script, encoding: 'utf8' });
   assert.equal(check.status, 0, `helper 脚本语法应合法：${check.stderr}`);
 });
 
