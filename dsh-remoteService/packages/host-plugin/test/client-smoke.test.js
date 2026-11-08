@@ -1422,14 +1422,14 @@ test('设置页：推送提醒区开关保存 pushEnabled，并展示 self/offic
   await flushAsync();
   tree = renderer.render();
 
-  // 状态行：通道（mixed → 混合自动分流）+ self/official 设备数 + 官方 hub
+  // 状态行：通道（mixed → 混合自动分流）+ self/official 设备数；hub 地址不在界面展示。
   const pageText = collectText(tree);
   assert.match(pageText, /推送通道/);
   assert.match(pageText, /混合（自动分流）/);
   assert.match(pageText, /自部署设备/);
   assert.match(pageText, /官方直连设备/);
-  assert.match(pageText, /官方推送 hub/);
-  assert.match(pageText, /https:\/\/push\.example\.com/);
+  assert.doesNotMatch(pageText, /官方推送 hub/);
+  assert.doesNotMatch(pageText, /https:\/\/push\.example\.com/);
   assert.match(pageText, /1 台/);
   assert.match(pageText, /2 台/);
 
