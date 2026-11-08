@@ -27,6 +27,10 @@ export class RelayConnector {
     pushRegisterTimeoutMs = 5000,
     /** `push.send` 等 `push.result` 的超时（毫秒）；契约 §4.2：超时只记日志、不重发。 */
     pushIntentTimeoutMs = 15_000,
+    /** 握手超时：WebSocket 建连后一直收不到 host.ready（半开/代理挂起）就重连（毫秒）。 */
+    handshakeTimeoutMs = 10_000,
+    /** 静默超时：relay 每 10s 发 host.heartbeat；超过该时长没有任何消息就重连（毫秒）。 */
+    livenessTimeoutMs = 35_000,
   }) {
     this.relayUrl = relayUrl;
     this.hostId = hostId;
@@ -41,6 +45,8 @@ export class RelayConnector {
     this.onPushResult = typeof onPushResult === 'function' ? onPushResult : undefined;
     this.pushRegisterTimeoutMs = Number(pushRegisterTimeoutMs) > 0 ? Number(pushRegisterTimeoutMs) : 5000;
     this.pushIntentTimeoutMs = Number(pushIntentTimeoutMs) > 0 ? Number(pushIntentTimeoutMs) : 15_000;
+    this.handshakeTimeoutMs = Number(handshakeTimeoutMs) > 0 ? Number(handshakeTimeoutMs) : 10_000;
+    this.livenessTimeoutMs = Number(livenessTimeoutMs) > 0 ? Number(livenessTimeoutMs) : 35_000;
     /**
      * 已成功登记（或本连接周期内登记成功）的设备 token；重连 ready 后自动补发。
      * 只存内存、只用于控制消息，不落盘、不进日志/状态明文。
@@ -59,6 +65,12 @@ export class RelayConnector {
     this.retryMs = 1000;
     this.heartbeatTimer = undefined;
     this.retryTimer = undefined;
+    /** 建连后迟迟没有 host.ready 的看门狗（防半开连接一直挂着）。 */
+    this.handshakeTimer = undefined;
+    /** ready 后 relay 心跳的存活看门狗（防链路静默半开）。 */
+    this.livenessTimer = undefined;
+    /** 最近一次收到 relay 控制帧的时间（心跳/任何消息都算）。 */
+    this.lastRelayMessageAt = 0;
     /** @type {Array<{ frame: Buffer, socket: import('node:net').Socket | undefined }>} 有序待发队列 */
     this.sendQueue = [];
     this.sendQueueBytes = 0;
@@ -86,6 +98,9 @@ export class RelayConnector {
     this.closed = true;
     clearInterval(this.heartbeatTimer);
     clearTimeout(this.retryTimer);
+    clearTimeout(this.handshakeTimer);
+    clearInterval(this.livenessTimer);
+    this.livenessTimer = undefined;
     this.#clearPushWaiters();
     this.#resetSendQueue();
     this.#closeAllStreams('connector-stopped');
@@ -221,6 +236,8 @@ export class RelayConnector {
       return;
     }
     this.ws = ws;
+    this.lastRelayMessageAt = Date.now();
+    this.#armHandshakeTimeout(ws);
     ws.binaryType = 'arraybuffer';
     ws.addEventListener('open', () => {
       this.log('relay control socket open');
@@ -233,6 +250,7 @@ export class RelayConnector {
       }));
     });
     ws.addEventListener('message', (event) => {
+      this.lastRelayMessageAt = Date.now();
       const data = event.data;
       if (typeof data === 'string') {
         this.#onControlMessage(data);
@@ -250,11 +268,54 @@ export class RelayConnector {
       this.ws = undefined;
       this.connected = false;
       clearInterval(this.heartbeatTimer);
+      clearTimeout(this.handshakeTimer);
+      clearInterval(this.livenessTimer);
+      this.livenessTimer = undefined;
       this.#clearPushWaiters();
       this.#resetSendQueue();
       this.#closeAllStreams('relay-disconnected');
       if (!this.closed) this.#scheduleReconnect();
     });
+  }
+
+  /**
+   * 握手看门狗：TCP/TLS 建连后迟迟收不到 host.ready（半开、代理挂起）时主动断开重连。
+   * 否则 socket 会一直“看起来连着”，隧道实际不可用，只能等 TCP 超时。
+   */
+  #armHandshakeTimeout(ws) {
+    clearTimeout(this.handshakeTimer);
+    this.handshakeTimer = setTimeout(() => {
+      if (this.ws !== ws || this.connected || this.closed) return;
+      this.log(`relay handshake timeout after ${this.handshakeTimeoutMs}ms; reconnecting`);
+      this.#dropSocket(ws, 'handshake timeout');
+    }, this.handshakeTimeoutMs);
+    this.handshakeTimer.unref?.();
+  }
+
+  /**
+   * 存活看门狗：ready 后 relay 每 10s 发一次 host.heartbeat；超过 livenessTimeoutMs 没收到
+   * 任何控制帧，说明链路半开（代理/VPN/NAT 静默丢包），主动断开让 #connect 重连。
+   */
+  #startLivenessWatch() {
+    if (this.livenessTimer) return;
+    const tick = Math.max(500, Math.min(5000, Math.floor(this.livenessTimeoutMs / 5)));
+    this.livenessTimer = setInterval(() => {
+      if (this.closed || !this.connected) return;
+      const silence = Date.now() - this.lastRelayMessageAt;
+      if (silence <= this.livenessTimeoutMs) return;
+      this.log(`relay silent for ${silence}ms (limit ${this.livenessTimeoutMs}ms); reconnecting`);
+      this.#dropSocket(this.ws, 'heartbeat timeout');
+    }, tick);
+    this.livenessTimer.unref?.();
+  }
+
+  /** 主动丢弃当前连接（close 事件里会按退避重连）。 */
+  #dropSocket(ws, reason) {
+    this.lastError = reason;
+    try {
+      if (ws && typeof ws.terminate === 'function') ws.terminate();
+      else ws?.close();
+    } catch { /* ignore */ }
   }
 
   #onControlMessage(text) {
@@ -264,6 +325,8 @@ export class RelayConnector {
       this.connected = true;
       this.lastError = null;
       this.retryMs = 1000;
+      clearTimeout(this.handshakeTimer);
+      this.#startLivenessWatch();
       this.log(`relay ready: ${msg.hostname ?? this.hostId}`);
       clearInterval(this.heartbeatTimer);
       this.heartbeatTimer = setInterval(() => this.#send({ t: RELAY_MSG.HOST_HEARTBEAT }), 10_000);

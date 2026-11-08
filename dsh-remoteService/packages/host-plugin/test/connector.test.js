@@ -367,3 +367,76 @@ test('relay connector: removePushToken 后重连不再补报该设备 token（R2
     await relay.close();
   }
 });
+
+test('relay connector: handshake watchdog reconnects when host.ready never arrives', async () => {
+  const { WebSocketServer } = await import('ws');
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const port = wss.address().port;
+  let connections = 0;
+  wss.on('connection', (ws) => {
+    connections += 1;
+    // 故意不回 host.ready：模拟“TCP 连着但 relay 不回话”的半开/挂起。
+    ws.on('message', () => {});
+  });
+  const { RelayConnector } = await import('../lib/connector.js');
+  const connector = new RelayConnector({
+    relayUrl: `ws://127.0.0.1:${port}`,
+    hostId: 'h_hs',
+    hostToken: 'tok',
+    hostName: 'HS Test',
+    getLocalPort: () => 1,
+    audit: { append() {} },
+    handshakeTimeoutMs: 120,
+    livenessTimeoutMs: 30_000,
+  });
+  connector.start();
+  try {
+    await waitFor(() => connections >= 2, 3000);
+    assert.ok(connections >= 2, '握手超时后应主动重连');
+    assert.equal(connector.isConnected(), false);
+  } finally {
+    connector.stop();
+    await new Promise((resolve) => wss.close(resolve));
+  }
+});
+
+test('relay connector: liveness watchdog reconnects when relay goes silent after ready', async () => {
+  const { WebSocketServer } = await import('ws');
+  const { RELAY_MSG } = await import('dsh-remote-protocol');
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise((resolve) => wss.once('listening', resolve));
+  const port = wss.address().port;
+  let connections = 0;
+  wss.on('connection', (ws) => {
+    connections += 1;
+    ws.on('message', (data, isBinary) => {
+      if (isBinary) return;
+      const message = JSON.parse(data.toString());
+      if (message.t !== RELAY_MSG.HOST_HELLO) return;
+      ws.send(JSON.stringify({
+        t: RELAY_MSG.HOST_READY, protocolVersion: 1, hostId: 'h_live', hostname: 'h_live.relay.test', domain: 'relay.test',
+      }));
+      // ready 之后不再发 host.heartbeat：模拟半开链路。
+    });
+  });
+  const { RelayConnector } = await import('../lib/connector.js');
+  const connector = new RelayConnector({
+    relayUrl: `ws://127.0.0.1:${port}`,
+    hostId: 'h_live',
+    hostToken: 'tok',
+    hostName: 'Live Test',
+    getLocalPort: () => 1,
+    audit: { append() {} },
+    handshakeTimeoutMs: 5000,
+    livenessTimeoutMs: 120,
+  });
+  connector.start();
+  try {
+    await waitFor(() => connections >= 2, 4000);
+    assert.ok(connections >= 2, '静默超时后应主动重连（不等 TCP 超时）');
+  } finally {
+    connector.stop();
+    await new Promise((resolve) => wss.close(resolve));
+  }
+});
