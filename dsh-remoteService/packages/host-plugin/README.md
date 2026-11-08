@@ -102,6 +102,38 @@ DSH 设置 → 远程访问。配置落盘在 `~/.dsh/remote-access/config.json`
 `relayDomain` / `mobilePort` / relay token 公钥 / `serviceUrl` / `controlUrl` / `hostName`。
 **不要**把 `group.json`、邀请码或配对二维码提交到仓库 / 截图 / 日志里。
 
+### 设置页各项（详细说明）
+
+设置页每项只保留一两句提示，完整说明如下。文案在 host 插件的 `client.js`（`zh` / `en`
+两份），改完重启 DSH 生效；App 无需重新构建。
+
+**群体服务（A 模式）**
+向部署方 relay 注册后，主机只做出站隧道；relay 边缘终止手机 TLS，明文请求经隧道进入本机
+loopback 代理，逐请求验签后反代到 DSH。因此**部署方（服务提供方）可见会话明文**，请只注册
+自己信任的服务。链路与验签细节见 §2。
+
+**启用远程访问**
+关闭后隧道断开、loopback 代理停止，手机无法访问这台电脑；已配对设备保留，重新开启即恢复。
+
+**新设备配对需要本机确认**
+开启后，手机扫码提交公钥后还需在本机核对 SAS 短码并点「允许配对」；关闭后扫码提交公钥即
+完成配对。
+
+**允许手机重启主机 DSH**（默认关闭）
+开启后 App 顶栏显示 ⏻，可在手机上重启主机（会短暂断开，随后自动恢复）；关闭后 App 不显示
+该按钮，`POST /__dsh_remote/restart` 返回 501。平台限制：Linux Electron 不支持（501），
+Windows 的 kill/拉起为 best-effort。若 DSH 由 launchd（`KeepAlive`）或 systemd（`Restart=`）
+托管，杀进程后 supervisor 也会拉起，可能与 helper 的重新拉起短暂竞争（多起的实例会因端口
+占用退出，不影响先起的实例）；这类部署建议在 supervisor 层重启。
+
+**推送提醒 / 详细推送内容**
+主机只上报「推送意图 + 设备 token」：自部署 App（self）经 relay 发送，官方 App（official）
+由主机凭 credential 直连官方推送 hub；主机不持有 Apple 凭据。关闭「推送提醒」后，本轮结束 /
+等待回答都不再提醒；保存不重建隧道、立即生效。
+「详细推送内容」开启后，通知标题显示会话标题、正文显示本轮摘要（任务完成 / 正在等待回答 /
+出错）；关闭时只发通用文案。详细内容会经过推送服务（官方 hub 或自部署 relay），请自行判断
+是否包含敏感信息。
+
 ### 从单体版（≤0.1.x）升级
 
 classic 配置字段（`relayUrl` / `relayDomain` / `hostId` / `hostToken` / `publicPort` /
