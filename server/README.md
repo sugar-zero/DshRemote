@@ -158,8 +158,10 @@ relay 自己终止手机 TLS，nginx **只做 L4 SNI 透传**，不要做 HTTPS 
 推送由**服务端统一发送**，主机（朋友的电脑）不需要 Apple 开发者账号、不需要 `.p8`/Team ID/Key ID。
 不配置 = 不推送（App 设置页会显示「服务器未开启推送」），其它功能不受影响。
 实现契约：R2（官方 App 设备直连官方 hub）见
-[`../docs/group-push-r2-contract.zh.md`](../docs/group-push-r2-contract.zh.md)（hub 0.3.0 / relay 0.4.0）；
+[`../docs/group-push-r2-contract.zh.md`](../docs/group-push-r2-contract.zh.md)（hub 0.3.1 / relay 0.4.0）；
 O1 自部署推送（self）历史契约见 [`../docs/group-push-design.zh.md`](../docs/group-push-design.zh.md)。
+**使用与边界（自签 App 必须配 relay；官方 App 不需要；常见误报 bug）：
+[`../docs/group-push-usage.zh.md`](../docs/group-push-usage.zh.md)**。
 
 按 App 来源自动走两条链路之一：
 

@@ -251,6 +251,7 @@ POST /__group/auth/token { deviceId, nonce, signature }
 
 契约见根目录 [`docs/group-push-r2-contract.zh.md`](../docs/group-push-r2-contract.zh.md) §3/§5
 （O1 历史契约 [`docs/group-push-design.zh.md`](../docs/group-push-design.zh.md)；self 推送仍有效，official 转发已删除）。
+**使用与边界（含“看起来像 bug 其实是设计”清单）：[`docs/group-push-usage.zh.md`](../docs/group-push-usage.zh.md)**。
 
 **两条通道**：
 

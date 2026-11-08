@@ -51,6 +51,7 @@ relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 Ap
 完整设计与安全决策：[docs/group-service-design.zh.md](docs/group-service-design.zh.md)；
 推送实现契约（R2）：[docs/group-push-r2-contract.zh.md](docs/group-push-r2-contract.zh.md)
 （O1 历史契约：[docs/group-push-design.zh.md](docs/group-push-design.zh.md)；self 推送仍有效，official 转发已删除）。
+推送使用与边界（字段说明/常见误报 bug/排错）：[docs/group-push-usage.zh.md](docs/group-push-usage.zh.md)。
 
 ## 从这里开始
 
@@ -58,7 +59,8 @@ relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 Ap
 |---|---|
 | 部署 relay（证书、端口、nginx、后台、邀请码） | [server/README.md](server/README.md) |
 | 配置自签 App 的 self 推送（部署方 APNs key） | [server/README.md §6](server/README.md#6-推送可选自部署--官方推送-hub) |
-| 官方推送 hub（运营方部署/CLI/配额） | [dsh-remoteService/packages/push-hub/README.md](dsh-remoteService/packages/push-hub/README.md) |
+| 官方推送 hub（运营方部署/配额） | [dsh-remoteService/packages/push-hub/README.md](dsh-remoteService/packages/push-hub/README.md) |
+| 推送怎么用、边界与常见误报 bug | [docs/group-push-usage.zh.md](docs/group-push-usage.zh.md) |
 | 在 DSH 主机安装/配置群体服务插件 | [dsh-remoteService/packages/host-plugin/README.md](dsh-remoteService/packages/host-plugin/README.md) |
 | 构建/运行手机 App | [dsh-remoteApp/README.md](dsh-remoteApp/README.md) |
 | 看服务端 monorepo（protocol/apns/relay/host-plugin/push-hub） | [dsh-remoteService/README.md](dsh-remoteService/README.md) |

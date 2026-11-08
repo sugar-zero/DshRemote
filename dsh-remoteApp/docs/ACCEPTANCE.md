@@ -16,7 +16,7 @@
 > 说明：本包是 **0.1.9 build 17 的同一份 App 代码**，版本号递增为 **0.2.0**、构建号 **18**，并注入
 > **官方通道构建配置**：`EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB=https://<hub 公网基址>`
 > （真实地址只在构建环境，不入库；仓库默认仍是 `self` + 空地址）。
-> 前置：官方 hub 0.3.0 已部署且公网 HTTPS 可达（`/v1/enroll/challenge` 返回 200），
+> 前置：官方 hub（0.3.x，本次为 0.3.0 镜像 + env TTL=30；0.3.1 镜像默认 30 天也已备好）已部署且公网 HTTPS 可达（`/v1/enroll/challenge` 返回 200），
 > `HUB_PUBLIC_URL` 与 App 内置地址一致；`aps-environment=development`（APNs sandbox 通道）。
 > **以下结果尚未由用户确认，不得勾选。**
 

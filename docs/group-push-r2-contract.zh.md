@@ -3,7 +3,8 @@
 > 2026-11-01 · 分支 `feat/group-service` · 状态：**已实现（代码+测试），待真机验收**
 > 关联：[`group-push-routing-options.zh.md`](group-push-routing-options.zh.md)（方案/取舍）、
 > [`group-push-load-evaluation.zh.md`](group-push-load-evaluation.zh.md)（负载/限流默认值）、
-> [`group-push-design.zh.md`](group-push-design.zh.md)（旧 O1 契约：self 推送仍有效；official 转发已删除）。
+> [`group-push-design.zh.md`](group-push-design.zh.md)（旧 O1 契约：self 推送仍有效；official 转发已删除）、
+> [`group-push-usage.zh.md`](group-push-usage.zh.md)（使用与边界：字段说明/常见误报 bug/排错）。
 > 版本：**protocol 0.3.1 / push-hub 0.3.1 / host-plugin 0.2.6 / App 0.2.0 (build 18，官方构建；self 包为 0.1.9 build 17，代码相同)**；
 > relay **0.4.0**：只保留 self 推送；R2 官方推送不经过 relay。
 > **2026-11-08：credential 默认 TTL 由 7 天延长到 30 天**（只有 App 能 PoP 续期；主机侧续期改造记入 todo，详见 `todo/TODO.md`）。

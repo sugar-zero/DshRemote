@@ -52,7 +52,8 @@
 
 ## 2026-11-08 官方 hub 部署就绪 + 官方 App build 18（0.2.0）构建/装机
 
-- **官方 hub（push-hub 0.3.0）已部署**：Docker 容器 + nginx/HTTPS 公网入口（`HUB_PUBLIC_URL` 为
+- **官方 hub 已部署**（镜像 0.3.0 + `HUB_CREDENTIAL_TTL_DAYS=30`；0.3.1 镜像默认 30 天也已构建备好）：
+  Docker 容器 + nginx/HTTPS 公网入口（`HUB_PUBLIC_URL` 为
   `https://<hub 公网基址>`，真实地址只在部署环境，不入库）；APNs Auth Key 使用 Sandbox & Production
   覆盖的 key；`/data` 卷持久化 Ed25519 签名 key；容器日志 `apns=ready credential=enabled enroll=enabled`。
   公网自检：`POST https://<hub>/v1/enroll/challenge` → **200**（challenge JSON），说明 DNS/TLS/反代/hub 全链路可用。
@@ -319,17 +320,27 @@ O1 历史契约：[`docs/group-push-design.zh.md`](docs/group-push-design.zh.md)
 
 ## 已知限制
 
-- **真机推送验收未完成**：需部署 relay 0.4.0（self 需 APNs key；official 由官方 hub 负责，不过 relay）+
-  带 Push 能力签名的 App 安装后由用户实测；用户确认前不提交、不勾选验收。
+- **推送通道由 App 构建决定**，主机设置页没有“选通道”：状态由已登记设备推导
+  （self / official / mixed）。使用与边界（字段说明 / 常见“像 bug 但不是”的行为 / 排错）：
+  [`docs/group-push-usage.zh.md`](docs/group-push-usage.zh.md)。
+- **R2 官方推送真机验收（2026-11-08 用户确认通过）**：official 登记、turn-end 与 ask_user_question
+  通知（锁屏/后台）、点通知打开主机、主机「推送提醒」开关、键盘回归；**self 通道待另测**
+  （需重装 self 包；一台手机不能同时装两种构建）。
+- **自签 App 的推送必须由部署方 relay 配置** `group.push`（自己的 APNs key/team/topic）；
+  relay 未配置时主机显示「自部署设备 0 台 / relay 未在 5s 内回应」。官方 App 不需要任何 relay 推送配置。
+- **App 本地推送开关只停止新登记、不注销已登记 token**；要彻底停止请关主机「推送提醒」或撤销设备。
+  主机侧关闭只停止**后续**推送意图，已发出的通知不会撤回。
+- relay/hub 的设备 token / credential 只存内存：重启后清空，需 App 重新进入主机/回前台补报；
+  重登记前不会送达（设计取舍：不在服务端持久化设备 token）。
+- `official` 只发固定通用文案（hub 不接收会话内容）；`self` + `summary` 可选（锁屏可见，自行评估隐私）。
+- **credential 默认 TTL 30 天**（hub 0.3.1，原 7 天）：只有 App 能 P-256 PoP 续期，需 App 至少每 30 天
+  打开一次；主机侧 lifecycle（refreshToken / 主机级 credential）为后续计划，见上方 2026-11-08 决策与
+  `docs/group-push-usage.zh.md` §3。
+- **hub 没有 web 管理后台**：限速/TTL/APNs 均为 env 或 `hub.json` 配置，改完需重建容器；`/healthz`
+  只读摘要。hub 对官方 App 开放登记（无账号/邀请），依靠 PoP + 限速 + APNs topic 兜底；
+  App Attest 为后续可选加固。
+- 镜像：relay 0.4.0 与 hub 0.3.1 已在本机构建/导出（tar + sha256 见 `server/README.md` 与本文）；
+  镜像 tar 不入库。
 - Android 未构建/未真机（本机无 Android SDK）；**FCM 未接入**（App 对 Android 返回明确原因）。
-- relay/hub 的设备 token 只存内存：relay/hub 重启后 token 表清空，App 重新进入主机/回前台时
-  自动重登记；重登记前不会送达推送（设计取舍：避免在服务端持久化设备 token）。
-- `official` 模式只发固定通用文案（hub 不接收会话内容）；`self` + `summary` 可选，锁屏可见，自行评估隐私。
-- 主机侧「推送提醒」关闭只停止新的推送意图；已登记 token 在设备撤销/relay 重启前仍在表里
-  （当前没有 App 主动注销接口）。
-- App 本地推送开关只停止新的登记；已登记 token 同理（可配合主机开关/设备撤销立即失效）。
-- relay 0.3.1 镜像已于 2026-11-01 在本机构建/导出（`server/dsh-relay-0.3.1-group-linux-amd64.tar`，
-  仅作回滚/历史；0.4.0 镜像待重建（构建命令见 `server/README.md` §3.2）
-  sha256 见 `server/README.md` §3.2；`docker load` + 容器 `/healthz` 冒烟通过）；官方 hub 镜像尚未构建。
 - iOS 原生无法把 App 注入的会话 cookie 设为 HttpOnly（依赖 relay `Set-Cookie`，见设计文档）。
-- 协议/配置仍会演进，仅限小范围邀请制使用。
+- 协议/配置仍会演进；群体版 relay 注册仍是邀请制，整体仅限小范围可信群体使用。

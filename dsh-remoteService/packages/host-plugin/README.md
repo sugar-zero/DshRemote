@@ -9,7 +9,8 @@
 > 同机混用、主机自动分流；**主机不持有任何 Apple 凭据，token/credential 只存内存**。
 > 0.2.5 增加服务端集中推送（R1，legacy 兼容）；0.2.4 收窄组件保存后的连接断开范围
 > （只断 `/api/remote.mux`）。旧版配置字段会被忽略，升级后需要重新注册一次。
-> 推送契约：[`docs/group-push-r2-contract.zh.md`](../../../docs/group-push-r2-contract.zh.md)。
+> 推送契约：[`docs/group-push-r2-contract.zh.md`](../../../docs/group-push-r2-contract.zh.md)；
+> 使用与边界（设置页字段/常见误报 bug）：[`docs/group-push-usage.zh.md`](../../../docs/group-push-usage.zh.md)。
 
 运行在 **DSH 主机** 上的远程访问插件，提供：
 
