@@ -22,6 +22,8 @@ export const TUNNEL_BASE = '/__dsh_remote';
 export const PAIR_PATH = `${TUNNEL_BASE}/pair`;
 export const PAIR_STATUS_PATH = `${TUNNEL_BASE}/pair/status`;
 export const STATUS_PATH = `${TUNNEL_BASE}/status`;
+/** 群体版：App 向主机登记 APNs device token（主机再经控制连接转发给 relay）。 */
+export const PUSH_TOKEN_PATH = `${TUNNEL_BASE}/push-token`;
 
 /** 配对二维码 URI scheme（群体版统一使用 v2：`dshremote://pair?v=2&auth=token`）。 */
 export const PAIR_URI_SCHEME = 'dshremote';
@@ -164,6 +166,11 @@ export const RELAY_MSG = Object.freeze({
   DEVICE_SYNCED: 'device.synced',
   DEVICE_REVOKE: 'device.revoke',
   DEVICE_REVOKED: 'device.revoked',
+  /** 0.3.0 新增：服务端集中推送（host → relay 的 token 登记 / 推送意图）。 */
+  PUSH_REGISTER: 'push.register',
+  PUSH_REGISTERED: 'push.registered',
+  PUSH_SEND: 'push.send',
+  PUSH_RESULT: 'push.result',
   ERROR: 'error',
 });
 
@@ -381,3 +388,102 @@ export function parseCookieHeader(headerValue) {
   }
   return out;
 }
+
+// ---------------------------------------------------------------------------
+// 群体服务版：服务端集中推送（0.3.0）
+// ---------------------------------------------------------------------------
+// 推送由 relay 统一发送：
+//   - self 模式：relay 用部署方的 APNs Auth Key 直连 Apple；
+//   - official 模式：relay 把请求转给官方推送 hub（官方团队 key 发送，只发通用文案）。
+// 主机只上报「推送意图 + 设备 token」，不持有任何 Apple 凭据。
+// 详见 docs/group-push-design.zh.md。
+
+/** 推送 provider（v1 只有 APNs；Android FCM 后续接入同一结构）。 */
+export const PUSH_PROVIDER = Object.freeze({ APNS: 'apns' });
+/** APNs 环境：开发签名包走 sandbox，发布签名包走 production（由 App 上报）。 */
+export const PUSH_ENVIRONMENT = Object.freeze({ DEVELOPMENT: 'development', PRODUCTION: 'production' });
+/** 推送类型：一轮结束 / 等待用户回答（主机侧判定，relay/hub 只认这两个枚举）。 */
+export const PUSH_KINDS = Object.freeze({ TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer' });
+/** relay 对同一 host 的推送意图最小间隔（秒）；host 侧另有会话级 30s 冷却。 */
+export const GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS = 30;
+/** 同一主机最多保留的设备推送 token 数。 */
+export const GROUP_PUSH_MAX_TOKENS_PER_HOST = 16;
+/** 同一 host 每分钟最多推送意图数（relay 侧防滥用）。 */
+export const GROUP_PUSH_MAX_INTENTS_PER_MINUTE = 30;
+
+const APNS_DEVICE_TOKEN_RE = /^[0-9a-f]{64}$/;
+const GROUP_PUSH_KIND_SET = new Set(Object.values(PUSH_KINDS));
+
+/** APNs device token：64 位小写 hex（App 侧 expo-notifications 返回的就是这个形态）。 */
+export function isValidApnsDeviceToken(raw) {
+  return typeof raw === 'string' && APNS_DEVICE_TOKEN_RE.test(raw);
+}
+
+/** 是否合法 APNs 环境值。 */
+export function isPushEnvironment(raw) {
+  return raw === PUSH_ENVIRONMENT.DEVELOPMENT || raw === PUSH_ENVIRONMENT.PRODUCTION;
+}
+
+/** 是否合法推送类型。 */
+export function isPushKind(raw) {
+  return GROUP_PUSH_KIND_SET.has(raw);
+}
+
+// ---------------------------------------------------------------------------
+// R2：官方推送与 relay 解耦（App ↔ 官方 hub 设备登记）
+// - channel 决定 device token 归属：official（官方 App）/ self（部署方自签 App）；
+// - 官方 App 用设备私钥向 hub 登记，换 per-device credential，主机拿 credential 直连 hub；
+// - self 设备仍走 relay。详见 docs/group-push-r2-contract.zh.md。
+// ---------------------------------------------------------------------------
+
+/** 推送通道：official = 官方 App（官方 hub 直连）；self = 部署方自签 App（relay/self）。 */
+export const PUSH_CHANNELS = Object.freeze({ OFFICIAL: 'official', SELF: 'self' });
+/** R2 设备登记签名消息版本（App 与 hub 必须逐字节一致）。 */
+export const PUSH_ENROLL_VERSION = 'dshremote-push-enroll-v1';
+/** R2 credential 的 typ / 版本（hub 签发、hub 自己校验；主机只透传）。 */
+export const PUSH_CREDENTIAL_TYP = 'dsh-push-device';
+export const PUSH_CREDENTIAL_VERSION = 1;
+/** R2 官方 hub 路径。 */
+export const PUSH_ENROLL_CHALLENGE_PATH = '/v1/enroll/challenge';
+export const PUSH_ENROLL_PATH = '/v1/enroll';
+export const PUSH_SEND_PATH = '/v1/push';
+
+const PUSH_CHANNEL_SET = new Set(Object.values(PUSH_CHANNELS));
+const BUNDLE_ID_RE = /^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$/;
+
+/** 是否合法推送通道。 */
+export function isPushChannel(raw) {
+  return typeof raw === 'string' && PUSH_CHANNEL_SET.has(raw);
+}
+
+/** 旧客户端缺省按 self（relay）处理；非法值原样返回空串由调用方拒绝。 */
+export function normalizePushChannel(raw, fallback = PUSH_CHANNELS.SELF) {
+  if (raw === undefined || raw === null || raw === '') return fallback;
+  return isPushChannel(raw) ? raw : '';
+}
+
+/** bundle id：3..155 字符，仅字母数字/./-，首尾为字母数字（iOS bundle id / Android package）。 */
+export function isValidBundleId(raw) {
+  return typeof raw === 'string' && raw.length >= 3 && raw.length <= 155 && BUNDLE_ID_RE.test(raw);
+}
+
+/**
+ * R2 设备登记被签名的消息（UTF-8，`\n` 连接，无末尾换行）。
+ * App 侧必须用同一字节序列签名；hub 用 verifyGroupDeviceSignature 验证。
+ * @param {{challengeId:string, nonce:string, devicePublicKey:string, hostId?:string,
+ *          token:string, environment:string, bundleId:string}} input
+ * @returns {Buffer}
+ */
+export function pushEnrollMessage({ challengeId, nonce, devicePublicKey, hostId = '', token, environment, bundleId }) {
+  return Buffer.from([
+    PUSH_ENROLL_VERSION,
+    String(challengeId ?? ''),
+    String(nonce ?? ''),
+    String(devicePublicKey ?? ''),
+    String(hostId ?? ''),
+    String(token ?? ''),
+    String(environment ?? ''),
+    String(bundleId ?? ''),
+  ].join('\n'), 'utf8');
+}
+

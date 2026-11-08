@@ -8,7 +8,6 @@
     "keyFile": "/data/certs/relay.example.com/privkey.pem"
   },
   "logLevel": "info",
-
   "group": {
     "file": "/data/group.json",
     "mobilePort": 443,
@@ -39,6 +38,19 @@
       "maxAttemptsPerMinutePerIp": 30,
       "signingKeyFile": "/data/signing-key.pem"
     },
-    "adminTokenFile": "/data/admin-token"
+    "adminTokenFile": "/data/admin-token",
+    "push": {
+      "enabled": false,
+      "mode": "self",
+      "content": "generic",
+      "cooldownSeconds": 30,
+      "self": {
+        "keyFile": "/data/apns/AuthKey_<KEY_ID>.p8",
+        "keyId": "<KEY_ID>",
+        "teamId": "<TEAM_ID>",
+        "topic": "<BUNDLE_ID>",
+        "environment": "auto"
+      }
+    }
   }
 }

@@ -1,0 +1,26 @@
+{
+  "name": "dsh-remote-push-hub",
+  "version": "0.3.1",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "DSH 群体服务版官方推送 hub：官方 App 设备登记/credential + 主机直连推送（固定通用文案 APNs 投递，零第三方依赖）",
+  "main": "index.js",
+  "bin": {
+    "dsh-remote-push-hub": "bin/push-hub.js"
+  },
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "dsh-remote-apns": "0.1.0",
+    "dsh-remote-protocol": "0.3.1"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

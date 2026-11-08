@@ -1,0 +1,115 @@
+# ============================================================================
+# 官方推送 hub（选项 2：走项目所有者的服务）部署模板
+#
+# 用途（0.3.0 = R2-only）：
+#   - R2：官方 App 用设备密钥向 hub 登记（/v1/enroll*）换 per-device credential；
+#     主机拿 credential 直连 /v1/push（官方推送与部署方 relay 解耦）；
+#   - 两种方式都只发固定通用文案，不接收会话内容、不持久化设备 token。
+# 契约：docs/group-push-r2-contract.zh.md §4/§4.5；hub 代码：dsh-remoteService/packages/push-hub。
+#
+# 准备（只需 .env + APNs key 目录，签名 key 由 hub 首次启动自己创建）：
+#   cp .env.push-hub.example .env.push-hub
+#   #   至少改 HUB_PUBLIC_URL / HUB_APNS_KEY_DIR / KEY_ID / TEAM_ID / TOPIC
+#   mkdir -p data/push-hub
+#   chown -R ${HUB_UID:-100}:${HUB_GID:-101} data/push-hub   # 容器非 root 运行，需可写 /data
+#   # 宿主机放官方 APNs .p8 的目录（只读挂载，不要放进仓库）：
+#   #   HUB_APNS_KEY_DIR=/path/to/apns-keys 下放 AuthKey_<KEY_ID>.p8（0600，属主 = 运行 UID）
+#   # /data 卷只持久化 push-hub-signing-key.pem（Ed25519 credential 签名 key，0600，
+#   # 首次启动自动生成；**不要删**，删了已发 credential 全失效）。
+#
+# 构建 + 启动：
+#   docker compose --env-file .env.push-hub -f docker-compose.push-hub.yml up -d --build
+#   # 本机 Apple Silicon、服务器 x86_64：
+#   DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.push-hub \
+#     -f docker-compose.push-hub.yml up -d --build
+#
+# 端口/拓扑（只有 nginx 对公网）：
+#   ★ 公网：nginx listen 443（例如 push.example.com）终止 TLS → 反代到 127.0.0.1:19445
+#   本机：hub 只发布到宿主 127.0.0.1:${HUB_HOST_PORT:-19445}，**不要**改成 0.0.0.0 对公网
+#   容器内：hub 监听 0.0.0.0:9445（Docker 端口发布本身已限制在宿主回环）
+#   nginx 示例：server/nginx/push-hub-http.conf
+#
+# 部署后不需要给任何 relay 发凭据：官方 App 直接向 /v1/enroll* 登记。
+#
+# 自检：
+#   curl -fsS http://127.0.0.1:${HUB_HOST_PORT:-19445}/healthz
+#   → {"ok":true,"apns":{"configured":true,"topic":"<OFFICIAL_BUNDLE_ID>"},
+#      "credential":{"enabled":true,"ttlDays":7},"enroll":{"enabled":true},
+#      "limits":{...}}
+# ============================================================================
+
+name: dsh-push-hub
+
+services:
+  push-hub:
+    build:
+      context: ../dsh-remoteService
+      dockerfile: packages/push-hub/Dockerfile
+    image: ${DSH_PUSH_HUB_IMAGE:-dsh-remote-push-hub:0.3.1}
+    container_name: dsh-push-hub
+    # 非 root 运行；APNs key 目录与 data 目录的属主需匹配这两个 UID/GID。
+    user: "${HUB_UID:-100}:${HUB_GID:-101}"
+    command: ["node", "packages/push-hub/bin/push-hub.js", "serve"]
+    restart: unless-stopped
+    ports:
+      # ★ 只发布到宿主回环：公网入口一律走 nginx（TLS 终止）。
+      - "${HUB_BIND_HOST:-127.0.0.1}:${HUB_HOST_PORT:-19445}:9445"
+    environment:
+      # 容器内监听（Docker 端口发布到宿主回环，容器内必须 0.0.0.0 才能被映射）
+      HUB_LISTEN_HOST: "0.0.0.0"
+      HUB_PORT: "9445"
+      HUB_LOG_LEVEL: ${HUB_LOG_LEVEL:-info}
+      # R2：credential 的 aud。必须 = 官方 App 打包内置的 hub 公网地址（nginx https 域名）。
+      # 不设置时会启动但设备直连/enroll 不可用（healthz credential.enabled=false）。
+      HUB_PUBLIC_URL: ${HUB_PUBLIC_URL:?HUB_PUBLIC_URL 未设置：官方 App 内置的 hub 公网地址，例如 https://push.example.com}
+      # R2：Ed25519 签名 key（0600；不存在则首次启动自动生成到 /data 卷）
+      HUB_SIGNING_KEY_FILE: ${HUB_SIGNING_KEY_FILE:-/data/push-hub-signing-key.pem}
+      HUB_CREDENTIAL_TTL_DAYS: ${HUB_CREDENTIAL_TTL_DAYS:-30}
+      HUB_ENROLL_ENABLED: ${HUB_ENROLL_ENABLED:-true}
+      HUB_ENROLL_CHALLENGE_TTL_SECONDS: ${HUB_ENROLL_CHALLENGE_TTL_SECONDS:-120}
+      # 配额（默认值见契约 §4.5 / docs/group-push-load-evaluation.zh.md §4）
+      HUB_MAX_TOKENS_PER_REQUEST: ${HUB_MAX_TOKENS_PER_REQUEST:-20}
+      HUB_ENROLL_PER_HOUR_PER_IP: ${HUB_ENROLL_PER_HOUR_PER_IP:-20}
+      HUB_ENROLL_PER_HOUR_PER_DEVICE: ${HUB_ENROLL_PER_HOUR_PER_DEVICE:-5}
+      HUB_CHALLENGE_PER_HOUR_PER_IP: ${HUB_CHALLENGE_PER_HOUR_PER_IP:-60}
+      HUB_PUSH_PER_MINUTE_PER_TOKEN: ${HUB_PUSH_PER_MINUTE_PER_TOKEN:-6}
+      HUB_PUSH_PER_DAY_PER_TOKEN: ${HUB_PUSH_PER_DAY_PER_TOKEN:-120}
+      HUB_PUSH_PER_MINUTE_PER_CREDENTIAL: ${HUB_PUSH_PER_MINUTE_PER_CREDENTIAL:-6}
+      HUB_PUSH_PER_MINUTE_PER_HOST: ${HUB_PUSH_PER_MINUTE_PER_HOST:-30}
+      HUB_PUSH_PER_MINUTE_PER_IP: ${HUB_PUSH_PER_MINUTE_PER_IP:-60}
+      HUB_PUSH_PER_MINUTE_GLOBAL: ${HUB_PUSH_PER_MINUTE_GLOBAL:-120}
+      # 官方 APNs Auth Key（挂载在 /data/apns，只读）
+      # 未设置时 compose 直接报错（避免容器起来才发现 apns configured=false）
+      HUB_APNS_KEY_FILE: ${HUB_APNS_KEY_FILE:?HUB_APNS_KEY_FILE 未设置：容器内 .p8 路径，例如 /data/apns/AuthKey_<KEY_ID>.p8}
+      HUB_APNS_KEY_ID: ${HUB_APNS_KEY_ID:?HUB_APNS_KEY_ID 未设置：Apple Developer 后台的 Key ID（10 位字母数字）}
+      HUB_APNS_TEAM_ID: ${HUB_APNS_TEAM_ID:?HUB_APNS_TEAM_ID 未设置：Apple Developer Team ID（10 位字母数字）}
+      HUB_APNS_TOPIC: ${HUB_APNS_TOPIC:?HUB_APNS_TOPIC 未设置：官方 App 的 bundle id}
+      # 可选：改用挂载的 hub.json（相对路径按该文件目录解析；env 覆盖它）
+      HUB_CONFIG: ${HUB_CONFIG:-}
+      # 可选：hub 自己跑 HTTPS（默认不需要，交给 nginx；填了就挂载证书到 /data/certs）
+      HUB_TLS_CERT_FILE: ${HUB_TLS_CERT_FILE:-}
+      HUB_TLS_KEY_FILE: ${HUB_TLS_KEY_FILE:-}
+    volumes:
+      # Ed25519 签名 key + 可选配置/证书（持久化；0600，不要提交仓库）
+      - ./data/push-hub:/data
+      # ★ 官方 APNs key 目录（只读；宿主机路径由 .env 的 HUB_APNS_KEY_DIR 指定）
+      - ${HUB_APNS_KEY_DIR:?HUB_APNS_KEY_DIR 未设置：宿主机存放 APNs .p8 的目录（只读挂载到容器 /data/apns）}:/data/apns:ro
+    # 最小权限加固：根文件系统只读，只有 /data 卷与 /tmp 可写。
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:9445/healthz').then((r) => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"

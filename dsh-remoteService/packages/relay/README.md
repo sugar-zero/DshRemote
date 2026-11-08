@@ -120,13 +120,22 @@ JSON（完整示例见 `relay.example.json`）：
       "allowUnauthenticated": false
     },
     "auth": { "signingKeyFile": "/data/signing-key.pem" },
-    "adminTokenFile": "/data/admin-token"
+    "adminTokenFile": "/data/admin-token",
+    "push": {
+      "enabled": false,
+      "mode": "self",
+      "content": "generic",
+      "cooldownSeconds": 30,
+      "self": { "keyFile": "/data/apns/AuthKey_<KEY_ID>.p8", "keyId": "<KEY_ID>",
+                "teamId": "<TEAM_ID>", "topic": "<BUNDLE_ID>", "environment": "auto" }
+    }
   }
 }
 ```
 
 - 相对路径（`tls.*`、`group.file`、`group.edge.tls.*`、`group.auth.signingKeyFile`、
-  `group.adminTokenFile`）按 **config 文件所在目录**解析。
+  `group.adminTokenFile`、`group.push.self.keyFile`）
+  按 **config 文件所在目录**解析。
 - `controlPort/httpPort/group.edge.port/... = 0` 表示临时端口（测试用；实际端口从返回值/日志读取）。
 - **`group.edge` 默认开启**（群体版唯一数据面）：必须提供覆盖 `*.<domain>` 的通配证书
   （`group.edge.tls`），否则 relay 拒绝启动；只有显式 `"group": { "edge": { "enabled": false } }`
@@ -144,7 +153,10 @@ JSON（完整示例见 `relay.example.json`）：
 `RELAY_GROUP_ADMIN_PORT/BIND`、`RELAY_GROUP_PUBLIC_CONTROL_PORT`、
 `RELAY_GROUP_EDGE_ENABLED/PORT/CERT_FILE/KEY_FILE`、`RELAY_GROUP_SIGNING_KEY_FILE`、
 `RELAY_ADMIN_TOKEN`、`RELAY_ADMIN_TOKEN_FILE`、`RELAY_TLS_CERT_FILE`、`RELAY_TLS_KEY_FILE`、
-`RELAY_LOG_LEVEL`。
+`RELAY_LOG_LEVEL`；服务端集中推送（0.4.0，只有 self，见 §6.5）：
+`RELAY_GROUP_PUSH_ENABLED/MODE/CONTENT/COOLDOWN_SECONDS`、
+`RELAY_GROUP_PUSH_APNS_KEY_FILE/KEY_ID/TEAM_ID/TOPIC/ENVIRONMENT`
+（`RELAY_GROUP_PUSH_MODE` 只接受 `self`）。
 
 ### 2.3 CLI
 
@@ -205,7 +217,8 @@ A 模式下 relay 要**终止所有主机子域的手机 TLS**，因此需要一
 ## 4. Docker 部署
 
 `packages/relay/Dockerfile` 是多阶段、`node:24-alpine`、非 root；构建上下文必须是
-`dsh-remoteService` 根目录（relay 依赖 workspace 包 `dsh-remote-protocol`）。单机示例见
+`dsh-remoteService` 根目录（relay 依赖 workspace 包 `dsh-remote-protocol` / `dsh-remote-apns`）。
+单机示例见
 `packages/relay/docker-compose.yml`；多面端口/nginx 前置的完整部署模板见
 [`server/docker-compose.group.yml`](../../../server/docker-compose.group.yml)
 与 [`server/README.md`](../../../server/README.md)。
@@ -219,7 +232,8 @@ data/
 ├── certs/wildcard/{fullchain.pem,privkey.pem}            # 边缘通配证书
 ├── group.json                                # 邀请码/主机注册表（0600，首次注册自动创建）
 ├── signing-key.pem                           # 设备会话签名私钥（0600，首次启动自动生成）
-└── admin-token                               # 部署方后台 token（0600，首次启动自动生成）
+├── admin-token                               # 部署方后台 token（0600，首次启动自动生成）
+├── apns/AuthKey_<KEY_ID>.p8                  # 可选 self 推送：APNs Auth Key（0600，只读挂载）
 ```
 
 ```bash
@@ -237,7 +251,9 @@ docker compose logs -f relay
 docker compose exec relay node packages/relay/bin/relay.js invite create --config /data/config/relay.json
 ```
 
-- 镜像 tag：`dsh-remote-relay:0.3.0-group`。
+- 镜像 tag：`dsh-remote-relay:0.4.0-group`（离线包 `server/dsh-relay-0.4.0-group-linux-amd64.tar`，
+  62,759,936 bytes，sha256 `41218320c65e4ff04a417006afcafd29702b70d61dd2553d9f35f40915bbc2ea`，
+  2026-11-02 构建 + 容器 `/healthz` 冒烟通过）。
 - `restart: unless-stopped` + 内置 `HEALTHCHECK`（`GET /healthz`）+ 日志轮转（10m × 3）。
 - 升级：`docker compose build && docker compose up -d`；证书与 group.json 在 `./data` 卷里，不受影响。
 
@@ -374,16 +390,64 @@ https://<relayDomain>:<adminPort>/__admin/
 `publicControlPort` 是注册响应下发 `controlUrl` 用的**公网** WSS 端口：nginx 前置时 = nginx 实际
 listen 的端口，直连时 = 宿主映射端口。relay 不会自动探测，填错会导致主机 control socket error。
 
+### 6.5 服务端集中推送（self，0.4.0）
+
+推送由 relay 统一发送，**主机不持有任何 Apple 凭据**；主机只经已鉴权控制连接上报
+「推送意图 + 设备 token」，relay 用**部署方自己的 APNs Auth Key** 直连 Apple
+（`dsh-remote-apns`）。当前只有一种通道：
+
+| 模式 | relay 侧配置 | 说明 |
+|---|---|---|
+| `self`（唯一） | `group.push.self.{keyFile,keyId,teamId,topic,environment}` | relay 用部署方自己的 APNs Auth Key 直连 Apple；App 必须用同一 Apple 团队签名 |
+
+> **R2 起官方 App 的推送不经过 relay**：官方 App 用设备密钥向「官方推送 hub」登记换
+> credential，主机直连 hub 推送。relay 里的 `official` 转发通道已在 0.4.0 删除，
+> `group.push.mode` 只接受 `"self"`，配成其它值会在启动时报可操作错误。
+> 契约见 [`../../../docs/group-push-r2-contract.zh.md`](../../../docs/group-push-r2-contract.zh.md)。
+
+```json
+"push": {
+  "enabled": true,
+  "mode": "self",
+  "content": "generic",
+  "cooldownSeconds": 30,
+  "self": {
+    "keyFile": "/data/apns/AuthKey_<KEY_ID>.p8",
+    "keyId": "<KEY_ID>",
+    "teamId": "<TEAM_ID>",
+    "topic": "<BUNDLE_ID>",
+    "environment": "auto"
+  }
+}
+```
+
+- `content`：`generic` = 固定通用文案（默认）；`summary` = 会话标题 + 助手回复摘要。
+- `cooldownSeconds`：同一 host 两次推送意图的最小间隔（0..3600 秒，默认 30）。
+- `environment`：`auto`（默认）/ `development` / `production`；实际 APNs 环境由 App 构建决定。
+- 控制消息（协议见 `packages/protocol/index.js`）：`push.register` → `push.registered`；
+  `push.send` → `push.result`（`delivered/failed/pruned/mode/skipped`）。`pruned` 是 APNs
+  410/Unregistered 后 relay 已删除的 deviceId。
+- 安全：hostId 只取自已鉴权控制连接；APNs 私钥只放部署方 `/data`（0600），
+  **不落日志/healthz/仓库**。
+- token 表只在内存（relay 重启清空；App 重新进入主机时重登记），设备撤销（`device.revoke` /
+  `device.sync` / 后台撤销主机）立即删除对应 token；每 host 最多 16 个设备 token、
+  每分钟 30 次推送意图，避免滥用。
+- `/healthz` 只带摘要：`"push":{"enabled":true,"mode":"self","tokens":1}`（不含 token/密钥）。
+- 部署步骤（compose 环境变量、`.p8` 放置）见
+  [`server/README.md`](../../../server/README.md)。
+
 ---
 
 ## 7. 健康检查
 
 ```bash
 curl -s http://127.0.0.1/healthz    # 200
-# {"ok":true,"domain":"relay.example.com","hosts":["h_ab12cd34"]}
+# {"ok":true,"domain":"relay.example.com","hosts":["h_ab12cd34"],
+#  "push":{"enabled":true,"mode":"self","tokens":1}}
 ```
 
 - `hosts` 是当前在线（控制面已鉴权且心跳正常）的 hostId 列表；主机离线时为空数组。
+- `push` 是服务端推送摘要（`enabled` / `mode` / 已登记 token 数），**不含任何 token/密钥**。
 - **仅** `GET/HEAD /healthz` 返回 200；其余路径/方法一律 404（classic 的 80→443 301 跳转已删除）。
 - 控制面端口只接受 WebSocket upgrade，探针请打 **httpPort 的 `/healthz`**（容器 HEALTHCHECK 已内置）。
 
@@ -436,6 +500,18 @@ curl -s http://127.0.0.1/healthz    # 200
 
 ## 11. 版本记录
 
+- **0.4.0**（`feat/group-service`，R2）：**relay 推送只保留 self**——删除 official 转发通道
+  （`lib/push-hub-client.js`、`group.push.official`、`RELAY_GROUP_PUSH_HUB_*`、`data/hub-token`）；
+  `group.push.mode` 只接受 `self`，其它值启动即报可操作错误。官方 App 推送改为「App 向官方
+  hub 登记、主机直连 hub」，不再经过 relay。版本号升 0.4.0。
+- **0.3.1**（`feat/group-service`）：**服务端集中推送**（`docs/group-push-design.zh.md`）——
+  主机不再持有 Apple 凭据，relay 统一发送：`self` 模式用部署方 APNs Auth Key 直连 Apple
+  （`dsh-remote-apns`），`official` 模式把「kind + 主机地址 + device token」转给官方推送 hub
+  （只发通用文案，不上行会话内容；0.4.0 已删除 official）；新增 `group.push` 配置（`enabled/mode/content/
+  cooldownSeconds/self/official` 及 `RELAY_GROUP_PUSH_*` 环境变量）、控制消息
+  `push.register/push.registered/push.send/push.result`、内存 token 表（撤销/同步立即失效，
+  不落盘）、每 host 限速与 token 上限、`/healthz` 推送摘要；Dockerfile 增加
+  `packages/apns` 依赖；版本号升 0.3.1。
 - **0.3.0**（`feat/group-service`）：relay 只保留群体服务版（A 模式）——删除 classic 数据面 TLS
   透传（`dataServer`/`dataPort`）、classic HTTP 跳转面（80 端口只留 `/healthz`）、relay 侧推送
   （`lib/push.js`、Expo/APNs 配置与测试）、classic token 存储/CLI（`tokens.json`、

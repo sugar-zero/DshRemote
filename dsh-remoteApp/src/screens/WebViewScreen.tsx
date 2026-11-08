@@ -28,6 +28,7 @@ import {
   ActivityIndicator,
   Alert,
   AppState,
+  KeyboardAvoidingView,
   Linking,
   Platform,
   StyleSheet,
@@ -68,6 +69,14 @@ interface WebViewScreenProps {
    * 传入时用 App 内嵌浏览器打开；不传时退回系统浏览器（Linking.openURL）。
    */
   onOpenExternal?: (url: string) => void;
+  /**
+   * 通知点击后要打开的会话（self 模式 APNs payload 的 sessionId）。
+   * 页面加载完成后注入 `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)`；
+   * 插件还没就绪时先写 `__DSH_REMOTE_OPEN_SESSION_PENDING__`，由插件安装时消费。
+   */
+  openSessionRequest?: { sessionId: string; nonce: number } | null;
+  /** 注入成功后回调（App 清空请求，避免重进/重载时重复注入）。 */
+  onOpenSessionHandled?: (nonce: number) => void;
 }
 
 type ConnectionStatus = 'connecting' | 'online' | 'error';
@@ -254,12 +263,17 @@ export function WebViewScreen({
   reloadToken = 0,
   isVisible = true,
   onOpenExternal,
+  openSessionRequest = null,
+  onOpenSessionHandled,
 }: WebViewScreenProps) {
   const insets = useSafeAreaInsets();
   const tunnelPort = connection.port;
   const pageUrl = groupWebUiUrl(connection.host, tunnelPort);
   const pageOrigin = groupOrigin(connection.host, tunnelPort);
   const webViewRef = useRef<WebView | null>(null);
+  /** 推送点击后的待注入会话：页面未就绪时先记下，页面加载完成后注入。 */
+  const pendingOpenSessionRef = useRef<{ sessionId: string; nonce: number } | null>(null);
+  const lastOpenSessionNonceRef = useRef<number | null>(null);
   const [status, setStatus] = useState<ConnectionStatus>('connecting');
   const [pageTitle, setPageTitle] = useState<string>('DSH');
   const [currentUrl, setCurrentUrl] = useState(() => pageUrl);
@@ -568,6 +582,42 @@ export function WebViewScreen({
     if (navigation.title) setPageTitle(navigation.title);
   }, []);
 
+  /**
+   * 执行「打开推送对应会话」的注入脚本（self 模式 payload 带 sessionId）。
+   *
+   * 优先调用 host 插件暴露的 `window.__DSH_REMOTE_OPEN_SESSION__`；插件尚未加载时
+   * 把 id 暂存到 `__DSH_REMOTE_OPEN_SESSION_PENDING__`，插件安装时自行消费。
+   * 必须等页面加载完成（statusRef === 'online'）后再注入，否则脚本会落到即将被
+   * 导航替换的旧文档上，而 App 会误以为已处理并清空请求。
+   */
+  const flushOpenSession = useCallback(() => {
+    const request = pendingOpenSessionRef.current;
+    if (!request || lastOpenSessionNonceRef.current === request.nonce) return;
+    if (statusRef.current !== 'online') return;
+    const sessionIdLiteral = JSON.stringify(request.sessionId);
+    const script =
+      `(function(){try{var id=${sessionIdLiteral};` +
+      'window.__DSH_REMOTE_OPEN_SESSION_PENDING__=id;' +
+      'var f=window.__DSH_REMOTE_OPEN_SESSION__;' +
+      'if(typeof f==="function"){f(id);window.__DSH_REMOTE_OPEN_SESSION_PENDING__=null;}' +
+      '}catch(e){}})();void 0;';
+    try {
+      webViewRef.current?.injectJavaScript(script);
+      pendingOpenSessionRef.current = null;
+      lastOpenSessionNonceRef.current = request.nonce;
+      onOpenSessionHandled?.(request.nonce);
+    } catch {
+      // 注入失败：保留 pending，等下一次页面加载完成时重试。
+    }
+  }, [onOpenSessionHandled]);
+
+  // 通知点击后 App 传入 openSessionRequest：先记录，等页面就绪后注入。
+  useEffect(() => {
+    if (!openSessionRequest) return;
+    pendingOpenSessionRef.current = openSessionRequest;
+    if (statusRef.current === 'online') flushOpenSession();
+  }, [openSessionRequest, flushOpenSession]);
+
   const handleLoadStart = useCallback(() => {
     loadingRef.current = true;
     statusRef.current = 'connecting';
@@ -594,7 +644,9 @@ export function WebViewScreen({
     }
     // 页面加载完成 = 主机可达：顺带刷新「重启主机」组件状态（刷新/重连后按钮跟着变）。
     refreshRestartAvailabilityRef.current();
-  }, [resetWsRecovery]);
+    // 通知点击后待打开的会话：页面就绪了才能安全注入（脚本落在新文档上）。
+    flushOpenSession();
+  }, [flushOpenSession, resetWsRecovery]);
 
   const handleError = useCallback((description?: string) => {
     loadingRef.current = false;
@@ -945,7 +997,19 @@ export function WebViewScreen({
         </View>
       </View>
 
-      <View style={styles.webviewWrap}>
+      {/*
+        * 键盘避让：iOS WKWebView 默认不会缩小自身 frame，键盘弹出时它会用
+        * scrollView.contentInset 把整页滚上去「露出光标」；DSH 页面按 100% 高度布局、
+        * composer 在页面底部，于是每次输入/删除都触发一次「滚到光标」→ 页面在两个
+        * scrollOffset 之间来回跳（现象：删字时聊天区/输入框上下跳）。
+        * KeyboardAvoidingView 在键盘出现时把 WebView 缩到键盘上方：页面布局本身就在
+        * 可见区里，WKWebView 不再需要滚页面，composer 也一直可见。
+        * Android 由系统 adjustResize 处理（behavior=undefined，不重复缩）。
+        */}
+      <KeyboardAvoidingView
+        style={styles.webviewWrap}
+        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+      >
         {!groupSessionReady ? (
           <View style={styles.loadingOverlay}>
             <ActivityIndicator color={colors.accent} size="large" />
@@ -1026,7 +1090,7 @@ export function WebViewScreen({
             </TouchableOpacity>
           </View>
         ) : null}
-      </View>
+      </KeyboardAvoidingView>
 
       {/*
         * 底部连接信息（页面标题 + 当前 URL）只在 Debug 构建显示，方便排查

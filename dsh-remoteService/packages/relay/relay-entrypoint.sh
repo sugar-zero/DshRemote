@@ -15,6 +15,8 @@
 #   RELAY_GROUP_EDGE_PORT          边缘 TLS 端口（默认 443）
 #   RELAY_GROUP_ADMIN_TOKEN_FILE   部署方后台 token（默认 /data/admin-token）
 #   RELAY_GROUP_SIGNING_KEY_FILE   设备会话签名私钥（默认 /data/signing-key.pem）
+#   RELAY_GROUP_PUSH_*             服务端集中推送（可选；R2 起只有 self）
+#                                  self: APNs key 放 /data/apns/（只读）
 set -eu
 
 cd /app 2>/dev/null || true   # 本地测试直接跑脚本时可能没有 /app（镜像内一定存在）
@@ -70,6 +72,15 @@ if [ -n "$CONFIG_PATH" ] && [ ! -f "$CONFIG_PATH" ]; then
     exit 1
   fi
 
+  # R2 起只有 self 推送：官方 App 推送直连官方 hub，relay 不再转发（official 已删除）。
+  if [ -n "${RELAY_GROUP_PUSH_MODE:-}" ]; then
+    push_mode=$(printf '%s' "$RELAY_GROUP_PUSH_MODE" | tr '[:upper:]' '[:lower:]')
+    if [ "$push_mode" != "self" ]; then
+      echo "relay-entrypoint: RELAY_GROUP_PUSH_MODE=${RELAY_GROUP_PUSH_MODE} 已删除/无效：R2 起官方 App 推送直连官方 hub，relay 只做 self 推送" >&2
+      exit 1
+    fi
+  fi
+
   mkdir -p "$(dirname "$CONFIG_PATH")"
   GENERATED_CONFIG="$CONFIG_PATH" node --input-type=module <<'NODE'
 import { chmodSync, writeFileSync } from 'node:fs';
@@ -80,6 +91,44 @@ const num = (value, fallback) => {
   const parsed = Number(value);
   return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
 };
+// cooldownSeconds 允许 0（= 不额外冷却），不能套用 num 的 >0 约束。
+const intOr = (value, fallback) => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) ? parsed : fallback;
+};
+const bool = (value, fallback) => {
+  const normalized = String(value ?? '').trim().toLowerCase();
+  if (['1', 'true', 'yes', 'on'].includes(normalized)) return true;
+  if (['0', 'false', 'no', 'off'].includes(normalized)) return false;
+  return fallback;
+};
+/** 服务端集中推送（group.push）：未设置任何 RELAY_GROUP_PUSH_* 时不写该段（保持默认关闭）。 */
+const buildPush = () => {
+  const keys = [
+    'RELAY_GROUP_PUSH_ENABLED', 'RELAY_GROUP_PUSH_MODE', 'RELAY_GROUP_PUSH_CONTENT',
+    'RELAY_GROUP_PUSH_COOLDOWN_SECONDS',
+    'RELAY_GROUP_PUSH_APNS_KEY_FILE', 'RELAY_GROUP_PUSH_APNS_KEY_ID',
+    'RELAY_GROUP_PUSH_APNS_TEAM_ID', 'RELAY_GROUP_PUSH_APNS_TOPIC',
+    'RELAY_GROUP_PUSH_APNS_ENVIRONMENT',
+  ];
+  if (!keys.some((key) => env[key] !== undefined && env[key] !== '')) return undefined;
+  const push = {
+    enabled: bool(env.RELAY_GROUP_PUSH_ENABLED, false),
+    // R2 起 relay 只做 self 推送（official 已删除；shell 入口已拒绝非 self 值）。
+    mode: 'self',
+    content: env.RELAY_GROUP_PUSH_CONTENT || 'generic',
+    cooldownSeconds: intOr(env.RELAY_GROUP_PUSH_COOLDOWN_SECONDS, 30),
+  };
+  const self = {};
+  if (env.RELAY_GROUP_PUSH_APNS_KEY_FILE) self.keyFile = env.RELAY_GROUP_PUSH_APNS_KEY_FILE;
+  if (env.RELAY_GROUP_PUSH_APNS_KEY_ID) self.keyId = env.RELAY_GROUP_PUSH_APNS_KEY_ID;
+  if (env.RELAY_GROUP_PUSH_APNS_TEAM_ID) self.teamId = env.RELAY_GROUP_PUSH_APNS_TEAM_ID;
+  if (env.RELAY_GROUP_PUSH_APNS_TOPIC) self.topic = env.RELAY_GROUP_PUSH_APNS_TOPIC;
+  if (env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT) self.environment = env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT;
+  if (Object.keys(self).length > 0) push.self = self;
+  return push;
+};
+const pushConfig = buildPush();
 const config = {
   domain: env.RELAY_DOMAIN,
   controlPort: num(env.RELAY_CONTROL_PORT, 8443),
@@ -104,11 +153,15 @@ const config = {
     auth: { signingKeyFile: env.RELAY_GROUP_SIGNING_KEY_FILE || '/data/signing-key.pem' },
     adminTokenFile: env.RELAY_GROUP_ADMIN_TOKEN_FILE || '/data/admin-token',
     registration: { enabled: true },
+    ...(pushConfig ? { push: pushConfig } : {}),
   },
 };
 writeFileSync(env.GENERATED_CONFIG, `${JSON.stringify(config, null, 2)}\n`, { mode: 0o600 });
 chmodSync(env.GENERATED_CONFIG, 0o600);
 NODE
+  if [ -n "${RELAY_GROUP_PUSH_ENABLED:-}" ] || [ -n "${RELAY_GROUP_PUSH_MODE:-}" ]; then
+    echo "relay-entrypoint: 服务端推送 enabled=${RELAY_GROUP_PUSH_ENABLED:-false} mode=self（APNs 私钥只放 /data，0600）"
+  fi
   echo "relay-entrypoint: 已根据 .env 生成 ${CONFIG_PATH}（已存在则不会覆盖）"
   echo "relay-entrypoint: 需要高级配置可直接编辑 ${CONFIG_PATH}（模板见 server/group/relay.group.example.json）"
 fi

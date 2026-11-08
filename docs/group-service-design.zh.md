@@ -148,16 +148,30 @@ dshremote://pair?v=2&host=<hostId>.<relayDomain>&port=<port>
 - `secret` 一次性、120 秒有效；`hostfp` 为完整指纹；本机确认 + SAS 短码对照保留。
 - 二维码本身不含长期凭据；不得入库/截图外传。
 
-## 9. 推送（服务端）
+## 9. 推送——R2 已实现（protocol 0.3.1 / relay 0.4.0 / hub 0.3.0 / host 0.2.6 / App 0.1.9）
 
-- 主机只上报 **device token / 推送意图**；所有 Apple 凭据只在服务端，主机零配置。
-- **自建 App 路线**：部署方在自己的服务端配置 APNs（`p8` / Key ID / Team ID / topic），
-  relay 直连 APNs。
-- **官方 TestFlight 路线**：自部署 relay 用部署凭据把 push intent 发给**官方中央推送 hub**，
-  hub 用官方团队的 key 发；hub 只发**通用文案**（如「有任务需要你」+ 深链），
-  **不接收会话内容**。
-- 内容策略默认**通用文案**；会话标题 / 摘要需部署方与用户显式开启（hub 场景禁止）。
-- Android FCM 随后接入（结构同上）。
+> 当前契约：[`group-push-r2-contract.zh.md`](group-push-r2-contract.zh.md)（R2 官方推送与 relay 解耦）；
+> O1 历史契约：[`group-push-design.zh.md`](group-push-design.zh.md)（self 推送仍有效；official 转发已删除）；
+> 部署步骤见 [`../server/README.md`](../server/README.md) §6；官方 hub 见
+> [`../dsh-remoteService/packages/push-hub/README.md`](../dsh-remoteService/packages/push-hub/README.md)。
+> 方案取舍与负载/限流评估见 [`group-push-routing-options.zh.md`](group-push-routing-options.zh.md)、
+> [`group-push-load-evaluation.zh.md`](group-push-load-evaluation.zh.md)。
+
+- **官方 TestFlight/商店路线（`official`）**：官方 App 打包内置官方 hub 地址 + `channel=official`；
+  App 用群体版设备密钥向官方 hub 做 P-256 PoP 登记（`/v1/enroll/challenge` → `/v1/enroll`），
+  换 per-device credential（EdDSA JWT，绑定 token hash/hostId/env/bundleId/aud/exp）；
+  App 通过主机 `POST /__dsh_remote/push-token` 把 token/bundleId/hubEndpoint/credential 交给主机，
+  **主机直连官方 hub** 发送——不经过部署方 relay，因此部署方 relay 配置不再能影响官方推送。
+- **自建 App 路线（`self`）**：部署方在自己 relay 配置 APNs（`p8`/Key ID/Team ID/topic），
+  App 由部署方 Apple 团队签名；主机把 device token 上报 relay，relay 直连 APNs（O1 行为不变）。
+- **混合设备自动分流**：主机按设备 channel 发送（official→hub、self→relay）；App/用户无需选通道。
+- 内容策略：官方 hub 只发**通用文案**（「任务已完成」/「正在等待你的回答」+ 深链），不接收
+  会话内容（schema 拒绝 title/body/sessionId）；`self` 模式可由部署方选 `summary`。
+- 设备 token/credential 只存内存（主机/hub）、不落盘、不进日志；credential 由 App 端 SecureStore
+  短期缓存（默认 30 天 TTL，>24h 剩余才复用）；设备撤销立即清理。
+- 官方 hub 对 device/host/IP/global/enroll 做配额限流（默认值见负载评估文档），429+Retry-After；
+  hub 不识别 relay（legacy relay-token 路径已删除）。
+- Android FCM 随后接入（当前 App 对 Android 返回「FCM 未接入」，结构同上）。
 
 ## 10. 安全基线与攻击用例（P1 验收必须覆盖）
 
@@ -294,3 +308,14 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   compose 默认端口：edge 1443 / WSS 18443 / API 19443 / admin 127.0.0.1:19444；镜像重建为 `dsh-remote-relay:0.2.1-group`；`npm test` 190/190。
 - **下一片（App，版本线从 0.1.0 起）**：原生 P-256 设备密钥 + challenge 签名换短时 token + `__Host-` cookie
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。
+- **2026-11-01：服务端集中推送切片已落地**（relay **0.3.1** / host-plugin **0.2.5** / protocol **0.3.0** /
+  新增 `packages/apns`、`packages/push-hub` / App **0.1.8 (build 15)**）：两种模式
+  `self`（部署方 APNs key 直连 Apple）与 `official`（转发官方推送 hub，固定通用文案）；
+  协议新增 `PUSH_TOKEN_PATH` + `RELAY_MSG.PUSH_REGISTER/PUSH_REGISTERED/PUSH_SEND/PUSH_RESULT`；
+  主机 `POST /__dsh_remote/push-token` 登记 + `session/event` 推送意图 + 「推送提醒」开关；
+  App `expo-notifications` + `aps-environment` + 通知点击跳转 + 设置页推送卡；官方 hub
+  （Bearer relay 凭据 / schema 拒绝会话内容 / 限速 / pruned 透传 / CLI + Docker）。
+  `dsh-remoteService npm test` **275/275**、`validate:artifacts` 通过；App `tsc`/`check:native`/`check:shell`
+  通过、iOS Release 免签名 **BUILD SUCCEEDED**。**真机推送验收待用户确认**（需先部署 relay 0.3.1 /
+  可选 hub 并安装带 Push 能力的签名包）。契约与部署见 `docs/group-push-design.zh.md`、
+  `server/README.md` §6。

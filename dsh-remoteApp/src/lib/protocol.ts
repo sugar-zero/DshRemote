@@ -29,6 +29,8 @@ export const REMOTE_PATHS = {
   status: '/__dsh_remote/status',
   /** 请求主机重启 DSH 客户端（需组件已启用；成功 202）。 */
   restart: '/__dsh_remote/restart',
+  /** 登记本机 APNs device token（主机再转给 relay；需群体版会话 token）。 */
+  pushToken: '/__dsh_remote/push-token',
 } as const;
 
 /** Pairing URI protocol version for the group (A-mode) flow. */
@@ -351,6 +353,14 @@ export function groupRestartUrl(host: string, port: number): string {
   return `${groupOrigin(host, port)}${REMOTE_PATHS.restart}`;
 }
 
+/**
+ * `POST /__dsh_remote/push-token`：登记本机 APNs device token。
+ * 需要群体版会话 token（原生请求带 `__Host-dsh_session` cookie / Bearer）。
+ */
+export function groupPushTokenUrl(host: string, port: number): string {
+  return `${groupOrigin(host, port)}${REMOTE_PATHS.pushToken}`;
+}
+
 /** Main WebView URL: same mobile shell, with the service-assigned port. */
 export function groupWebUiUrl(host: string, port: number, options: { mobile?: boolean } = {}): string {
   const mobile = options.mobile ?? true;
@@ -400,6 +410,104 @@ export interface GroupChallengeData {
 }
 
 /**
+ * 推送通道模式（与 relay `group.push.mode` 一致）：
+ *   - `self`：部署方自己的 APNs key（可带会话摘要与 sessionId）；
+ *   - `official`：官方中央推送 hub（仅通用文案，不带 sessionId）。
+ */
+export type GroupPushMode = 'self' | 'official';
+
+/** `POST /__dsh_remote/push-token` 成功时 `data` 的内容（主机转发 relay 的结果）。 */
+export interface GroupPushTokenData {
+  registered?: boolean;
+  mode?: GroupPushMode | '';
+  /** R2（host-plugin 0.2.6+）：设备 token 的推送通道。 */
+  channel?: GroupPushMode | '';
+}
+
+// ---------------------------------------------------------------------------
+// R2：官方推送设备登记（App ↔ 官方 hub）
+//
+// 与 `dsh-remoteService/packages/protocol` 0.3.1 的常量/消息格式逐字节一致：
+// App 用设备私钥对 pushEnrollMessage 签名 → hub 签发 per-device credential →
+// App 把 credential 交给主机，主机直连 hub 推送（见 docs/group-push-r2-contract.zh.md §3/§5）。
+// ---------------------------------------------------------------------------
+
+/** R2 设备登记签名消息版本（App 与 hub 必须逐字节一致）。 */
+export const PUSH_ENROLL_VERSION = 'dshremote-push-enroll-v1';
+/** R2 官方 hub 路径。 */
+export const PUSH_ENROLL_CHALLENGE_PATH = '/v1/enroll/challenge';
+export const PUSH_ENROLL_PATH = '/v1/enroll';
+
+export interface PushEnrollMessageInput {
+  challengeId: string;
+  nonce: string;
+  /** base64url 未压缩 P-256 公钥（65 字节）。 */
+  devicePublicKey: string;
+  /** 主机 ID（可为空串）。 */
+  hostId?: string;
+  /** APNs device token（64 位小写 hex）。 */
+  token: string;
+  environment: string;
+  bundleId: string;
+}
+
+/**
+ * 构造 R2 登记签名消息：UTF-8、`\n` 连接、**无末尾换行**。
+ * 必须与 server `pushEnrollMessage()` 完全一致（否则 hub 验签失败）。
+ */
+export function pushEnrollMessage(input: PushEnrollMessageInput): string {
+  return [
+    PUSH_ENROLL_VERSION,
+    input.challengeId,
+    input.nonce,
+    input.devicePublicKey,
+    input.hostId ?? '',
+    input.token,
+    input.environment,
+    input.bundleId,
+  ].join('\n');
+}
+
+/** R2：主机 status 里单通道的登记情况（不包含 token / credential）。 */
+export interface GroupPushChannelStatusData {
+  /** 该通道已登记的设备 token 数。 */
+  devices?: number;
+  /** 最近一次发送/登记失败原因（可读，不含 token）。 */
+  lastError?: string | null;
+  /** 官方通道：主机记录的 hub 基址（部署信息，不含凭据）。 */
+  hub?: string;
+}
+
+/** `status.push.mode`：R2 起两台设备可能混用，故新增 `mixed`。 */
+export type GroupPushServerMode = GroupPushMode | 'mixed' | '';
+
+/**
+ * 主机 `/__dsh_remote/status` 的 `push` 字段（host-plugin 上报的推送状态）。
+ *
+ * - 旧版 Host（≤0.2.5）只有扁平字段 `serverEnabled/mode/tokens/lastError`；
+ * - R2（0.2.6+）扩展为按通道的 `self` / `official` 对象（见契约 §6.3）；
+ * 两种形态都兼容，字段全部可选、缺省即未知。
+ */
+export interface GroupPushServerStatusData {
+  /** 主机侧「推送提醒」开关。 */
+  enabled?: boolean;
+  /** 推送通道服务方（v1 固定 apns）。 */
+  provider?: string;
+  /** relay 是否开启推送（来自 push.registered，legacy self）。 */
+  serverEnabled?: boolean;
+  /** 主机推送通道：self / official / mixed（旧版 Host 可能为空）。 */
+  mode?: GroupPushServerMode;
+  /** 主机本机已上报的设备 token 数（legacy 扁平字段）。 */
+  tokens?: number;
+  /** 可读错误（不含 token）。 */
+  lastError?: string | null;
+  /** R2：走 relay 的自部署设备登记情况。 */
+  self?: GroupPushChannelStatusData;
+  /** R2：直连官方 hub 的官方设备登记情况。 */
+  official?: GroupPushChannelStatusData;
+}
+
+/**
  * `GET /__dsh_remote/status` 的 `data`（群体版，Bearer token 鉴权）。
  *
  * 主机插件在 loopback 明文代理里逐请求验签 token；响应字段是诊断/能力信息。
@@ -416,6 +524,8 @@ export interface GroupHostStatusData {
   devices?: { total?: number; active?: number };
   /** 「重启主机」组件状态；旧版 Host 没有该字段。 */
   restart?: { enabled?: boolean };
+  /** 推送状态；旧版 Host 没有该字段。 */
+  push?: GroupPushServerStatusData;
 }
 
 /**

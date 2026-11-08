@@ -88,6 +88,7 @@ window.__ModuleLoader__.load({
       'section.service': '服务设置',
       'section.group': '群体服务',
       'section.components': '组件',
+      'section.push': '推送提醒',
       'section.pairing': '设备配对',
       'section.devices': '已配对设备',
       'section.audit': '最近审计',
@@ -99,6 +100,19 @@ window.__ModuleLoader__.load({
       'sw.requireApprovalNote': '开启后，手机扫码后还需要在这台电脑上确认一次。',
       'sw.restartHost': '允许手机重启主机 DSH',
       'sw.restartHostNote': '开启后 App 顶栏显示 ⏻：装了插件/改完功能后可在手机上直接重启主机（会短暂断开连接，随后自动恢复）。关闭后 App 不显示该按钮，重启接口也会拒绝请求；仍可在本机手动重启。',
+      'sw.pushEnabled': '推送提醒',
+      'sw.pushEnabledNote': '主机只上报「推送意图 + 设备 token」：部署方自签 App（self）经 relay 发送，官方 App（official）由主机凭 credential 直连官方推送 hub；主机不持有 Apple 凭据。关闭后本轮结束/等待回答都不再提醒；保存不重建隧道，立即生效。',
+      'push.mode': '推送通道',
+      'push.modeSelf': '自部署（经 relay）',
+      'push.modeOfficial': '官方（设备直连 hub）',
+      'push.modeMixed': '混合（自动分流）',
+      'push.modeNone': '—',
+      'push.selfDevices': '自部署设备',
+      'push.officialDevices': '官方直连设备',
+      'push.devicesValue': '{count} 台',
+      'push.hub': '官方推送 hub',
+      'push.noTokens': '还没有设备登记推送 token（App 进入主机后会自动登记）',
+      'push.relayOfflineSelf': '隧道未连接：自部署设备暂不可用；官方直连设备不受影响',
       'field.hostName': '主机名称',
       'field.hostNameHint': '手机上显示的名字',
       'field.groupServiceUrl': '服务地址',
@@ -220,7 +234,10 @@ window.__ModuleLoader__.load({
       'action.groupReconnect': '重连隧道',
       'action.groupDeviceSync': '同步设备列表',
       'action.configUpdate': '修改配置',
-      'action.hostRestart': '重启主机 DSH'
+      'action.hostRestart': '重启主机 DSH',
+      'action.pushToken': '登记推送 token',
+      'action.pushTrigger': '发送推送提醒',
+      'action.pushResult': '推送结果'
     };
 
     const en = {
@@ -240,6 +257,7 @@ window.__ModuleLoader__.load({
       'section.service': 'Service settings',
       'section.group': 'Group service',
       'section.components': 'Components',
+      'section.push': 'Push notifications',
       'section.pairing': 'Device pairing',
       'section.devices': 'Paired devices',
       'section.audit': 'Recent audit',
@@ -251,6 +269,19 @@ window.__ModuleLoader__.load({
       'sw.requireApprovalNote': 'When on, a scanned phone must also be approved on this computer.',
       'sw.restartHost': 'Allow the phone to restart host DSH',
       'sw.restartHostNote': 'When on, the app top bar shows ⏻ so you can restart the host from the phone after installing plugins or changing features (the connection briefly drops and recovers). When off, the button is hidden and restart requests are rejected; manual restarts on this computer still work.',
+      'sw.pushEnabled': 'Push notifications',
+      'sw.pushEnabledNote': 'The host only reports push intents and device tokens: self-hosted apps are sent via the relay; official apps are sent by the host directly to the official push hub using the device credential. The host holds no Apple credentials. When off, no reminder is sent for finished turns or waiting questions; saving does not rebuild the tunnel and applies immediately.',
+      'push.mode': 'Push channel',
+      'push.modeSelf': 'Self-hosted (via relay)',
+      'push.modeOfficial': 'Official (device → hub)',
+      'push.modeMixed': 'Mixed (auto-routed)',
+      'push.modeNone': '—',
+      'push.selfDevices': 'Self-hosted devices',
+      'push.officialDevices': 'Official hub devices',
+      'push.devicesValue': '{count}',
+      'push.hub': 'Official push hub',
+      'push.noTokens': 'No device has registered a push token yet (the app registers automatically when it opens this host)',
+      'push.relayOfflineSelf': 'Tunnel disconnected: self-hosted devices are temporarily unavailable; official hub devices are unaffected.',
       'field.hostName': 'Host name',
       'field.hostNameHint': 'Shown on the phone',
       'field.groupServiceUrl': 'Service URL',
@@ -372,7 +403,10 @@ window.__ModuleLoader__.load({
       'action.groupReconnect': 'Tunnel reconnected',
       'action.groupDeviceSync': 'Devices synced',
       'action.configUpdate': 'Config updated',
-      'action.hostRestart': 'Host DSH restart'
+      'action.hostRestart': 'Host DSH restart',
+      'action.pushToken': 'Push token registration',
+      'action.pushTrigger': 'Push reminder sent',
+      'action.pushResult': 'Push result'
     };
 
     function makeTranslator(dicts) {
@@ -531,6 +565,12 @@ window.__ModuleLoader__.load({
           : (status && status.restart && typeof status.restart.enabled === 'boolean'
             ? status.restart.enabled
             : (prev.restartHostEnabled === true)),
+        // 「推送提醒」：主机侧开关（默认开启）。优先读 config.pushEnabled，其次兼容 status.push.enabled。
+        pushEnabled: config.pushEnabled !== undefined
+          ? config.pushEnabled === true
+          : (status && status.push && typeof status.push.enabled === 'boolean'
+            ? status.push.enabled
+            : (prev.pushEnabled === undefined ? true : prev.pushEnabled === true)),
         groupServiceUrl: stringOrPrevious(firstDefined(config.groupServiceUrl, group.serviceUrl), prev.groupServiceUrl || ''),
         // 邀请码一次性且只上行：永远不进入 draft 初始值（注册成功后立即清空）。
         groupInviteCode: '',
@@ -568,6 +608,9 @@ window.__ModuleLoader__.load({
       'group-device-sync': 'action.groupDeviceSync',
       'config.update': 'action.configUpdate',
       'host-restart': 'action.hostRestart',
+      'push-token': 'action.pushToken',
+      'push-trigger': 'action.pushTrigger',
+      'push-result': 'action.pushResult',
     };
 
     function actionLabel(action, t) {
@@ -1375,6 +1418,8 @@ window.__ModuleLoader__.load({
         if (hostName !== baseline.hostName) patch.hostName = hostName;
         if (draft.requireApproval !== baseline.requireApproval) patch.requireApproval = draft.requireApproval;
         if (draft.restartHostEnabled !== baseline.restartHostEnabled) patch.restartHostEnabled = draft.restartHostEnabled === true;
+        // 「推送提醒」：只写 pushEnabled，服务端不重建运行时（保存立即生效，隧道不断）。
+        if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
         const groupServiceUrl = draft.groupServiceUrl.trim();
         if (groupServiceUrl !== baseline.groupServiceUrl) patch.groupServiceUrl = groupServiceUrl;
         const groupPlainPortRaw = String(draft.groupPlainPort ?? '').trim();
@@ -1572,6 +1617,7 @@ window.__ModuleLoader__.load({
 
       const host = status.host || {};
       const group = status.group || {};
+      const push = status.push && typeof status.push === 'object' ? status.push : {};
       const pairing = status.pairing && status.pairing.active ? status.pairing : null;
       const pairingPending = Boolean(pairing && pairing.status === 'pending');
       const devices = Array.isArray(status.devices) ? status.devices : [];
@@ -1671,6 +1717,52 @@ window.__ModuleLoader__.load({
           h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
             busy === 'save' ? t('btn.saving') : t('btn.save'))));
 
+      // 推送（R2）：「推送提醒」开关 + self/official 自动分流状态（契约 §6.3；不暴露 token/credential）。
+      const pushMode = String(push.mode ?? '');
+      const pushModeLabel = pushMode === 'mixed'
+        ? t('push.modeMixed')
+        : (pushMode === 'self'
+          ? t('push.modeSelf')
+          : (pushMode === 'official' ? t('push.modeOfficial') : t('push.modeNone')));
+      const selfPush = push.self && typeof push.self === 'object' ? push.self : {};
+      const officialPush = push.official && typeof push.official === 'object' ? push.official : {};
+      const selfPushDevices = Number(selfPush.devices ?? 0) || 0;
+      const officialPushDevices = Number(officialPush.devices ?? 0) || 0;
+      const pushDeviceCount = selfPushDevices + officialPushDevices;
+      const pushHub = String(officialPush.hub ?? '');
+      const pushSection = h(Section, { title: t('section.push') },
+        h(Row, { label: t('sw.pushEnabled'), note: t('sw.pushEnabledNote') },
+          h(Toggle, {
+            checked: draft.pushEnabled,
+            disabled,
+            label: t('sw.pushEnabled'),
+            onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
+          })),
+        h(InfoRow, { label: t('push.mode'), value: pushModeLabel }),
+        h(InfoRow, { label: t('push.selfDevices'), value: t('push.devicesValue', { count: selfPushDevices }) }),
+        h(InfoRow, { label: t('push.officialDevices'), value: t('push.devicesValue', { count: officialPushDevices }) }),
+        pushHub !== '' ? h(InfoRow, { label: t('push.hub'), value: pushHub }) : null,
+        selfPush.lastError
+          ? h(InfoRow, {
+            label: `${t('push.selfDevices')} · ${t('group.lastError')}`,
+            value: h('span', { style: { color: '#ef4444' } }, String(selfPush.lastError)),
+          })
+          : null,
+        officialPush.lastError
+          ? h(InfoRow, {
+            label: `${t('push.officialDevices')} · ${t('group.lastError')}`,
+            value: h('span', { style: { color: '#ef4444' } }, String(officialPush.lastError)),
+          })
+          : null,
+        pushDeviceCount === 0
+          ? h('div', { 'data-ra-note': '' }, t('push.noTokens'))
+          : (group.connected !== true && selfPushDevices > 0
+            ? h('div', { 'data-ra-note': '', 'data-tone': 'warn' }, t('push.relayOfflineSelf'))
+            : null),
+        h('div', { 'data-ra-actions': '' },
+          h(Btn, { primary: true, disabled, onClick: () => { void save(); } },
+            busy === 'save' ? t('btn.saving') : t('btn.save'))));
+
       const pairingSection = h(Section, { title: t('section.pairing') },
         h(Row, {
           label: pairing ? (pairingPending ? t('pairing.pendingPill') : t('pairing.active')) : t('pairing.inactive'),
@@ -1755,6 +1847,7 @@ window.__ModuleLoader__.load({
         groupSection,
         serviceSection,
         componentsSection,
+        pushSection,
         pairingSection,
         devicesSection,
         auditSection,

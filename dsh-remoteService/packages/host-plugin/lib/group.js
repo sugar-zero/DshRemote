@@ -24,9 +24,17 @@ import {
   GROUP_SESSION_COOKIE,
   PAIR_PATH,
   PAIR_STATUS_PATH,
+  PUSH_CHANNELS,
+  PUSH_PROVIDER,
+  PUSH_SEND_PATH,
+  PUSH_TOKEN_PATH,
   STATUS_PATH,
   TUNNEL_BASE,
   isGroupHostId,
+  isPushEnvironment,
+  isValidApnsDeviceToken,
+  isValidBundleId,
+  normalizePushChannel,
   parseCookieHeader,
   verifyGroupSessionToken,
 } from 'dsh-remote-protocol';
@@ -46,6 +54,52 @@ export const RESTART_PATH = `${TUNNEL_BASE}/restart`;
 
 const FQDN_RE = /^[a-z0-9](?:[a-z0-9.-]{0,251}[a-z0-9])?$/;
 const BEARER_RE = /^Bearer\s+(\S+)$/i;
+/** R2：hubEndpoint 上限（字符）与 credential 上限（字符），见契约 §6.1。 */
+const PUSH_HUB_ENDPOINT_MAX_CHARS = 2048;
+const PUSH_CREDENTIAL_MAX_CHARS = 4096;
+/** R2：credential 只校验「三段式 JWT 形态」，签名/claims 由官方 hub 校验（主机没有 hub 公钥）。 */
+const PUSH_CREDENTIAL_RE = /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/;
+
+/**
+ * R2：规范化官方 hub 基址（契约 §6.1）。
+ * 只接受 **https** URL，≤2048 字符，无 userinfo / query / hash；去掉末尾斜杠便于拼 `/v1/push`。
+ * @param {unknown} raw
+ * @returns {string} 规范化后的基址
+ * @throws {Error & {code: string}} 非法时抛 `invalid-hub-endpoint`
+ */
+export function normalizePushHubEndpoint(raw) {
+  const text = typeof raw === 'string' ? raw.trim() : '';
+  const invalid = (message) => Object.assign(new Error(message), { code: 'invalid-hub-endpoint' });
+  if (text === '') throw invalid('官方推送需要 hubEndpoint（https 基址）');
+  if (text.length > PUSH_HUB_ENDPOINT_MAX_CHARS) throw invalid(`hubEndpoint 过长（≤${PUSH_HUB_ENDPOINT_MAX_CHARS} 字符）`);
+  let url;
+  try {
+    url = new URL(text);
+  } catch {
+    throw invalid('hubEndpoint 不是合法 URL');
+  }
+  if (url.protocol !== 'https:') throw invalid('hubEndpoint 必须是 https://');
+  if (!url.hostname) throw invalid('hubEndpoint 缺少主机名');
+  if (url.username !== '' || url.password !== '') throw invalid('hubEndpoint 不能包含 userinfo');
+  if (url.search !== '') throw invalid('hubEndpoint 不能包含查询参数');
+  if (url.hash !== '') throw invalid('hubEndpoint 不能包含 hash');
+  const normalized = `${url.protocol}//${url.host}${url.pathname.replace(/\/+$/, '')}`;
+  if (normalized.length > PUSH_HUB_ENDPOINT_MAX_CHARS) throw invalid(`hubEndpoint 过长（≤${PUSH_HUB_ENDPOINT_MAX_CHARS} 字符）`);
+  return normalized;
+}
+
+/**
+ * R2：credential 形态校验（三段式 JWT 字符串，≤4096 字符）。
+ * 主机只透传给 hub，**不验签、不解析 claims**（hub 才持有签名公钥）。
+ * @param {unknown} raw
+ * @returns {boolean}
+ */
+export function isPushCredentialLike(raw) {
+  return typeof raw === 'string'
+    && raw.length > 0
+    && raw.length <= PUSH_CREDENTIAL_MAX_CHARS
+    && PUSH_CREDENTIAL_RE.test(raw);
+}
 
 /**
  * 提取请求的群体版会话 token：`Authorization: Bearer <token>` 优先，否则 `__Host-dsh_session` cookie。
@@ -153,6 +207,8 @@ export class GroupHostRuntime {
    * @param {string} [options.version] 插件版本（`GET /__dsh_remote/status` 展示）
    * @param {(request: {device?: object}) => Promise<{mode: string, deduped?: boolean}>|{mode: string, deduped?: boolean}} [options.restartHost]
    *   「重启主机 DSH」调度器（service.restartHost；测试注入假实现）。缺失 = 501 host-restart-unavailable。
+   * @param {typeof fetch} [options.fetchImpl] 官方 hub HTTP 客户端（R2；测试注入假 fetch，默认 globalThis.fetch）
+   * @param {number} [options.hubTimeoutMs] 官方 hub 单设备推送超时（默认 10000ms；测试可调小）
    */
   constructor(options) {
     this.config = options.config ?? {};
@@ -168,6 +224,11 @@ export class GroupHostRuntime {
     this.version = options.version ?? '';
     /** @type {((request: object) => any) | undefined} 远程重启调度（见 service.restartHost） */
     this.restartHost = typeof options.restartHost === 'function' ? options.restartHost : undefined;
+    /** R2：官方 hub 直连（契约 §6.2；主机零 Apple 凭据，只透传 App 上报的 credential 与 token）。 */
+    this.fetchImpl = typeof options.fetchImpl === 'function'
+      ? options.fetchImpl
+      : ((...args) => globalThis.fetch(...args));
+    this.hubTimeoutMs = Number(options.hubTimeoutMs) > 0 ? Number(options.hubTimeoutMs) : 10_000;
     this.insecure = options.config?.groupInsecure === true;
     this.registration = loadGroupRegistration(this.registrationFile);
     /** @type {http.Server | undefined} */
@@ -190,6 +251,19 @@ export class GroupHostRuntime {
     this.closed = false;
     /** 群体版设备 lastSeen 节流（deviceId → 上次写盘时间）。 */
     this.deviceTouchAt = new Map();
+    /**
+     * R2 推送设备（deviceId → 记录）。**只存内存、不落盘**；status/日志/审计不暴露 token 与 credential。
+     * - self（部署方自签 App）：token 经 connector 上报 relay，推送仍走 relay；
+     * - official（官方 App）：token + credential 由 App 向官方 hub 换取后上报，推送由主机直连 hub。
+     * @type {Map<string, {deviceId: string, token: string, environment: string, channel: string,
+     *   bundleId?: string, hubEndpoint?: string, credential?: string, registeredAt: number}>}
+     */
+    this.pushDevices = new Map();
+    /** 可读的推送错误（按通道；不含 token/credential）。 */
+    this.pushSelfLastError = '';
+    this.pushOfficialLastError = '';
+    /** 最近登记的官方 hub 基址（status 展示；无 official 设备时为 null）。 */
+    this.pushOfficialHub = '';
   }
 
   /** 当前注册信息（只读副本）。 */
@@ -327,6 +401,9 @@ export class GroupHostRuntime {
           // 隧道就绪后把本机设备表同步给 relay（token 只存 hash；这里给公钥）。
           this.syncDevices();
         },
+        // 推送：relay 的 push.registered / push.result 回执交给本运行时更新状态/记录。
+        onPushRegistered: (msg) => this.#onPushRegistered(msg),
+        onPushResult: (msg) => this.#onPushResult(msg),
       });
       this.connector.start();
     }
@@ -403,9 +480,245 @@ export class GroupHostRuntime {
   /** 把本机设备列表同步给 relay（device.sync 全量覆盖）。 */
   syncDevices() {
     const devices = this.#deviceRecords();
+    // 设备被撤销/删除后，本机推送设备记录（含 official 的 token/credential）也一并清掉。
+    const known = new Set(devices.map((entry) => entry.deviceId));
+    for (const deviceId of [...this.pushDevices.keys()]) {
+      if (!known.has(deviceId)) this.pushDevices.delete(deviceId);
+    }
     const sent = this.connector?.syncGroupDevices(devices) ?? false;
     if (sent) this.audit?.append({ action: 'group-device-sync', result: 'ok', count: devices.length });
     return devices.length;
+  }
+
+  /** R2：当前已登记推送设备数（按通道；供 notifier 判断是否值得触发）。 */
+  pushTargets() {
+    let self = 0;
+    let official = 0;
+    for (const device of this.pushDevices.values()) {
+      if (device.channel === PUSH_CHANNELS.OFFICIAL) official += 1;
+      else self += 1;
+    }
+    return { self, official };
+  }
+
+  /**
+   * R2 推送状态（契约 §6.3：本机 `/api/remote-access/status` 与远程 `/__dsh_remote/status` 共用）。
+   * **不暴露 token/credential**，只给开关、两通道设备数/可读错误、官方 hub 基址与自动分流模式。
+   */
+  pushStatus() {
+    const targets = this.pushTargets();
+    const mode = targets.self > 0 && targets.official > 0
+      ? 'mixed'
+      : (targets.self > 0 ? PUSH_CHANNELS.SELF : (targets.official > 0 ? PUSH_CHANNELS.OFFICIAL : ''));
+    return {
+      enabled: this.config?.pushEnabled !== false,
+      self: {
+        devices: targets.self,
+        lastError: this.pushSelfLastError || null,
+      },
+      official: {
+        devices: targets.official,
+        lastError: this.pushOfficialLastError || null,
+        hub: this.pushOfficialHub || null,
+      },
+      mode,
+    };
+  }
+
+  /**
+   * R2 推送发送分流（契约 §6.2）：触发入口不变，发送阶段按设备 channel 分派。
+   *
+   * - **self 设备**：一条 `push.send` 意图交给 relay（relay 按已登记 token 发送），行为与 R1 一致；
+   * - **official 设备**：主机逐设备 `POST {hubEndpoint}/v1/push`（Bearer credential，10s 超时、不重试）；
+   * - 没有 self 设备时**不向 relay 发**（避免空转/额度）；两类并存时都发；
+   * - hub 返回 `pruned:[token]` → 删除对应设备记录（App 下次进入主机会重新登记）。
+   *
+   * 不抛异常：失败写入对应通道的 `lastError`，返回投递摘要供 notifier 记日志/审计。
+   * @param {{id: string, kind: string, title?: string, body?: string, sessionId?: string}} intent
+   * @returns {Promise<{self: {devices: number, sent: number}, official: {devices: number, sent: number, failed: number, pruned: number}}>}
+   */
+  async deliverPush(intent) {
+    /** @type {{self: {devices: number, sent: number}, official: {devices: number, sent: number, failed: number, pruned: number}}} */
+    const summary = {
+      self: { devices: 0, sent: 0 },
+      official: { devices: 0, sent: 0, failed: 0, pruned: 0 },
+    };
+    const devices = [...this.pushDevices.entries()].map(([deviceId, record]) => ({ deviceId, ...record }));
+    const selfDevices = devices.filter((device) => device.channel !== PUSH_CHANNELS.OFFICIAL);
+    const officialDevices = devices.filter((device) => device.channel === PUSH_CHANNELS.OFFICIAL);
+    summary.self.devices = selfDevices.length;
+    summary.official.devices = officialDevices.length;
+
+    // —— self：一条意图交给 relay（relay 侧按 hostId 给所有已登记 token 发）——
+    if (selfDevices.length > 0) {
+      const connector = this.connector;
+      const connected = Boolean(connector && typeof connector.sendPushIntent === 'function' && connector.isConnected?.() === true);
+      if (!connected) {
+        this.pushSelfLastError = 'relay 控制连接暂不可用，self 设备本次未推送';
+        this.log('group push: self skipped（relay 未连接）');
+      } else {
+        try {
+          const sent = connector.sendPushIntent(intent) !== false;
+          summary.self.sent = sent ? 1 : 0;
+          this.pushSelfLastError = sent ? '' : 'relay 控制连接暂不可用，self 设备本次未推送';
+          if (!sent) this.log('group push: self skipped（relay 发送失败）');
+        } catch (error) {
+          summary.self.sent = 0;
+          this.pushSelfLastError = `relay 发送失败：${error?.message ?? error}`;
+          this.log(`group push: self failed: ${error?.message ?? error}`);
+        }
+      }
+    }
+
+    // —— official：逐设备直连官方 hub（不依赖 relay；失败不回退 relay，不重试）——
+    if (officialDevices.length > 0) {
+      const results = await Promise.all(officialDevices.map((device) => this.#pushToHub(device, intent)));
+      /** @type {Set<string>} */
+      const prunedTokens = new Set();
+      let failed = 0;
+      let firstError = '';
+      for (const result of results) {
+        if (result.ok === true) {
+          summary.official.sent += 1;
+          for (const token of result.pruned ?? []) prunedTokens.add(token);
+        } else {
+          failed += 1;
+          if (firstError === '' && result.code) firstError = String(result.code);
+        }
+      }
+      summary.official.failed = failed;
+      // hub 返回 pruned:[token] → 删除对应设备记录（按 token 匹配；同 token 只属于一台设备）。
+      if (prunedTokens.size > 0) {
+        for (const [deviceId, record] of [...this.pushDevices]) {
+          if (record.channel === PUSH_CHANNELS.OFFICIAL && prunedTokens.has(record.token)) {
+            this.pushDevices.delete(deviceId);
+            summary.official.pruned += 1;
+          }
+        }
+      }
+      if (failed > 0) {
+        this.pushOfficialLastError = `官方推送失败：${firstError || 'unknown'}（不重试）`;
+      } else if (summary.official.pruned > 0) {
+        this.pushOfficialLastError = `${summary.official.pruned} 台设备的官方推送 token 已失效，已移除（App 重新进入主机后会重新登记）`;
+      } else {
+        this.pushOfficialLastError = '';
+      }
+      this.log(
+        `group push: official devices=${summary.official.devices} sent=${summary.official.sent}`
+        + ` failed=${summary.official.failed} pruned=${summary.official.pruned}`,
+      );
+    }
+
+    return summary;
+  }
+
+  /**
+   * R2：单设备直连官方 hub（契约 §6.2/§4.3）。
+   * `POST {hubEndpoint}/v1/push`，`Authorization: Bearer <credential>`，body 只 `{kind, host, token}`
+   * （不含 title/body/sessionId，官方 hub 固定通用文案）；超时 10s、**不重试**。
+   * 日志/状态/审计不出现 token/credential。
+   * @param {{deviceId: string, token: string, hubEndpoint: string, credential: string}} device
+   * @param {{kind?: string}} intent
+   * @returns {Promise<{ok: true, pruned: string[]} | {ok: false, code: string}>}
+   */
+  async #pushToHub(device, intent) {
+    const url = `${device.hubEndpoint}${PUSH_SEND_PATH}`;
+    /** @type {Record<string, string>} */
+    const body = { kind: String(intent?.kind ?? '') };
+    const host = this.registration ? `${this.registration.hostId}.${this.registration.relayDomain}` : '';
+    if (host !== '') body.host = host;
+    body.token = device.token;
+    const controller = new AbortController();
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve({ timeout: true }), this.hubTimeoutMs);
+      timer.unref?.();
+    });
+    try {
+      const request = Promise.resolve()
+        .then(() => this.fetchImpl(url, {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${device.credential}`,
+            'content-type': 'application/json',
+          },
+          body: JSON.stringify(body),
+          signal: controller.signal,
+        }))
+        .then((response) => ({ response }))
+        .catch((error) => ({ error }));
+      // 显式 race：即使测试/运行环境的 fetch 不理会 AbortSignal，也不会超过 hubTimeoutMs。
+      const outcome = await Promise.race([request, timeout]);
+      if (outcome.timeout === true) {
+        try { controller.abort(); } catch { /* ignore */ }
+        this.log(`group push: official timeout（device=${device.deviceId} hub=${device.hubEndpoint}）`);
+        return { ok: false, code: 'timeout' };
+      }
+      if (outcome.error) {
+        this.log(`group push: official failed（device=${device.deviceId} hub=${device.hubEndpoint}）: ${outcome.error?.message ?? outcome.error}`);
+        return { ok: false, code: 'network' };
+      }
+      const response = outcome.response;
+      if (!response || typeof response !== 'object') {
+        this.log(`group push: official failed（device=${device.deviceId}）: 响应非法`);
+        return { ok: false, code: 'invalid-response' };
+      }
+      let json;
+      try { json = await response.json(); } catch { json = undefined; }
+      if (response.ok !== true || !json || json.ok !== true) {
+        const code = String(json?.error?.code ?? json?.code ?? `http_${response.status ?? 'unknown'}`);
+        this.log(`group push: official rejected（device=${device.deviceId} hub=${device.hubEndpoint} status=${response.status ?? '?'} code=${code}）`);
+        return { ok: false, code };
+      }
+      const pruned = Array.isArray(json.pruned) ? json.pruned.map((entry) => String(entry)) : [];
+      return { ok: true, pruned };
+    } catch (error) {
+      this.log(`group push: official failed（device=${device.deviceId}）: ${error?.message ?? error}`);
+      return { ok: false, code: 'internal' };
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /**
+   * relay `push.registered` 回执（R2：只影响 self 通道状态；official 不经过 relay）。
+   * @param {{ok?: boolean, deviceId?: string, mode?: string, enabled?: boolean, code?: string, message?: string}} msg
+   */
+  #onPushRegistered(msg) {
+    const deviceId = String(msg?.deviceId ?? '');
+    if (msg?.ok === true) {
+      this.pushSelfLastError = '';
+      this.log(`group push: relay registered device=${deviceId} mode=${String(msg.mode ?? '-')} enabled=${String(msg.enabled === true)}`);
+      return;
+    }
+    const code = String(msg?.code ?? 'internal');
+    this.pushSelfLastError = code === 'push_disabled'
+      ? '服务器未开启推送（relay 的 group.push.enabled=false），self 设备本次未推送'
+      : `推送登记被拒绝：${code}${msg?.message ? `（${msg.message}）` : ''}`;
+    const record = this.pushDevices.get(deviceId);
+    if (record && record.channel !== PUSH_CHANNELS.OFFICIAL) this.pushDevices.delete(deviceId);
+    this.log(`group push: relay register failed device=${deviceId} code=${code}`);
+  }
+
+  /**
+   * relay `push.result` 回执（R2：只影响 self 通道；host 不重试，只记日志/审计并更新可读错误）。
+   * `pruned` 是 APNs 410/Unregistered 的 self deviceId（relay 已删 token，App 下次进入会重登记）。
+   * @param {{id?: string, ok?: boolean, code?: string, delivered?: number, failed?: number, pruned?: unknown[], skipped?: string}} msg
+   */
+  #onPushResult(msg) {
+    const pruned = Array.isArray(msg?.pruned) ? msg.pruned.map((entry) => String(entry)) : [];
+    for (const deviceId of pruned) {
+      const record = this.pushDevices.get(deviceId);
+      if (record && record.channel !== PUSH_CHANNELS.OFFICIAL) this.pushDevices.delete(deviceId);
+    }
+    if (msg?.ok === true) {
+      if (pruned.length > 0) this.pushSelfLastError = `${pruned.length} 台 self 设备的推送 token 已失效（App 下次进入主机时会重新登记）`;
+      this.log(`group push: relay result id=${String(msg?.id ?? '')} delivered=${Number(msg?.delivered ?? 0)} failed=${Number(msg?.failed ?? 0)} skipped=${String(msg?.skipped ?? '')} pruned=${pruned.length}`);
+      return;
+    }
+    const code = String(msg?.code ?? 'internal');
+    this.pushSelfLastError = `推送发送失败：${code}`;
+    this.log(`group push: relay result id=${String(msg?.id ?? '')} failed code=${code}（不重试）`);
   }
 
   /**
@@ -480,6 +793,8 @@ export class GroupHostRuntime {
       plainPort: this.plainPort || 0,
       tokenPublicKeyConfigured: Boolean(registration?.tokenPublicKey),
       lastError: this.lastError ?? this.connector?.lastError ?? null,
+      // 推送状态（契约 §6：不暴露 token 明文）
+      push: this.pushStatus(),
     };
   }
 
@@ -619,7 +934,7 @@ export class GroupHostRuntime {
       return;
     }
     this.#touchDevice(payload.deviceId);
-    // —— 已鉴权的内部远程接口（群体版提供 status + restart）——
+    // —— 已鉴权的内部远程接口（群体版提供 status + push-token + restart）——
     if (pathname === STATUS_PATH) {
       if (req.method !== 'GET') {
         sendError(res, 405, 'method-not-allowed', '仅支持 GET');
@@ -637,9 +952,148 @@ export class GroupHostRuntime {
           version: this.version || null,
           // 「重启主机」组件：关闭时 App 不显示顶栏 ⏻，重启接口也会拒绝（501）
           restart: { enabled: this.config?.restartHostEnabled === true },
+          // 推送状态（契约 §6）：App 设置页展示；永不包含 token 明文
+          push: this.pushStatus(),
           devices: { total: devices.length, active: devices.filter((device) => !device.revokedAt).length },
         },
       });
+      return;
+    }
+    // —— App 登记 APNs device token（R2：self 经 relay / official 直连官方 hub）——
+    if (pathname === PUSH_TOKEN_PATH) {
+      if (req.method !== 'POST') {
+        sendError(res, 405, 'method-not-allowed', '仅支持 POST');
+        return;
+      }
+      const deviceId = payload.deviceId;
+      let body;
+      try {
+        body = await readJsonBody(req, 32 * 1024);
+      } catch (error) {
+        this.audit?.append({ deviceId, action: 'push-token', result: 'failed', hash: 'invalid-body' });
+        sendError(res, error.status ?? 400, error.code ?? 'invalid-json', error.message ?? '请求体不是合法 JSON');
+        return;
+      }
+      const fail = (status, code, message, hash) => {
+        this.audit?.append({ deviceId, action: 'push-token', result: 'failed', hash: hash ?? code });
+        sendError(res, status, code, message);
+      };
+
+      // —— 原有字段（provider/token/environment，与 R1 一致）——
+      const provider = body?.provider;
+      const token = body?.token;
+      const environment = body?.environment;
+      if (provider !== PUSH_PROVIDER.APNS || !isValidApnsDeviceToken(token) || !isPushEnvironment(environment)) {
+        fail(
+          400,
+          'invalid-push-token',
+          '推送参数非法：token 必须是 64 位小写十六进制，provider 必须是 apns，environment 必须是 development/production',
+        );
+        return;
+      }
+      // —— R2：channel 缺省 self（旧 App 兼容）——
+      const channel = normalizePushChannel(body?.channel);
+      if (channel === '') {
+        fail(400, 'invalid-channel', 'channel 必须是 self 或 official');
+        return;
+      }
+      const hubBundleId = typeof body?.bundleId === 'string' ? body.bundleId : '';
+      const hubEndpointRaw = typeof body?.hubEndpoint === 'string' ? body.hubEndpoint : '';
+      const credential = typeof body?.credential === 'string' ? body.credential : '';
+      const hasHubFields = hubBundleId !== '' || hubEndpointRaw !== '' || credential !== '';
+
+      if (channel === PUSH_CHANNELS.SELF) {
+        // 旧 App 只发 provider/token/environment；self 不允许夹带 hub 字段（防误配/防把 credential 留在主机）。
+        if (hasHubFields) {
+          fail(400, 'invalid-body', 'self 通道不接受 bundleId/hubEndpoint/credential');
+          return;
+        }
+        const connector = this.connector;
+        if (!connector || typeof connector.registerPushToken !== 'function' || !connector.isConnected()) {
+          this.pushSelfLastError = '主机与 relay 的控制连接暂不可用，App 稍后可重试登记';
+          fail(503, 'push-not-connected', '主机与 relay 的控制连接暂不可用，请稍后重试', 'push-not-connected');
+          return;
+        }
+        let registered;
+        try {
+          registered = await connector.registerPushToken({ deviceId, provider, token, environment });
+        } catch (error) {
+          registered = { ok: false, code: 'internal', message: error?.message };
+        }
+        if (registered?.ok === true) {
+          // self：token 由 connector 内存缓存（重连补报 relay）；本机只记录用于 status 计数。
+          this.pushDevices.set(deviceId, {
+            deviceId,
+            token,
+            environment,
+            channel: PUSH_CHANNELS.SELF,
+            registeredAt: this.now(),
+          });
+          this.pushSelfLastError = '';
+          this.audit?.append({ deviceId, action: 'push-token', result: 'ok', hash: 'self' });
+          // mode 与 channel 同时返回：R2 App 用 channel，旧 App（0.1.8）用 mode 展示。
+          sendJson(res, 200, { ok: true, data: { registered: true, channel: PUSH_CHANNELS.SELF, mode: PUSH_CHANNELS.SELF } });
+          return;
+        }
+        const code = String(registered?.code ?? 'internal');
+        if (code === 'not_connected') {
+          this.pushSelfLastError = '主机与 relay 的控制连接暂不可用';
+          fail(503, 'push-not-connected', '主机与 relay 的控制连接暂不可用，请稍后重试', code);
+          return;
+        }
+        if (code === 'timeout') {
+          // 契约外但明确：5s 内没等到 push.registered；App 按可重试处理（Lead 约定）。
+          this.pushSelfLastError = '登记推送 token 超时：relay 未在 5s 内回应，App 可稍后重试';
+          fail(503, 'push-timeout', '登记推送 token 超时，请稍后重试', code);
+          return;
+        }
+        if (code === 'push_disabled') {
+          this.pushSelfLastError = '服务器未开启推送（relay 的 group.push.enabled=false）';
+          fail(403, 'push-disabled', 'relay 未开启推送', code);
+          return;
+        }
+        if (code === 'invalid_push_token' || code === 'invalid_provider' || code === 'invalid_environment') {
+          fail(400, 'invalid-push-token', `relay 判定推送参数非法（${code}）`, code);
+          return;
+        }
+        this.pushSelfLastError = `relay 拒绝登记推送 token：${code}`;
+        fail(502, 'push-rejected', `relay 拒绝登记推送 token（${code}）`, code);
+        return;
+      }
+
+      // —— official：App 已用设备私钥向官方 hub 换到 credential，主机只做格式校验后内存保存 ——
+      if (!isValidBundleId(hubBundleId)) {
+        fail(400, 'invalid-body', 'official 通道需要合法 bundleId（3-155 字符，字母数字/./-）');
+        return;
+      }
+      let hubEndpoint;
+      try {
+        hubEndpoint = normalizePushHubEndpoint(hubEndpointRaw);
+      } catch (error) {
+        fail(400, 'invalid-body', error.message, 'invalid-hub-endpoint');
+        return;
+      }
+      if (!isPushCredentialLike(credential)) {
+        fail(400, 'invalid-body', 'official 通道需要 credential（三段式 JWT 字符串，≤4096 字符）');
+        return;
+      }
+      // 通道切换（同一设备从 self 改 official）：不再把它的 token 补报 relay。
+      if (typeof this.connector?.removePushToken === 'function') this.connector.removePushToken(deviceId);
+      this.pushDevices.set(deviceId, {
+        deviceId,
+        token,
+        environment,
+        channel: PUSH_CHANNELS.OFFICIAL,
+        bundleId: hubBundleId,
+        hubEndpoint,
+        credential,
+        registeredAt: this.now(),
+      });
+      this.pushOfficialHub = hubEndpoint;
+      this.pushOfficialLastError = '';
+      this.audit?.append({ deviceId, action: 'push-token', result: 'ok', hash: 'official' });
+      this.log(`group push: registered device=${deviceId} channel=official bundleId=${hubBundleId} hub=${hubEndpoint}`);
+      sendJson(res, 200, { ok: true, data: { registered: true, channel: PUSH_CHANNELS.OFFICIAL, mode: PUSH_CHANNELS.OFFICIAL } });
       return;
     }
     // —— 远程重启主机 DSH（App 顶栏 ⏻；成功返回 202，helper 约 1s 后重启）——

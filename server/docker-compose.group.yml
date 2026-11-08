@@ -11,6 +11,8 @@
 #   mkdir -p data/certs
 #   # 控制面证书：data/certs/<RELAY_DOMAIN>/{fullchain.pem,privkey.pem}
 #   # 边缘通配证书：data/certs/wildcard/{fullchain.pem,privkey.pem}
+#   # 可选（服务端集中推送）：
+#   #   self 模式：mkdir -p data/apns && cp AuthKey_<KEY_ID>.p8 data/apns/ && chmod 600 data/apns/*.p8
 #   chown -R 100:101 data
 #   # 首次启动会据此生成 data/config/relay.json（已存在则不会覆盖；
 #   # 需要高级项可手改该文件，模板见 server/group/relay.group.example.json）
@@ -38,7 +40,7 @@
 #   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
 #
 # 导出离线镜像：
-#   docker save -o dsh-relay-0.3.0-group-linux-amd64.tar dsh-remote-relay:0.3.0-group
+#   docker save -o dsh-relay-0.4.0-group-linux-amd64.tar dsh-remote-relay:0.4.0-group
 # ============================================================================
 
 name: dsh-remote-group
@@ -48,7 +50,7 @@ services:
     build:
       context: ../dsh-remoteService
       dockerfile: packages/relay/Dockerfile
-    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.3.0-group}
+    image: ${DSH_RELAY_IMAGE:-dsh-remote-relay:0.3.1-group}
     container_name: dsh-relay-group
     user: "${RELAY_UID:-100}:${RELAY_GID:-101}"
     command: ["node", "packages/relay/bin/relay.js", "--config", "/data/config/relay.json"]
@@ -89,8 +91,24 @@ services:
       RELAY_GROUP_API_BIND: "0.0.0.0"
       RELAY_GROUP_ADMIN_PORT: "9444"
       RELAY_GROUP_ADMIN_BIND: "0.0.0.0"   # host publish 已限制 127.0.0.1
+      # ── 服务端集中推送（可选；ENABLED=false 或密钥留空 = 关闭）────────────────
+      # 只支持 self：部署方自签 App 的 APNs Auth Key（.p8）放 data/apns/
+      # （下面只读挂载到 /data/apns），环境变量只写路径/Key ID/Team ID/bundle id。
+      # 官方 App（R2）推送不经过 relay（App 向官方 hub 登记、主机直连 hub），无需配置。
+      RELAY_GROUP_PUSH_ENABLED: ${RELAY_GROUP_PUSH_ENABLED:-false}
+      RELAY_GROUP_PUSH_MODE: ${RELAY_GROUP_PUSH_MODE:-self}
+      RELAY_GROUP_PUSH_CONTENT: ${RELAY_GROUP_PUSH_CONTENT:-generic}
+      RELAY_GROUP_PUSH_COOLDOWN_SECONDS: ${RELAY_GROUP_PUSH_COOLDOWN_SECONDS:-30}
+      RELAY_GROUP_PUSH_APNS_KEY_FILE: ${RELAY_GROUP_PUSH_APNS_KEY_FILE:-}
+      RELAY_GROUP_PUSH_APNS_KEY_ID: ${RELAY_GROUP_PUSH_APNS_KEY_ID:-}
+      RELAY_GROUP_PUSH_APNS_TEAM_ID: ${RELAY_GROUP_PUSH_APNS_TEAM_ID:-}
+      RELAY_GROUP_PUSH_APNS_TOPIC: ${RELAY_GROUP_PUSH_APNS_TOPIC:-}
+      RELAY_GROUP_PUSH_APNS_ENVIRONMENT: ${RELAY_GROUP_PUSH_APNS_ENVIRONMENT:-auto}
     volumes:
       - ./data:/data
+      # self 模式 APNs Auth Key 只读挂载（放 data/apns/AuthKey_<KEY_ID>.p8，0600）；
+      # data/ 整体已挂到 /data，这里单独只读挂载避免误写。
+      - ./data/apns:/data/apns:ro
     sysctls:
       net.ipv4.ip_unprivileged_port_start: "0"
     healthcheck:

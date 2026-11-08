@@ -10,7 +10,9 @@
  * 本 App 只有群体版（A 模式，token 鉴权）：
  *   - 设备身份 = P-256 设备密钥（Secure Enclave / AndroidKeyStore）+ relay 短时 token；
  *   - 没有设备证书 / mTLS / 原生 mTLS WebView（classic 模式已删除）；
- *   - 没有 APNs 推送 / 应用内通知 / 通知设置（群体版暂不实现本机推送）；
+ *   - iOS APNs 推送（0.1.8+）：进入主机拿到会话 token 后登记 APNs device token；
+ *     点系统通知按 payload 的 host/hostId 打开对应主机（self 模式可带 sessionId 跳会话）；
+ *     设置页「推送」卡可开关/重新注册/查看状态（`src/lib/push.ts`）。
  *   - 「重启主机 DSH」是群体版功能：进入主机后按 Host 组件开关在顶栏显示 ⏻
  *     （见 `WebViewScreen`，用带会话 cookie 的请求调 host 内部接口）。
  *   - App 锁（0.1.3 语义）：设置页的全局锁**只负责冷启动解锁**；每台主机的
@@ -21,8 +23,9 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, BackHandler, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Alert, AppState, BackHandler, StyleSheet, Text, View } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Notifications from 'expo-notifications';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { PairingScreen } from './src/screens/PairingScreen';
@@ -40,10 +43,74 @@ import {
   setConnectionRequireBiometricOnOpen,
   type StoredConnection,
 } from './src/lib/store';
+import { onGroupSessionAvailable } from './src/lib/group';
+import { configureNotificationHandler, registerPushForConnection } from './src/lib/push';
 import { clearGroupDeviceKey } from './modules/dsh-mtls/src';
 import { colors, spacing, typography } from './src/theme';
 
 type Route = 'loading' | 'home' | 'pairing' | 'webview' | 'devices' | 'settings';
+
+/** APNs payload 的 `body` 字典（relay/host 附带；expo-notifications 映射为 content.data）。 */
+interface NotificationData {
+  host?: string;
+  hostId?: string;
+  sessionId?: string;
+}
+
+/**
+ * 从通知 payload 取跳转字段。
+ *
+ * host-plugin 的 APNs payload 是 `{aps:{...}, body:{kind,host,sessionId}}`；
+ * expo-notifications iOS 把 APNs `userInfo["body"]` 映射成 `content.data`，
+ * 所以正常形态是 data 本身就是 `{kind,host,sessionId}`；这里同时兼容
+ * 字段直接平铺或嵌在 `data.body` 里的实现。
+ */
+function notificationDataOf(data: unknown): NotificationData {
+  if (!data || typeof data !== 'object') return {};
+  const record = data as Record<string, unknown>;
+  const nested = record.body && typeof record.body === 'object'
+    ? record.body as Record<string, unknown>
+    : record;
+  const pick = (key: string): string | undefined => {
+    const value = nested[key] ?? record[key];
+    return typeof value === 'string' && value !== '' ? value : undefined;
+  };
+  return {
+    ...(pick('host') ? { host: pick('host') } : {}),
+    ...(pick('hostId') ? { hostId: pick('hostId') } : {}),
+    ...(pick('sessionId') ? { sessionId: pick('sessionId') } : {}),
+  };
+}
+
+/** 主机地址归一化：小写、去掉可能的端口（连接记录的 host 与端口分开存）。 */
+function normalizedHost(host: string): string {
+  const lower = host.trim().toLowerCase();
+  const withoutPort = lower.includes(':') && !lower.startsWith('[')
+    ? lower.slice(0, lower.indexOf(':'))
+    : lower;
+  return withoutPort;
+}
+
+/** 按通知 payload 的 host/hostId 匹配已配对连接；匹配不到返回 null。 */
+function matchNotificationConnection(
+  connections: StoredConnection[],
+  data: NotificationData,
+): StoredConnection | null {
+  const host = data.host ?? '';
+  const hostId = data.hostId ?? '';
+  if (host) {
+    const exact = connections.find((item) => item.host.trim().toLowerCase() === host.trim().toLowerCase());
+    if (exact) return exact;
+    const hostname = normalizedHost(host);
+    const byHostname = connections.find((item) => normalizedHost(item.host) === hostname);
+    if (byHostname) return byHostname;
+  }
+  if (hostId) {
+    const byHostId = connections.find((item) => item.hostId === hostId);
+    if (byHostId) return byHostId;
+  }
+  return null;
+}
 
 export default function App() {
   const [route, setRoute] = useState<Route>('loading');
@@ -60,9 +127,20 @@ export default function App() {
   const [webViewReloadToken, setWebViewReloadToken] = useState(0);
   /** App 内嵌浏览器（DSH 页面里的外链，如平台查询用量/充值）；null = 未打开。 */
   const [externalPage, setExternalPage] = useState<{ url: string } | null>(null);
-  /** 供异步回调读取的最新导航/连接状态。 */
+  /**
+   * 通知点击后要打开的会话（self 模式 payload 的 sessionId）。
+   * 由 WebViewScreen 在页面加载就绪后注入
+   * `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)`，注入成功后回调清空。
+   */
+  const [openSessionRequest, setOpenSessionRequest] = useState<{ sessionId: string; nonce: number } | null>(null);
+  /** 通知点击后是否已处理过（避免 listener 与冷启动 API 重复处理同一次点击）。 */
+  const lastHandledNotificationIdRef = useRef<string | null>(null);
+  /** 冷启动「最后一次通知点击」是否已处理（连接列表加载完成后处理一次）。 */
+  const coldStartHandledRef = useRef(false);
+  /** 供异步通知回调读取的最新导航/连接状态。 */
   const routeRef = useRef<Route>('loading');
   const connectionRef = useRef<StoredConnection | null>(null);
+  const connectionsRef = useRef<StoredConnection[]>([]);
 
   const refreshConnections = useCallback(async () => {
     const stored = await loadConnections();
@@ -95,6 +173,10 @@ export default function App() {
   useEffect(() => {
     connectionRef.current = connection;
   }, [connection]);
+
+  useEffect(() => {
+    connectionsRef.current = connections;
+  }, [connections]);
 
   /**
    * App 锁（全局）：**只负责冷启动解锁**（设置页开关）。
@@ -148,12 +230,104 @@ export default function App() {
     [],
   );
 
+  /**
+   * 点系统通知：按 payload 的 host/hostId 匹配已配对连接 → 打开该主机；
+   * self 模式带 sessionId 时，进入后由 WebViewScreen 注入
+   * `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)` 直达会话（official 模式无 sessionId）。
+   *
+   * 连接列表可能尚未加载完（冷启动时 listener 先触发）：此时不标记已处理，
+   * 交给下方的 `getLastNotificationResponseAsync` 在路由就绪后补处理。
+   */
+  const handleNotificationResponse = useCallback(
+    (response: Notifications.NotificationResponse) => {
+      const notificationId = response.notification.request.identifier;
+      if (notificationId && lastHandledNotificationIdRef.current === notificationId) return;
+      const data = notificationDataOf(response.notification.request.content.data);
+      const target = matchNotificationConnection(connectionsRef.current, data);
+      if (!target) {
+        if (routeRef.current === 'loading') return;
+        if (notificationId) lastHandledNotificationIdRef.current = notificationId;
+        void Notifications.clearLastNotificationResponseAsync().catch(() => {});
+        Alert.alert(
+          '无法打开通知对应的主机',
+          data.host || data.hostId
+            ? '这台主机不在本机已配对列表中（可能已解除配对）。请回到主机列表重新扫码配对。'
+            : '通知里没有携带可识别的主机信息，请手动打开主机。',
+        );
+        return;
+      }
+      if (shouldLockOnOpen(target)) setLocked(true);
+      setConnection(target);
+      setRoute('webview');
+      setOpenSessionRequest(
+        data.sessionId ? { sessionId: data.sessionId, nonce: Date.now() } : null,
+      );
+      if (notificationId) lastHandledNotificationIdRef.current = notificationId;
+      void Notifications.clearLastNotificationResponseAsync().catch(() => {});
+      // 打开通知后顺带（重新）登记一次推送 token：relay 重启会清空 token 表，
+      // 用户从通知进入主机的路径也要能自动恢复推送。
+      void registerPushForConnection(target, { force: true });
+    },
+    [shouldLockOnOpen],
+  );
+
+  useEffect(() => {
+    configureNotificationHandler();
+  }, []);
+
+  // 系统通知点击（App 在前台/后台运行时的常规路径）。
+  useEffect(() => {
+    const subscription = Notifications.addNotificationResponseReceivedListener(handleNotificationResponse);
+    return () => subscription.remove();
+  }, [handleNotificationResponse]);
+
+  // 冷启动：App 被通知拉起时，等连接列表加载完再处理「最后一次通知点击」。
+  useEffect(() => {
+    if (route === 'loading' || coldStartHandledRef.current) return;
+    coldStartHandledRef.current = true;
+    void (async () => {
+      try {
+        const response = await Notifications.getLastNotificationResponseAsync();
+        if (!response) return;
+        await Notifications.clearLastNotificationResponseAsync().catch(() => {});
+        handleNotificationResponse(response);
+      } catch {
+        // 冷启动跳转失败不应影响正常进入 App。
+      }
+    })();
+  }, [route, handleNotificationResponse]);
+
+  // 回到前台：对当前连接重试推送登记（失败静默，状态在设置页可见；内部自动节流）。
+  useEffect(() => {
+    const subscription = AppState.addEventListener('change', (state) => {
+      if (state !== 'active') return;
+      const current = connectionRef.current;
+      if (!current) return;
+      void registerPushForConnection(current);
+    });
+    return () => subscription.remove();
+  }, []);
+
+  // 群体版会话 token 可用/刷新时（事件只含连接标识，不含 token）→ 对当前主机登记推送。
+  useEffect(() => {
+    return onGroupSessionAvailable((event) => {
+      const current = connectionRef.current;
+      if (!current) return;
+      if (current.host !== event.host || current.port !== event.port || current.deviceId !== event.deviceId) {
+        return;
+      }
+      void registerPushForConnection(current);
+    });
+  }, []);
+
   /** 配对成功 → 直接进入主机；只有该主机开了「打开此连接时要求面容」才解锁。 */
   const handlePaired = useCallback((paired: StoredConnection) => {
     if (shouldLockOnOpen(paired)) setLocked(true);
     setConnection(paired);
     void refreshConnections();
     setRoute('webview');
+    // 进入主机后登记推送（拿到会话 token 后 group.ts 还会再触发一次非强制登记）。
+    void registerPushForConnection(paired, { force: true, requestPermission: true });
   }, [refreshConnections, shouldLockOnOpen]);
 
   /** 从主机列表打开一台主机：仅当该连接单独开启「打开此连接时要求面容」时触发面容。 */
@@ -161,6 +335,7 @@ export default function App() {
     if (shouldLockOnOpen(target)) setLocked(true);
     setConnection(target);
     setRoute('webview');
+    void registerPushForConnection(target, { force: true, requestPermission: true });
   }, [shouldLockOnOpen]);
 
   /** 主机列表卡片上的 ⚙：打开这台主机的连接设置，返回时回到列表。 */
@@ -189,6 +364,11 @@ export default function App() {
 
   const handleCacheCleared = useCallback(() => {
     setWebViewReloadToken((token) => token + 1);
+  }, []);
+
+  /** WebViewScreen 注入 `__DSH_REMOTE_OPEN_SESSION__` 成功后清空待处理请求（避免重复注入）。 */
+  const handleOpenSessionHandled = useCallback((nonce: number) => {
+    setOpenSessionRequest((current) => (current !== null && current.nonce === nonce ? null : current));
   }, []);
 
   /**
@@ -278,6 +458,7 @@ export default function App() {
           <SettingsScreen
             onCacheCleared={handleCacheCleared}
             onAppLockChanged={handleAppLockChanged}
+            pushTarget={connection}
             onClose={() => setRoute('home')}
           />
         );
@@ -326,6 +507,8 @@ export default function App() {
               reloadToken={webViewReloadToken}
               isVisible={route === 'webview' && !locked}
               onOpenExternal={handleOpenExternal}
+              openSessionRequest={openSessionRequest}
+              onOpenSessionHandled={handleOpenSessionHandled}
             />
           </View>
         ) : null}

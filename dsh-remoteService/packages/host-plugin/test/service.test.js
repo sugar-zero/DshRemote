@@ -16,12 +16,12 @@ async function setup() {
   return { home, service };
 }
 
-test('RemoteService：版本与管理 API 展示的版本一致（0.2.4）', async () => {
+test('RemoteService：版本与管理 API 展示的版本一致（0.2.6）', async () => {
   const { home, service } = await setup();
   try {
     const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     assert.equal(service.status().version, pkgVersion);
-    assert.equal(pkgVersion, '0.2.4');
+    assert.equal(pkgVersion, '0.2.6');
   } finally {
     await service.dispose();
     home.cleanup();
@@ -46,12 +46,13 @@ test('RemoteService：配置 schema 只保留群体字段，classic 字段不会
       groupServiceUrl: 'https://relay.example.com:19443',
     });
     const raw = JSON.parse(readFileSync(paths.config(), 'utf8'));
-    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'tlsCertFile', 'pushEnabled', 'apnsKeyFile', 'groupEnabled']) {
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'tlsCertFile', 'apnsKeyFile', 'groupEnabled']) {
       assert.equal(key in raw, false, `classic 字段 ${key} 不应写回配置`);
     }
     const config = loadConfig();
     assert.equal(config.groupServiceUrl, 'https://relay.example.com:19443');
-    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'publicPort', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'pushProvider', 'apnsKeyFile', 'groupEnabled', 'listenPort', 'relayTlsInsecure']) {
+    assert.equal(config.pushEnabled, true, '群体版「推送提醒」开关默认开启（保存时允许写回）');
+    for (const key of ['relayUrl', 'relayDomain', 'hostId', 'hostToken', 'publicPort', 'tlsCertFile', 'tlsKeyFile', 'pushProvider', 'apnsKeyFile', 'groupEnabled', 'listenPort', 'relayTlsInsecure']) {
       assert.equal(key in DEFAULT_CONFIG, false, `${key} 不应出现在 DEFAULT_CONFIG`);
       assert.equal(key in config, false, `${key} 不应出现在加载后的配置`);
     }
@@ -65,6 +66,13 @@ test('RemoteService：配置 schema 只保留群体字段，classic 字段不会
     assert.equal(loadConfig().restartHostEnabled, true);
     saveConfig({ restartHostEnabled: false });
     assert.equal(loadConfig().restartHostEnabled, false);
+
+    // 「推送提醒」开关同样是群体版正式字段（默认开启），保存后能读回。
+    assert.equal(DEFAULT_CONFIG.pushEnabled, true, '推送开关默认开启');
+    assert.equal(saveConfig({ pushEnabled: false }).pushEnabled, false);
+    assert.equal(loadConfig().pushEnabled, false);
+    saveConfig({ pushEnabled: true });
+    assert.equal(loadConfig().pushEnabled, true);
   } finally {
     await service.dispose();
     home.cleanup();
@@ -92,6 +100,15 @@ test('RemoteService：updateConfig 落到群体字段并重启运行时（未启
     assert.equal(status.config.hostName, 'My Group Host');
     assert.equal(status.config.groupPlainPort, 34567);
     assert.equal(status.group.registered, false);
+    // 推送状态（R2 契约 §6.3）：默认开启、两通道无设备，不含 token/credential
+    assert.equal(status.config.pushEnabled, true);
+    assert.deepEqual(status.push, {
+      enabled: true,
+      self: { devices: 0, lastError: null },
+      official: { devices: 0, lastError: null, hub: null },
+      mode: '',
+    });
+    assert.equal(JSON.stringify(status.push).includes('credential'), false, 'push 状态不能有 credential 字段');
   } finally {
     await service.dispose();
     home.cleanup();

@@ -5,20 +5,22 @@
 # 0.3.0 起 relay 只服务群体版：边缘 TLS 终止（手机）+ 控制面 WSS（主机出站隧道）+
 # 注册 API + 部署方后台；classic 单机盲中继的 443 TLS 透传 / 80 跳转 / tokens.json 已删除。
 #
-# 构建上下文必须是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol）：
-#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.3.0-group ../..   # 在 packages/relay 下
+# 构建上下文必须是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol /
+# dsh-remote-apns）：
+#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.4.0-group ../..   # 在 packages/relay 下
 #   docker compose -f packages/relay/docker-compose.yml build
 #
 # 运行（配置/证书/group.json 都在 /data 卷里；首次启动按 .env 自动生成 /data/config/relay.json）：
 #   docker run -d --name dsh-relay --restart unless-stopped \
 #     -p 80:80 -p 443:443 -p 8443:8443 -p 9443:9443 -p 127.0.0.1:9444:9444 \
-#     -e RELAY_DOMAIN=relay.example.com -v "$PWD/data:/data" dsh-remote-relay:0.3.0-group
+#     -e RELAY_DOMAIN=relay.example.com -v "$PWD/data:/data" dsh-remote-relay:0.4.0-group
 
-# ---- deps: 安装 ws（只复制 workspace 依赖清单，避免把源码/测试带进依赖层） ----
+# ---- deps: 安装 ws + workspace 依赖（只复制依赖清单，避免把源码/测试带进依赖层） ----
 FROM node:24-alpine AS deps
 WORKDIR /app
 COPY package.json ./
 COPY packages/protocol/package.json ./packages/protocol/package.json
+COPY packages/apns/package.json ./packages/apns/package.json
 COPY packages/relay/package.json ./packages/relay/package.json
 RUN npm install --omit=dev --no-audit --no-fund && npm cache clean --force
 
@@ -32,6 +34,8 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json ./
 COPY packages/protocol/package.json ./packages/protocol/package.json
 COPY packages/protocol/index.js ./packages/protocol/index.js
+COPY packages/apns/package.json ./packages/apns/package.json
+COPY packages/apns/index.js ./packages/apns/index.js
 COPY packages/relay/package.json ./packages/relay/package.json
 COPY packages/relay/index.js ./packages/relay/index.js
 COPY packages/relay/lib ./packages/relay/lib

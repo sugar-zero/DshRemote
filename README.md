@@ -4,9 +4,10 @@
 relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 App 扫码后远程访问自己的 DSH。
 
 > **本分支（`feat/group-service`）是独立产品线，只包含群体服务功能**：
-> relay 终止手机 TLS（A 模式）、设备密钥 + 短时 token 鉴权、邀请码自助注册、部署方后台。
-> 分支上**不再包含** `main` 的 B2 盲中继 + 设备 mTLS（single-host/单体版）功能、主机 APNs 推送、
-> mTLS 证书管理等经典能力；两套形态的协议/配置/App 均不互通。
+> relay 终止手机 TLS（A 模式）、设备密钥 + 短时 token 鉴权、邀请码自助注册、部署方后台、
+> **推送**（官方 App：官方 hub 设备直连；自签 App：部署方 relay 用自己的 APNs key）。
+> 分支上**不再包含** `main` 的 B2 盲中继 + 设备 mTLS（single-host/单体版）功能、主机本机 APNs
+> 推送、mTLS 证书管理等经典能力；两套形态的协议/配置/App 均不互通。
 
 ## 组成
 
@@ -27,7 +28,11 @@ relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 Ap
   （HTTP + WebSocket 升级）到本机 DSH；默认拒绝外网入站。可选「允许手机重启主机 DSH」组件
   （默认关闭，开启后 App 顶栏出现重启按钮）。
 - **relay**：部署方自建，终止手机 TLS（需要 `*.relayDomain` 通配证书），负责设备会话鉴权、
-  主机隧道、邀请码注册、部署方后台。
+  主机隧道、邀请码注册、部署方后台；**自签 App 的 self 推送**可在 relay 配部署方自己的
+  APNs key（官方 App 的推送不经过 relay，见下）。
+- **官方推送（R2）**：官方 App 打包内置官方 hub 地址，用设备密钥向官方 hub 登记换
+  per-device credential，主机直连 hub 发送——**与部署方 relay 配置无关**；hub 由项目所有者
+  运营（官方团队 APNs key、固定通用文案、配额限流）。
 
 ## 风险与边界（部署/使用前必读）
 
@@ -38,18 +43,27 @@ relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 Ap
 - **relay 是信任方**：A 模式下 relay 是身份权威，必须把它当作可信方；不要部署在不信任的服务器上。
 - **仅限小范围、邀请制、可信群体**；协议、配置与 API 仍会演进，不要用于公开服务。
 - DSH Web 始终只监听 `127.0.0.1`；不 fork DSH、不用 `--trusted-host` 旁路。
-- 本分支**不包含**主机本机 APNs 推送；推送后续按设计文档走服务端统一通道。
+- 本分支**不包含**主机本机 APNs 推送（主机零 Apple 凭据）：官方 App 走官方 hub 设备直连、
+  自签 App 走部署方 relay 自己的 APNs key；见
+  [`docs/group-push-r2-contract.zh.md`](docs/group-push-r2-contract.zh.md) 与部署手册
+  [`server/README.md`](server/README.md) §6。
 
-完整设计与安全决策：[docs/group-service-design.zh.md](docs/group-service-design.zh.md)。
+完整设计与安全决策：[docs/group-service-design.zh.md](docs/group-service-design.zh.md)；
+推送实现契约（R2）：[docs/group-push-r2-contract.zh.md](docs/group-push-r2-contract.zh.md)
+（O1 历史契约：[docs/group-push-design.zh.md](docs/group-push-design.zh.md)；self 推送仍有效，official 转发已删除）。
 
 ## 从这里开始
 
 | 我想… | 去这里 |
 |---|---|
 | 部署 relay（证书、端口、nginx、后台、邀请码） | [server/README.md](server/README.md) |
+| 配置自签 App 的 self 推送（部署方 APNs key） | [server/README.md §6](server/README.md#6-推送可选自部署--官方推送-hub) |
+| 官方推送 hub（运营方部署/CLI/配额） | [dsh-remoteService/packages/push-hub/README.md](dsh-remoteService/packages/push-hub/README.md) |
 | 在 DSH 主机安装/配置群体服务插件 | [dsh-remoteService/packages/host-plugin/README.md](dsh-remoteService/packages/host-plugin/README.md) |
 | 构建/运行手机 App | [dsh-remoteApp/README.md](dsh-remoteApp/README.md) |
-| 看服务端 monorepo（protocol/relay/host-plugin） | [dsh-remoteService/README.md](dsh-remoteService/README.md) |
+| 看服务端 monorepo（protocol/apns/relay/host-plugin/push-hub） | [dsh-remoteService/README.md](dsh-remoteService/README.md) |
+| 推送实现契约（R2 官方推送/接口/安全） | [docs/group-push-r2-contract.zh.md](docs/group-push-r2-contract.zh.md) |
+| 推送方案取舍/负载限流评估 | [docs/group-push-routing-options.zh.md](docs/group-push-routing-options.zh.md) · [docs/group-push-load-evaluation.zh.md](docs/group-push-load-evaluation.zh.md) |
 | 看落地踩坑与根因记录 | [docs/diagnostics/12-group-service-issues.md](docs/diagnostics/12-group-service-issues.md) |
 | 看当前状态与验收记录 | [STATUS.md](STATUS.md) |
 
@@ -59,9 +73,11 @@ relay，邀约一小群朋友/同事把各自的 DSH 主机接入，用手机 Ap
 DshRemote/
 ├── server/                     # 部署方 VPS：群体版 relay compose + group nginx 配置
 ├── dsh-remoteService/          # 服务端 monorepo
-│   ├── packages/protocol/      #   群体版协议常量 / QR v2 / 帧 / 签名校验
-│   ├── packages/host-plugin/   #   DSH 主机插件（群体版注册/隧道/明文代理/配对）
-│   └── packages/relay/         #   群体版 relay（边缘 TLS + 注册 API + 后台 + 控制面 WSS）
+│   ├── packages/protocol/      #   群体版协议常量 / QR v2 / 帧 / 签名校验 / R2 推送登记契约
+│   ├── packages/host-plugin/   #   DSH 主机插件（群体版注册/隧道/明文代理/配对/推送分流）
+│   ├── packages/relay/         #   群体版 relay（边缘 TLS + 注册 API + 后台 + 控制面 WSS）
+│   ├── packages/push-hub/      #   官方推送 hub（owner 运营：设备登记/credential/配额/APNs）
+│   └── packages/apns/          #   APNs HTTP/2 发送器（relay self 与 hub 共用）
 ├── dsh-remoteApp/              # Expo / React Native App（群体版 token 模式，iOS 优先）
 ├── docs/                       # 设计文档与排障记录
 └── STATUS.md                   # 当前状态与验收记录

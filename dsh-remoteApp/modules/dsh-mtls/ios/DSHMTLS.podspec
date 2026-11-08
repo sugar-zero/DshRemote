@@ -1,6 +1,6 @@
 Pod::Spec.new do |s|
   s.name           = 'DSHMTLS'
-  s.version        = '0.1.7'
+  s.version        = '0.2.0'
   s.summary        = 'DSH Remote group-service device key + session cookie (P-256)'
   s.description    = <<-DESC
     Native helpers for DSH Remote (group service / token auth):

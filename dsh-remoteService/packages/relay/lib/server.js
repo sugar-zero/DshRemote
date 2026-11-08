@@ -7,7 +7,7 @@
  *   :<edge.port>/tcp  边缘 TLS —— relay 用通配证书终止手机 TLS（SNI → <hostId>.<domain>），
  *                     设备会话（短时 token / __Host- cookie）鉴权后经控制面隧道转发到主机。
  *   :<controlPort>/tcp 控制面 WSS（host 插件专用）：host.hello 鉴权 → host.ready →
- *                     JSON 控制消息 + 二进制流帧（dsh-remote-protocol）。
+ *                     JSON 控制消息 + 二进制流帧（dsh-remote-protocol）+ 推送（push.register / push.send）。
  *   :<httpPort>/tcp   只保留 GET/HEAD /healthz（容器 HEALTHCHECK 用）；其它一律 404。
  *   api / admin 面     可各自独立监听：POST /__group/register、/__group/refresh；/__admin。
  *
@@ -41,6 +41,7 @@ import { isValidHostId, normalizeHostId } from './tokens.js';
 import { normalizeConfig, readTlsMaterial } from './config.js';
 import { GroupRegistrationService, verifyHostToken } from './group.js';
 import { GROUP_ADMIN_BASE, createGroupAdminHandler, ensureAdminToken } from './group-admin.js';
+import { createGroupPushService } from './push.js';
 import { dirname, join } from 'node:path';
 import { GroupAuthError, GroupAuthService } from './group-auth.js';
 import { parseHttpHead, readHttpHead, readHttpJsonBody, writeHttpResponse } from './edge-http.js';
@@ -104,6 +105,21 @@ class Relay {
       getControlPort: () => this.controlPort,
       publicControlPort: config.group.publicControlPort,
     });
+    /**
+     * 服务端集中推送（client token 表只在内存；R2 起只有 self = 部署方 APNs key 直连 Apple）。
+     * APNs 私钥不在启动时读取（首次实际推送才读，失败给可操作错误）。
+     * 测试可经 createRelay({ pushClients }) 注入 APNs 替身（JSON 配置无法表达函数）。
+     * @type {ReturnType<typeof createGroupPushService>}
+     */
+    this.push = createGroupPushService({
+      config: config.group.push,
+      logger: config.logger,
+      domain: config.domain,
+      apnsClient: config.pushClients?.apnsClient,
+      now: config.pushClients?.now,
+      createApnsClient: config.pushClients?.createApnsClient,
+    });
+
     /** 部署方后台（/__admin）：默认自动生成 admin-token 文件（0600）。 */
     const adminTokenFile = config.group.adminTokenFile ?? join(dirname(config.group.file), 'admin-token');
     const admin = ensureAdminToken({ token: config.group.adminToken, tokenFile: adminTokenFile });
@@ -114,6 +130,11 @@ class Relay {
       mobilePort: config.group.mobilePort,
       adminToken: admin.token,
       onlineHostIds: () => [...this.hosts.keys()],
+      pushSummary: () => this.push.summary(),
+      onHostRevoked: (hostId) => {
+        // 撤销主机后其推送 token 立即失效（凭据已不可用，不再给该 host 发通知）。
+        this.push.dropHost(hostId);
+      },
       logger: config.logger,
     });
 
@@ -270,6 +291,12 @@ class Relay {
         this.logger.info(`admin UI: ${scheme}://${this.config.domain}:${this.controlPort}${GROUP_ADMIN_BASE}/ — token: ${tokenHint}`);
       }
     }
+    const pushSummary = this.push.summary();
+    if (pushSummary.enabled) {
+      this.logger.info('group push: mode self（relay 用部署方自己的 APNs Auth Key 直连 Apple；官方 App 推送直连官方 hub，不经过 relay）');
+    } else {
+      this.logger.info('group push: disabled（group.push.enabled=false；push.* 控制消息返回 push_disabled）');
+    }
     return this.api();
   }
 
@@ -316,6 +343,8 @@ class Relay {
       ok: true,
       domain: this.config.domain,
       hosts: [...this.hosts.keys()].sort(),
+      // 只暴露摘要（enabled/mode/token 数），不含任何 token / 密钥。
+      push: this.push.summary(),
     };
   }
 
@@ -518,8 +547,14 @@ class Relay {
       case RELAY_MSG.HOST_CLOSE:
         this.handleHostCloseMessage(conn.host, msg);
         return;
+      case RELAY_MSG.PUSH_REGISTER:
+        this.handlePushRegister(conn.host, msg);
+        return;
+      case RELAY_MSG.PUSH_SEND:
+        void this.handlePushSend(conn.host, msg);
+        return;
       default:
-        // 0.3.0 起 relay 不再提供 push 服务：未知消息（含旧 host 的 push.register/send）忽略。
+        // 未知消息忽略（老 host 不认识的类型也可能出现；老 relay 会忽略 push.* 实现兼容）。
         this.logger.debug(`control: ignoring unsupported message type ${JSON.stringify(String(msg.t))}`);
     }
   }
@@ -1145,6 +1180,7 @@ class Relay {
 
   /**
    * 主机全量同步设备列表（设备 ID + P-256 公钥）；覆写该主机的设备注册表。
+   * 同步后按最新设备列表清理推送 token（不在册设备立即失效）。
    * @param {any} host
    * @param {Record<string, any>} msg
    */
@@ -1155,6 +1191,13 @@ class Relay {
     }
     try {
       const count = this.groupAuth.syncDevices(host.hostId, msg.devices);
+      const deviceIds = (Array.isArray(msg.devices) ? msg.devices : [])
+        .map((entry) => (entry && typeof entry === 'object' ? String(entry.deviceId ?? '') : ''))
+        .filter((deviceId) => deviceId !== '');
+      const droppedTokens = this.push.pruneDevices(host.hostId, deviceIds);
+      if (droppedTokens > 0) {
+        this.logger.info(`push: host "${host.hostId}" device.sync removed ${droppedTokens} stale push token(s)`);
+      }
       this.logger.info(`group auth: host "${host.hostId}" synced ${count} device(s)`);
       this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_SYNCED, ok: true, count });
     } catch (err) {
@@ -1165,7 +1208,7 @@ class Relay {
   }
 
   /**
-   * 撤销单台设备（旧 token 立即失效：session 校验会再查注册表）。
+   * 撤销单台设备（旧 token 立即失效：session 校验会再查注册表；推送 token 同时删除）。
    * @param {any} host
    * @param {Record<string, any>} msg
    */
@@ -1173,7 +1216,66 @@ class Relay {
     const deviceId = String(msg.deviceId ?? '');
     const revoked = this.groupAuth ? this.groupAuth.revokeDevice(host.hostId, deviceId) : false;
     if (revoked) this.logger.info(`group auth: host "${host.hostId}" revoked device ${deviceId}`);
+    // 即使 auth 注册表里没有（例如只登记过推送 token），也清掉该设备的推送 token。
+    if (this.push.dropDevice(host.hostId, deviceId)) {
+      this.logger.info(`push: host "${host.hostId}" removed push token for revoked device ${deviceId}`);
+    }
     this.sendJson(host.ws, { t: RELAY_MSG.DEVICE_REVOKED, ok: revoked, deviceId });
+  }
+
+  // ---------------------------------------------------------------------------
+  // 控制面推送消息（host → relay；hostId 只取自已鉴权连接 conn.host）
+  // ---------------------------------------------------------------------------
+
+  /**
+   * `push.register`：App 的 APNs device token 登记（回复 push.registered）。
+   * @param {any} host
+   * @param {Record<string, any>} msg
+   */
+  handlePushRegister(host, msg) {
+    const result = this.push.register(host.hostId, msg);
+    /** @type {Record<string, any>} */
+    const response = {
+      t: RELAY_MSG.PUSH_REGISTERED,
+      ok: result.ok,
+      deviceId: result.deviceId,
+    };
+    if (result.ok) {
+      response.mode = result.mode;
+      response.enabled = result.enabled;
+    } else {
+      response.code = result.code;
+      response.message = result.message;
+      this.logger.debug(`push: host "${host.hostId}" register rejected (${result.code})`);
+    }
+    this.sendJson(host.ws, response);
+  }
+
+  /**
+   * `push.send`：推送意图（回复 push.result；同 id）。
+   * APNs 发送是异步的：期间控制连接可能已断开（sendJson 会忽略）。
+   * @param {any} host
+   * @param {Record<string, any>} msg
+   */
+  async handlePushSend(host, msg) {
+    const id = typeof msg?.id === 'string' ? msg.id.slice(0, 128) : '';
+    const result = await this.push.send(host.hostId, msg);
+    /** @type {Record<string, any>} */
+    const response = { t: RELAY_MSG.PUSH_RESULT, id };
+    if (result.ok) {
+      response.ok = true;
+      response.delivered = result.delivered;
+      response.failed = result.failed;
+      response.pruned = result.pruned;
+      response.mode = result.mode;
+      if (result.skipped !== undefined) response.skipped = result.skipped;
+    } else {
+      response.ok = false;
+      response.code = result.code;
+      response.message = result.message;
+      this.logger.debug(`push: host "${host.hostId}" send rejected (${result.code})`);
+    }
+    this.sendJson(host.ws, response);
   }
 
   // ---------------------------------------------------------------------------
@@ -1264,6 +1366,9 @@ export function forceEdgeTunnelHead(head) {
  * @param {{certFile?: string, keyFile?: string, cert?: Buffer|string, key?: Buffer|string}} [options.tls]
  * @param {boolean} [options.dev=false] 允许无 TLS 的 ws:// 控制面（仅测试/开发）
  * @param {string} [options.listenHost='0.0.0.0'] 监听地址（旧名 dataHost 仍接受）
+ * @param {{apnsClient?: any, now?: () => number,
+ *   createApnsClient?: (options: object) => any}} [options.pushClients]
+ *   仅测试注入：APNs 发送器替身（JSON 配置无法表达函数；生产不要设置）
  * @returns {Promise<{controlPort:number, httpPort:number, groupApiPort:number, groupAdminPort:number,
  *   edgePort:number, domain:string, dev:boolean, close:Function, health:Function, onlineHostIds:Function}>}
  */

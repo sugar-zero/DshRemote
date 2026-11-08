@@ -3,6 +3,7 @@ data/
 certs/
 .env
 .env.group
+.env.push-hub
 .env.local
 *.pem
 *.key

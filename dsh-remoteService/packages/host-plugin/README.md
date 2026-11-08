@@ -2,11 +2,14 @@
 
 > 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../../../LICENSE)）。
 >
-> 版本 **0.2.4**：本插件只保留群体服务版（A 模式）主机能力（classic/单体版的 mTLS、主机证书、
-> 自托管推送已剥离）；**「重启主机 DSH」作为可关闭的「组件」在群体版恢复**（默认关闭）。
-> 0.2.4 收窄组件保存后的连接断开范围：**只断 DSH 主实时通道 `/api/remote.mux`**，其它 WebSocket
-> 保留，避免 App 一次收到多条 `dsh-ws-close` 把自动恢复预算（60s 内 2 次）耗尽。
-> 旧版配置字段会被忽略，升级后需要重新注册一次。
+> 版本 **0.2.6**：本插件只保留群体服务版（A 模式）主机能力（classic/单体版的 mTLS、主机证书、
+> 主机侧自托管 APNs 已剥离）；**「重启主机 DSH」作为可关闭的「组件」在群体版恢复**（默认关闭）。
+> 0.2.6（R2）把**官方 App 推送与 relay 解耦**：官方 App 用设备密钥向官方 hub 换 per-device
+> credential，主机凭 credential **直连官方 hub**；部署方自签 App（self）仍走 relay。两类设备可
+> 同机混用、主机自动分流；**主机不持有任何 Apple 凭据，token/credential 只存内存**。
+> 0.2.5 增加服务端集中推送（R1，legacy 兼容）；0.2.4 收窄组件保存后的连接断开范围
+> （只断 `/api/remote.mux`）。旧版配置字段会被忽略，升级后需要重新注册一次。
+> 推送契约：[`docs/group-push-r2-contract.zh.md`](../../../docs/group-push-r2-contract.zh.md)。
 
 运行在 **DSH 主机** 上的远程访问插件，提供：
 
@@ -15,9 +18,12 @@
 - 本机 **loopback 明文 HTTP/WS 代理**：逐请求校验 relay 签名 token + 设备在册后反代到
   `127.0.0.1` 的 DSH Web；
 - **群体版设备配对**（二维码 v2 + 一次性密钥 + 桌面确认 + P-256 设备公钥登记）；
+- **推送意图与 device token 转发**（R2 分流）：监听会话事件生成推送意图；self 设备经 relay
+  （`push.register` / `push.send`），official 设备由主机用 App 上报的 credential 直连官方 hub；
+  主机零 Apple 凭据、token/credential 只存内存、不落盘；
 - **「重启主机 DSH」组件**（可关闭，默认关闭）：手机经隧道 `POST /__dsh_remote/restart`
   让主机调度 detached helper 重启整个 DSH 客户端（桌面端整组重启 / Node CLI 原样拉起）；
-- 桌面 DSH 设置页 / 侧栏入口（注册、状态、配对、设备撤销、审计、组件开关）；
+- 桌面 DSH 设置页 / 侧栏入口（注册、状态、配对、设备撤销、审计、组件/推送开关）；
 - 本机管理 API（仅本机已认证浏览器可访问）。
 
 relay 的部署（含 TLS / 注册 API / 边缘配置）见 [`../../../server/README.md`](../../../server/README.md)。
@@ -63,6 +69,10 @@ dsh plugin --profile desktop add link:/path/to/dshRemote/dsh-remoteService/packa
 - 主机每次重新拉起时会先调用 relay `POST /__group/refresh` 同步最新
   `mobilePort` / `controlUrl`（不消耗邀请码），再重建隧道。
 - 设备配对/撤销后自动把设备表（deviceId + P-256 公钥）全量 `device.sync` 给 relay。
+- **推送（R2 分流）**：主机监听会话事件生成推送意图；**self** 设备经同一控制连接
+  `push.register` / `push.send` 交给 relay；**official** 设备由主机逐设备
+  `POST {hubEndpoint}/v1/push`（Bearer credential，10s 超时、不重试、不依赖 relay）。
+  hub 返回 `pruned` 时删除该设备记录；token/credential 不落盘、不进日志/status。
 
 ---
 
@@ -80,6 +90,7 @@ DSH 设置 → 远程访问。配置落盘在 `~/.dsh/remote-access/config.json`
 | `groupPlainPort` | loopback 明文代理端口（默认 `0` = 随机；只被本机隧道客户端连接） |
 | `groupInsecure` | 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss） |
 | `restartHostEnabled` | 「组件」：允许手机重启主机 DSH（**默认关闭**；关闭时 App 隐藏 ⏻、重启接口 501） |
+| `pushEnabled` | 「推送提醒」：允许把推送意图（`push.send`）发给 relay（**默认开启**；关闭后不再发提醒，保存不重建运行时） |
 | `denyPrefixes` | 反代 deny list（`/connect`、`/oauth`、`/open-in-app`、`/api/remote-access`、`/__dsh_remote`） |
 | `maxRequestBytes` | 远程代理请求体上限（默认 256 MiB） |
 
@@ -90,8 +101,9 @@ DSH 设置 → 远程访问。配置落盘在 `~/.dsh/remote-access/config.json`
 ### 从单体版（≤0.1.x）升级
 
 classic 配置字段（`relayUrl` / `relayDomain` / `hostId` / `hostToken` / `publicPort` /
-`tlsCertFile` / `tlsKeyFile` / `push*` / `apns*` / `groupEnabled` 等）已从 schema 删除，
-读取时会被忽略、保存时不会写回。升级后：
+`tlsCertFile` / `tlsKeyFile` / 主机侧自托管推送的 `pushProvider` / `apns*` / `groupEnabled` 等）
+已从 schema 删除，读取时会被忽略、保存时不会写回。**唯一保留的推送配置是群体版 `pushEnabled`**
+（默认开启，只控制主机是否上报推送意图）。升级后：
 
 1. 在设置页填「服务地址（注册 API 端口）+ 邀请码」→ 点「注册并连接」；
 2. 删除不再使用的旧 TLS 证书 / 设备 CA 目录（如 `~/.dsh/remote-access/certs`、
@@ -151,6 +163,7 @@ Host 半注册在 DSH 本机 webServer：
 | `POST /__dsh_remote/pair` | 手机提交配对公钥（一次性 secret + 主机确认保护） |
 | `GET /__dsh_remote/pair/status?ticket=` | 配对确认轮询 |
 | `GET /__dsh_remote/status` | 已鉴权设备可读的主机状态（见下） |
+| `POST /__dsh_remote/push-token` | App 登记 APNs device token（self → relay；official → 官方 hub 直连；见下） |
 | `POST /__dsh_remote/restart` | 远程重启主机 DSH（「组件」开启时；成功 202） |
 
 会话凭证两种等价形式（同一份 relay 签名 token、同一套离线验签 + 设备在册校验）：
@@ -170,12 +183,60 @@ Host 半注册在 DSH 本机 webServer：
     "domain": "h_ab12cd34.relay.example.com",
     "auth": "token",
     "relayConnected": true,
-    "version": "0.2.4",
+    "version": "0.2.6",
     "restart": { "enabled": false },
+    "push": {
+      "enabled": true,
+      "self": { "devices": 1, "lastError": null },
+      "official": { "devices": 2, "lastError": null, "hub": "https://push.example.com" },
+      "mode": "mixed"
+    },
     "devices": { "total": 1, "active": 1 }
   }
 }
 ```
+
+`push` 对象（R2 契约 §6.3，**不包含 token/credential**）：`enabled` = 主机「推送提醒」开关；
+`self.devices` / `official.devices` = 两条通道各自已登记的设备数；`self.lastError` /
+`official.lastError` = 可读错误（relay 登记/发送失败、官方 hub 请求失败等）；`official.hub` =
+最近登记的官方 hub 基址（无 official 设备时为 `null`）；`mode` = `self` / `official` / `mixed`
+（两类设备混用，主机自动分流；无设备时为 `""`）。
+
+`POST /__dsh_remote/push-token`（仅 POST，等价 cookie / Bearer 鉴权 + 设备在册；R2 向后兼容）：
+
+```json
+// self（部署方自签 App；旧 App 可省略 channel/hub 字段，缺省 self）
+{ "provider": "apns", "token": "<64 位小写 hex>", "environment": "development" | "production" }
+
+// official（官方 App：hubEndpoint/credential 由 App 向官方 hub 换取后上报）
+{
+  "provider": "apns", "token": "<64 位小写 hex>", "environment": "development" | "production",
+  "channel": "official",
+  "bundleId": "com.example.dshremote",             // 3-155 字符，字母数字/./-
+  "hubEndpoint": "https://push.example.com",       // https 基址，≤2048，无 userinfo/query/hash
+  "credential": "<三段式 JWT，≤4096 字符>"          // 主机只透传，签名/claims 由官方 hub 校验
+}
+```
+
+| 状态 | 响应 | 含义 |
+|---|---|---|
+| 200 | `{"ok":true,"data":{"registered":true,"channel":"self\|official","mode":"..."}}` | 已登记（self 经 relay `push.registered` 确认；official 校验格式后仅存本机内存；`mode` 为旧 App 兼容字段） |
+| 400 | `{"ok":false,"error":{"code":"invalid-push-token",...}}` | token 不是 64 位小写 hex / provider ≠ apns / environment 非法 |
+| 400 | `{"ok":false,"error":{"code":"invalid-channel",...}}` | channel 不是 self / official |
+| 400 | `{"ok":false,"error":{"code":"invalid-body",...}}` | official 缺/非法 bundleId/hubEndpoint/credential，或 self 夹带 hub 字段 |
+| 401 | `{"ok":false,"error":{...}}` | 会话 token 缺失/过期/设备已撤销（与其它内部接口一致） |
+| 403 | `{"ok":false,"error":{"code":"push-disabled",...}}` | relay 未开启推送（仅 self；`group.push.enabled=false`） |
+| 502 | `{"ok":false,"error":{"code":"push-rejected",...}}` | relay 拒绝 self 登记（host 不在册/限流/内部错误） |
+| 503 | `{"ok":false,"error":{"code":"push-not-connected",...}}` | self 登记时主机到 relay 的控制连接暂不可用，App 稍后重试（official 不需要 relay） |
+| 503 | `{"ok":false,"error":{"code":"push-timeout",...}}` | self 登记 5s 内没等到 `push.registered`，App 可稍后重试 |
+
+约束：主机**不落盘** token/credential（只在内存，status/日志/审计不出现明文；设备撤销后随
+`device.sync` 清理），同一 deviceId 只保留最新记录；同一 session 的 `turn-end` 提醒有 30s 冷却，
+`ask_user_question` 等待提醒按 callId 去重、不受冷却影响。发送分流见 §2：
+- self：`push.send` 15s 未收到 `push.result` 只记日志、不重发；失败码（`rate_limited` /
+  `hub_unavailable` …）只记日志/审计，主机不重试。
+- official：逐设备直连 hub（10s 超时、不重试、失败**不回退 relay**）；`pruned` 的设备记录删除，
+  App 下次进入主机/回前台时重新登记。
 
 `POST /__dsh_remote/restart`（仅 POST，body 可为空）：
 
@@ -204,8 +265,10 @@ Host 半注册在 DSH 本机 webServer：
 其余已鉴权请求反代到本机 DSH Web。`/api/remote-access/*` 对远程设备一律拒绝；
 `/connect`、`/oauth`、`/open-in-app*`、`/__dsh_remote/*` 等本机敏感路径同样在 deny list 内。
 
-**群体版不提供**：主机 TLS 监听、设备证书/mTLS、APNs/Expo 推送。推送等能力由服务端
-（部署方）在后续切片统一提供，主机端不再发送任何通知。
+**群体版不提供**：主机 TLS 监听、设备证书/mTLS、主机侧 APNs/Expo 发送（主机零 Apple 凭据与
+hub 签名密钥）。推送按 R2 分流：self 设备由 relay 发送（部署方自己的 APNs Key）；official 设备
+由主机凭 App 上报的 credential 直连官方 hub（hub 用官方 key 发通用文案）。`push-token` 接口与
+其它内部接口一样只认设备会话 token（cookie/Bearer 等价）。
 
 ---
 
@@ -221,6 +284,11 @@ Host 半注册在 DSH 本机 webServer：
 - 管理 API 只允许本机已认证 DSH 浏览器访问；远程设备一律 403。
 - 「重启主机」组件默认关闭；开启后仍要求设备 token 鉴权（cookie/Bearer 等价）且设备未撤销，
   关闭时接口直接 501，不进入调度。
+- 推送 token/credential 只存内存、不落盘、不进日志/status/审计明文（status 只给计数与可读错误）；
+  设备撤销后随 `device.sync` 清理。主机不持有 APNs 私钥 / hub relay token / hub 签名密钥。
+- official 登记只做格式校验（https hubEndpoint ≤2048 无 userinfo/query/hash、三段式 JWT
+  credential ≤4096）；**签名与 claims 由官方 hub 校验**（主机没有 hub 公钥，不是信任边界）。
+  official 直连失败不回退 relay（避免重复通知）。
 
 ---
 
@@ -258,6 +326,11 @@ Host 半注册在 DSH 本机 webServer：
 | App 没有「重启主机 ⏻」按钮 / 重启报 `host-restart-disabled` | 「设置 → 远程访问 → 组件」里「允许手机重启主机 DSH」是否开启（默认关闭）；保存后 status 的 `restart.enabled` 应为 true |
 | 保存组件开关后 App 提示「自动重连未恢复，请点击刷新重试」 | 插件是否 ≥0.2.4（0.2.3 会一次断开所有 WS，耗尽 App 自动恢复预算）；升级 0.2.4 后应只断 `/api/remote.mux` 一条主通道，App 自动 reload |
 | 重启报 `host-restart-unavailable` / `host-restart-unsupported` | 插件版本过旧，或当前运行环境不支持自动重启（如 Linux Electron）；本机手动重启仍可用 |
+| self App 收不到推送 / 登记报 `push-disabled` | relay 的 `group.push.enabled` 是否为 true；部署方检查 APNs key/topic/environment（relay 侧配置，主机无需配置） |
+| official App 登记报 `invalid-body` | 检查 App 上报的 bundleId / hubEndpoint（必须 https 基址）/ credential（三段式 JWT）；`status.push.official.lastError` 与主机审计有原因 |
+| 登记报 `push-not-connected` / `push-timeout`（仅 self） | 隧道是否在线（status 的 `relayConnected`）；稍后重试登记（App 回前台/重新进入主机会自动重试）；official 不走 relay，不受影响 |
+| status 的 `push.mode` 为空 / `push.official.devices=0` | 还没有设备登记（App 进入主机后自动登记）；official 设备登记失败看 `official.lastError`（hub 不可达/credential 过期时会重新换发） |
+| official 推送失败 `rate_limited` / `timeout` / `invalid_credential` | 官方 hub 的限流或 credential 过期；主机不重试、不回退 relay；App 重新进入主机/回前台会重新登记换 credential |
 | 打开大会话「载入历史」很久/失败、画面反复跳 | 插件是否为 ≥0.2.0 且已重启 DSH；手机 WebView 是否加载了历史分片；relay 带宽/线路是否过慢；详见 [`docs/diagnostics/09-mobile-history-slicing.md`](../../../docs/diagnostics/09-mobile-history-slicing.md) |
 
 ---
@@ -273,6 +346,39 @@ Host 半注册在 DSH 本机 webServer：
 
 ## 10. 变更记录
 
+- **0.2.6**（R2：官方推送与 relay 解耦，混合设备自动分流）
+  - `POST /__dsh_remote/push-token` 向后兼容扩展：新增可选 `channel`（缺省 self）、`bundleId`、
+    `hubEndpoint`、`credential`；official 必须合法 bundleId + https hubEndpoint（≤2048，无
+    userinfo/query/hash）+ 三段式 JWT credential（≤4096）；self 拒绝夹带 hub 字段。原有设备会话
+    token 鉴权与设备在册校验不变；记录仅存内存，撤销/`device.sync` 清理，审计不写 token/credential。
+  - 发送分流：self 设备继续 `connector.sendPushIntent`（relay 路径不变）；official 设备逐设备
+    `POST {hubEndpoint}/v1/push`（Bearer credential，body 只 `{kind,host,token}`，10s 超时、
+    不重试、失败不回退 relay）；没有 self 设备时不向 relay 发；hub `pruned` 时删除对应设备记录。
+  - `status.push` 扩展为 `{enabled, self:{devices,lastError}, official:{devices,lastError,hub}, mode}`
+    （mode=self/official/mixed），不含 token/credential；主机「推送提醒」开关语义不变（关闭即不发）。
+  - 桌面设置页推送区展示两通道设备数/官方 hub/错误；版本 0.2.6。
+  - 测试：新增 `push-r2.test.js`（official 校验矩阵、分流、超时、pruned、混合/通道切换），
+    更新 connector / group-runtime / group-admin 端到端 / admin / group-restart / service /
+    client-smoke 覆盖，`npm test` 全绿。
+- **0.2.5**（群体服务版推送 R1：服务端集中发送，主机零 Apple 凭据；R2 保留 self/relay legacy）
+  - 新增 `lib/push.js` / `lib/push-summary.js`（自 main 移植并适配群体版）：监听
+    `session/event`，`turn/end`（completed/error/max-tokens/blocked，子代理跳过，同 session 30s
+    冷却）与 `ask_user_question`（正文固定「正在等待你的回答」，按 callId 去重、不占冷却）
+    生成 `push.send` 意图（`randomUUID` id + 会话标题/助手摘要/`sessionId`）；主机开关关闭、
+    relay 未连接时静默跳过；15s 无 `push.result` 只记日志、不重发。
+  - connector 增加 `registerPushToken` / `sendPushIntent` 与 `push.registered` / `push.result`
+    入站回调；成功登记的 token 只在内存缓存，重连 ready 后自动补报（relay 重启丢内存 token 表）。
+  - 新增远程内部接口 `POST /__dsh_remote/push-token`：沿用会话 token 鉴权 + 设备在册校验，
+    校验 64 位小写 hex / apns / environment 后转发 relay；返回 `registered/mode` 或
+    400 `invalid-push-token` / 401 / 403 `push-disabled` / 502 `push-rejected` /
+    503 `push-not-connected` / 503 `push-timeout`（5s 未等到 `push.registered`，可重试）。
+  - `status`（本机管理 API 与 `GET /__dsh_remote/status`）新增 `push` 对象：`enabled` /
+    `provider` / `serverEnabled` / `mode` / `tokens` / `lastError`（**不含 token 明文**）；
+    token 不落盘，设备撤销后随 `device.sync` 清理。
+  - 配置新增 `pushEnabled`（默认开启）：设置页「推送提醒」开关只持久化、不重建运行时；
+    `push.result` 失败码只记日志/审计，不重试。
+  - 测试：新增 `push.test.js` / `push-summary.test.js`，扩展 connector / group-runtime /
+    admin / group-restart / config-save / service / client-smoke 覆盖（128 个测试全绿）。
 - **0.2.4**（修复 App「自动重连未恢复，请点击刷新重试」）
   - 保存「组件 → 允许手机重启主机 DSH」后不再断开**所有** Upgrade/WS 连接：跟踪每条 Upgrade
     的请求 pathname，默认**只断开 DSH 主实时通道 `/api/remote.mux`**（其它插件/子页面 WS 保留）。

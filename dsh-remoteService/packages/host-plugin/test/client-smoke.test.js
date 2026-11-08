@@ -583,8 +583,8 @@ test('设置页初值优先读 status.config（群体版字段，无 classic 密
   assert.equal(draft.groupInsecure, false);
   assert.equal(draft.groupInviteCode, '', '邀请码永远不进入 draft 初始值');
   assert.equal(draft.restartHostEnabled, false, '「重启主机」组件默认关闭');
-  // classic 字段已从草稿中删除
-  for (const key of ['relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'tlsCertFile', 'tlsKeyFile', 'pushEnabled', 'apnsKeyFile', 'groupEnabled']) {
+  // classic 字段已从草稿中删除（「推送提醒」是群体版正式开关，单独断言）
+  for (const key of ['relayUrl', 'relayDomain', 'hostId', 'publicPort', 'hostToken', 'tlsCertFile', 'tlsKeyFile', 'apnsKeyFile', 'groupEnabled']) {
     assert.equal(key in draft, false, `draft 不应再有 ${key}`);
   }
 
@@ -592,6 +592,12 @@ test('设置页初值优先读 status.config（群体版字段，无 classic 密
   assert.equal(clientModule.__test.draftFromStatus({ config: { restartHostEnabled: true } }).restartHostEnabled, true);
   assert.equal(clientModule.__test.draftFromStatus({ restart: { enabled: true } }).restartHostEnabled, true);
   assert.equal(clientModule.__test.draftFromStatus({ restart: { enabled: false } }, { restartHostEnabled: true }).restartHostEnabled, false);
+
+  // 「推送提醒」：默认开启；优先读 config.pushEnabled，其次兼容 status.push.enabled
+  assert.equal(draft.pushEnabled, true, '「推送提醒」默认开启');
+  assert.equal(clientModule.__test.draftFromStatus({ config: { pushEnabled: false } }).pushEnabled, false);
+  assert.equal(clientModule.__test.draftFromStatus({ push: { enabled: false } }).pushEnabled, false);
+  assert.equal(clientModule.__test.draftFromStatus({ push: { enabled: true } }).pushEnabled, true);
 
   const legacy = clientModule.__test.draftFromStatus(null, { groupServiceUrl: 'https://typed.example', hostName: 'Typed' });
   assert.equal(legacy.groupServiceUrl, 'https://typed.example', '无 status 时保留上次编辑值');
@@ -1214,9 +1220,9 @@ test('设置页：只展示群体服务字段，切换到启用后保存提交 e
   await flushAsync();
   tree = renderer.render();
 
-  // 群体版设置页不出现 classic/推送字段
+  // 群体版设置页不出现 classic 字段（「推送提醒」是群体版正式开关，见下方断言）
   const pageText = collectText(tree);
-  for (const banned of ['中继地址', '中继主机令牌', 'TLS 证书', '推送提醒', 'APNs']) {
+  for (const banned of ['中继地址', '中继主机令牌', 'TLS 证书', 'APNs']) {
     assert.equal(pageText.includes(banned), false, `设置页不应再出现 classic 字段：${banned}`);
   }
   assert.match(pageText, /群体服务/);
@@ -1225,6 +1231,11 @@ test('设置页：只展示群体服务字段，切换到启用后保存提交 e
   // 「组件」区（群体版也提供「允许手机重启主机 DSH」）
   assert.match(pageText, /组件/);
   assert.match(pageText, /允许手机重启主机 DSH/);
+  // 「推送提醒」区（R2：self 经 relay / official 直连官方 hub；主机不持有 Apple 凭据）
+  assert.match(pageText, /推送提醒/);
+  assert.match(pageText, /推送通道/);
+  assert.match(pageText, /自部署设备/);
+  assert.match(pageText, /官方直连设备/);
 
   // 打开「启用远程访问」开关后保存 → POST /config { enabled: true }
   const enableToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
@@ -1361,4 +1372,137 @@ test('设置页：保存失败时 toast 带服务端 detail（invalid-config 文
   assert.match(text, /保存失败/, '失败时应显示保存失败 toast');
   assert.match(text, /groupServiceUrl（服务地址）未配置/, 'toast 应带服务端错误 detail');
   assert.match(text, /invalid-config/, 'toast 应带错误 code，便于用户反馈定位');
+});
+
+test('设置页：推送提醒区开关保存 pushEnabled，并展示 self/official 分流状态与 hub', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: {
+      registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443',
+      hostId: 'h_test1234', fqdn: 'h_test1234.relay.example.com', mobilePort: 11443, plainPort: 34567,
+      controlUrl: '', lastError: null,
+    },
+    host: { id: 'h_test1234', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    restart: { enabled: false },
+    push: {
+      enabled: true,
+      self: { devices: 1, lastError: null },
+      official: { devices: 2, lastError: null, hub: 'https://push.example.com' },
+      mode: 'mixed',
+    },
+    config: {
+      enabled: true, hostName: 'Example Mac', requireApproval: true, restartHostEnabled: false,
+      pushEnabled: true, groupServiceUrl: 'https://relay.example.com:19443', groupPlainPort: 34567, groupInsecure: false,
+    },
+  };
+  let pushEnabled = true;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/config') && options.method === 'POST') {
+      const patch = JSON.parse(String(options.body ?? '{}'));
+      if (patch.pushEnabled !== undefined) pushEnabled = patch.pushEnabled === true;
+    }
+    const data = {
+      ...baseStatus,
+      push: { ...baseStatus.push, enabled: pushEnabled },
+      config: { ...baseStatus.config, pushEnabled },
+    };
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  tree = renderer.render();
+
+  // 状态行：通道（mixed → 混合自动分流）+ self/official 设备数 + 官方 hub
+  const pageText = collectText(tree);
+  assert.match(pageText, /推送通道/);
+  assert.match(pageText, /混合（自动分流）/);
+  assert.match(pageText, /自部署设备/);
+  assert.match(pageText, /官方直连设备/);
+  assert.match(pageText, /官方推送 hub/);
+  assert.match(pageText, /https:\/\/push\.example\.com/);
+  assert.match(pageText, /1 台/);
+  assert.match(pageText, /2 台/);
+
+  const findPushToggle = (root) => findAll(root, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '').includes('推送提醒'))[0];
+  const toggle = findPushToggle(tree);
+  assert.ok(toggle, '推送提醒区应有开关');
+  assert.equal(toggle.props['aria-checked'], true, '默认开启');
+  toggle.props.onClick();
+  await flushAsync();
+  tree = renderer.render();
+  const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
+  assert.ok(saveButtons.length >= 1, '推送提醒区应有保存按钮');
+  saveButtons.at(-1).props.onClick();
+  await flushAsync();
+
+  const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
+  assert.ok(configCall, '保存应 POST /config');
+  assert.deepEqual(JSON.parse(String(configCall.options.body)), { pushEnabled: false }, '只提交 pushEnabled，不触发运行时重建字段');
+  const refreshed = findPushToggle(renderer.render());
+  assert.equal(refreshed.props['aria-checked'], false, '保存响应回来后开关态同步为关闭');
+});
+
+test('设置页：self/official 通道错误与隧道断开提示可读', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: { registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443', hostId: 'h_1', fqdn: 'h_1.relay.example.com', mobilePort: 11443, plainPort: 34567, controlUrl: '', lastError: null },
+    host: { id: 'h_1', name: 'Example Mac' },
+    pairing: { active: false },
+    devices: [],
+    push: {
+      enabled: true,
+      self: { devices: 1, lastError: '推送登记被拒绝：push_disabled' },
+      official: { devices: 1, lastError: '官方推送失败：rate_limited（不重试）', hub: 'https://push.example.com' },
+      mode: 'mixed',
+    },
+    config: { enabled: true, pushEnabled: true, groupServiceUrl: 'https://relay.example.com:19443', groupPlainPort: 34567 },
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, {
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        if (String(url).includes('/audit')) return { ok: true, data: { entries: [] } };
+        return { ok: true, data: baseStatus };
+      },
+    }),
+  });
+  renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  const text = collectText(renderer.render());
+  assert.match(text, /推送登记被拒绝/);
+  assert.match(text, /官方推送失败：rate_limited/);
+
+  // 隧道断开：只提示 self 设备暂不可用（official 直连不受影响）
+  const offline = {
+    ...baseStatus,
+    group: { ...baseStatus.group, connected: false },
+    push: { ...baseStatus.push, official: { ...baseStatus.push.official, lastError: null } },
+  };
+  const renderer2 = createStatefulRenderer();
+  const setup2 = setupClientWithReact(renderer2.react, {
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        if (String(url).includes('/audit')) return { ok: true, data: { entries: [] } };
+        return { ok: true, data: offline };
+      },
+    }),
+  });
+  renderer2.mount(setup2.clientModule.__test.SettingsPage, { t: setup2.t, initialStatus: offline });
+  await flushAsync();
+  const text2 = collectText(renderer2.render());
+  assert.match(text2, /隧道未连接：自部署设备暂不可用；官方直连设备不受影响/);
 });

@@ -100,6 +100,14 @@ const HELP = `dsh-remote-relay —— 群体服务版（A 模式）relay (DSH re
   RELAY_GROUP_EDGE_ENABLED RELAY_GROUP_EDGE_PORT RELAY_GROUP_EDGE_CERT_FILE RELAY_GROUP_EDGE_KEY_FILE
   RELAY_GROUP_SIGNING_KEY_FILE RELAY_TLS_CERT_FILE RELAY_TLS_KEY_FILE RELAY_LOG_LEVEL
 
+服务端集中推送（self；可选，不配置 = 关闭）:
+  RELAY_GROUP_PUSH_ENABLED=true|false      总开关（默认 false）
+  RELAY_GROUP_PUSH_MODE=self               唯一通道（R2 起 official 已删除：官方 App 推送直连官方 hub）
+  RELAY_GROUP_PUSH_CONTENT=generic|summary 内容策略（默认 generic）
+  RELAY_GROUP_PUSH_COOLDOWN_SECONDS=30     同 host 推送最小间隔（0..3600 秒）
+  RELAY_GROUP_PUSH_APNS_KEY_FILE / _KEY_ID / _TEAM_ID / _TOPIC / _ENVIRONMENT
+  （APNs .p8 只放 /data 下 0600 文件；不要写进仓库/命令行）
+
 示例:
   # 生产（控制面证书 = relay.example.com；边缘通配证书 = *.relay.example.com，写在 config 里）
   node bin/relay.js --config /etc/dsh-relay/relay.json
@@ -219,6 +227,16 @@ function readConfigFile(path) {
         if (config.group.edge.tls.keyFile) config.group.edge.tls.keyFile = resolveFromConfigDir(config.group.edge.tls.keyFile);
       }
     }
+    if (config.group.push && typeof config.group.push === 'object') {
+      config.group = { ...config.group, push: { ...config.group.push } };
+      const push = config.group.push;
+      if (push.self && typeof push.self === 'object') {
+        push.self = { ...push.self };
+        if (typeof push.self.keyFile === 'string' && push.self.keyFile !== '') {
+          push.self.keyFile = resolveFromConfigDir(push.self.keyFile);
+        }
+      }
+    }
   }
   if (config.tls && typeof config.tls === 'object') {
     config.tls = { ...config.tls };
@@ -271,6 +289,43 @@ function applyEnv(config) {
     const group = ensureGroup();
     group.auth = { ...(group.auth && typeof group.auth === 'object' ? group.auth : {}) };
     group.auth.signingKeyFile = env.RELAY_GROUP_SIGNING_KEY_FILE;
+  }
+  // 服务端集中推送（group.push）：R2 起只有 self；不设置 = 保持配置文件/默认值。
+  if (env.RELAY_GROUP_PUSH_ENABLED !== undefined || env.RELAY_GROUP_PUSH_MODE || env.RELAY_GROUP_PUSH_CONTENT
+    || env.RELAY_GROUP_PUSH_COOLDOWN_SECONDS
+    || env.RELAY_GROUP_PUSH_APNS_KEY_FILE || env.RELAY_GROUP_PUSH_APNS_KEY_ID
+    || env.RELAY_GROUP_PUSH_APNS_TEAM_ID || env.RELAY_GROUP_PUSH_APNS_TOPIC
+    || env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT) {
+    const group = ensureGroup();
+    group.push = { ...(group.push && typeof group.push === 'object' ? group.push : {}) };
+    const push = group.push;
+    if (env.RELAY_GROUP_PUSH_ENABLED !== undefined) {
+      push.enabled = parseBoolean(env.RELAY_GROUP_PUSH_ENABLED, 'RELAY_GROUP_PUSH_ENABLED');
+    }
+    if (env.RELAY_GROUP_PUSH_MODE) {
+      const mode = env.RELAY_GROUP_PUSH_MODE.trim().toLowerCase();
+      if (mode !== 'self') {
+        if (mode === 'official') {
+          throw new Error(
+            'RELAY_GROUP_PUSH_MODE="official" 已删除：R2 起官方 App 推送直连官方 hub（App 向 hub 登记、主机直连），relay 只做 self 推送',
+          );
+        }
+        throw new Error(`RELAY_GROUP_PUSH_MODE=${JSON.stringify(env.RELAY_GROUP_PUSH_MODE)} 无效：relay 只支持 self（部署方自己的 APNs key）`);
+      }
+      push.mode = 'self';
+    }
+    if (env.RELAY_GROUP_PUSH_CONTENT) push.content = env.RELAY_GROUP_PUSH_CONTENT;
+    if (env.RELAY_GROUP_PUSH_COOLDOWN_SECONDS) push.cooldownSeconds = env.RELAY_GROUP_PUSH_COOLDOWN_SECONDS;
+    if (env.RELAY_GROUP_PUSH_APNS_KEY_FILE || env.RELAY_GROUP_PUSH_APNS_KEY_ID
+      || env.RELAY_GROUP_PUSH_APNS_TEAM_ID || env.RELAY_GROUP_PUSH_APNS_TOPIC
+      || env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT) {
+      push.self = { ...(push.self && typeof push.self === 'object' ? push.self : {}) };
+      if (env.RELAY_GROUP_PUSH_APNS_KEY_FILE) push.self.keyFile = env.RELAY_GROUP_PUSH_APNS_KEY_FILE;
+      if (env.RELAY_GROUP_PUSH_APNS_KEY_ID) push.self.keyId = env.RELAY_GROUP_PUSH_APNS_KEY_ID;
+      if (env.RELAY_GROUP_PUSH_APNS_TEAM_ID) push.self.teamId = env.RELAY_GROUP_PUSH_APNS_TEAM_ID;
+      if (env.RELAY_GROUP_PUSH_APNS_TOPIC) push.self.topic = env.RELAY_GROUP_PUSH_APNS_TOPIC;
+      if (env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT) push.self.environment = env.RELAY_GROUP_PUSH_APNS_ENVIRONMENT;
+    }
   }
   if (env.RELAY_ADMIN_TOKEN || env.RELAY_ADMIN_TOKEN_FILE) {
     const group = ensureGroup();
@@ -347,6 +402,13 @@ function buildConfig(flags) {
   if (config.group.adminTokenFile) config.group.adminTokenFile = resolve(process.cwd(), config.group.adminTokenFile);
   if (config.group.auth && typeof config.group.auth === 'object' && config.group.auth.signingKeyFile) {
     config.group.auth = { ...config.group.auth, signingKeyFile: resolve(process.cwd(), config.group.auth.signingKeyFile) };
+  }
+  if (config.group.push && typeof config.group.push === 'object') {
+    config.group = { ...config.group, push: { ...config.group.push } };
+    const push = config.group.push;
+    if (push.self && typeof push.self === 'object' && push.self.keyFile) {
+      push.self = { ...push.self, keyFile: resolve(process.cwd(), push.self.keyFile) };
+    }
   }
   if (config.group.edge && typeof config.group.edge === 'object' && config.group.edge.tls
     && typeof config.group.edge.tls === 'object' && config.group.edge.tls.cert === undefined) {
@@ -548,7 +610,7 @@ async function main(argv) {
     return;
   }
   if (flags.version === true) {
-    console.log('dsh-remote-relay 0.3.0');
+    console.log('dsh-remote-relay 0.4.0');
     return;
   }
   if (positionals[0] === 'invite') {

@@ -75,6 +75,7 @@ export {
   writeGroupStore,
 } from './lib/group.js';
 export { GroupAuthError, GroupAuthService } from './lib/group-auth.js';
+export { createGroupPushService } from './lib/push.js';
 export {
   GROUP_ADMIN_API_BASE,
   GROUP_ADMIN_BASE,

@@ -5,6 +5,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync } from 'node:fs';
+import http from 'node:http';
 import { withTempHome } from './helpers.js';
 
 function fakeResponse() {
@@ -220,6 +221,235 @@ test('群体服务：RemoteService 注册 → 隧道上线 → 设备同步 → 
     try { await service?.dispose(); } catch { /* ignore */ }
     if (wss) await new Promise((resolve) => wss.close(() => resolve()));
     if (httpServer) await new Promise((resolve) => httpServer.close(resolve));
+    home.cleanup();
+  }
+});
+
+/**
+ * 服务级推送链路（假 relay 控制面 + mock 官方 hub，不连真 relay、不发真推送）：
+ * RemoteService → GroupHostRuntime → 真 RelayConnector → 假 relay WSS；
+ * 覆盖 push-token（self/official 混合）→ push.register → status.push（R2 分流形状），
+ * 以及 session/event → 分流发送（self: relay push.send；official: 直连 hub）→ pruned 清理。
+ */
+test('群体服务推送端到端：self+official 混合登记 → 分流发送 → status/pruned 清理', async () => {
+  const { createServer } = await import('node:http');
+  const { generateKeyPairSync } = await import('node:crypto');
+  const { WebSocketServer } = await import('ws');
+  const { GROUP_SESSION_COOKIE, PUSH_TOKEN_PATH, STATUS_PATH, signGroupSessionToken } = await import('dsh-remote-protocol');
+  const { waitFor } = await import('./helpers.js');
+
+  const relayKeys = generateKeyPairSync('ed25519');
+  const tokenPublicKey = relayKeys.publicKey.export({ type: 'spki', format: 'pem' }).toString();
+  const HOST_ID = 'h_pushe2e01';
+  const SELF_DEVICE_ID = 'd_pushe2e01';
+  const OFFICIAL_DEVICE_ID = 'd_pushe2e02';
+  const FQDN = `${HOST_ID}.relay.test`;
+  const SELF_TOKEN = 'c'.repeat(64);
+  const OFFICIAL_TOKEN = 'd'.repeat(64);
+  const HUB = 'https://push.example.com';
+  const CREDENTIAL = 'eyJhbGciOiJFZERTQSJ9.eyJ2IjoxfQ.c2ln';
+  const hubRequests = [];
+
+  const home = withTempHome();
+  const pushRegisters = [];
+  const pushSends = [];
+  let relaySocket;
+  let httpServer;
+  let wss;
+  let service;
+  try {
+    const registrationPayload = () => ({
+      ok: true,
+      hostId: HOST_ID,
+      hostToken: 'fake-host-token',
+      relayDomain: 'relay.test',
+      mobilePort: 11443,
+      tokenPublicKey,
+      controlUrl: `ws://127.0.0.1:${httpServer.address().port}`,
+    });
+    httpServer = createServer((req, res) => {
+      if (req.url === '/__group/register' || req.url === '/__group/refresh') {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify(registrationPayload()));
+        return;
+      }
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: { code: 'not_found' } }));
+    });
+    wss = new WebSocketServer({ server: httpServer, path: '/control' });
+    wss.on('connection', (ws) => {
+      relaySocket = ws;
+      ws.on('message', (data, isBinary) => {
+        if (isBinary) return;
+        let message;
+        try { message = JSON.parse(data.toString()); } catch { return; }
+        if (message.t === 'host.hello') {
+          ws.send(JSON.stringify({
+            t: 'host.ready', protocolVersion: 1, hostId: message.hostId,
+            hostname: FQDN, domain: 'relay.test',
+          }));
+          return;
+        }
+        if (message.t === 'push.register') {
+          pushRegisters.push(message);
+          ws.send(JSON.stringify({
+            t: 'push.registered', ok: true, deviceId: message.deviceId, mode: 'self', enabled: true,
+          }));
+          return;
+        }
+        if (message.t === 'push.send') {
+          pushSends.push(message);
+          ws.send(JSON.stringify({
+            t: 'push.result', id: message.id, ok: true, delivered: 1, failed: 0, pruned: [], mode: 'self',
+          }));
+        }
+      });
+    });
+    await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+
+    const { saveConfig } = await import('../lib/config.js');
+    const { RemoteService } = await import('../lib/service.js');
+    saveConfig({ enabled: false, groupInsecure: true });
+    service = new RemoteService({
+      webServer: { protocol: 'http:', port: 1, getOrigin: () => 'http://127.0.0.1:1/' },
+      connection: { authenticatedUrl: (origin) => `${origin}?token=test` },
+    }, {
+      // mock 官方 hub（R2：官方设备直连，不经 relay；第二个参数是测试注入选项）
+      fetchImpl: async (url, init = {}) => {
+        hubRequests.push({ url: String(url), method: init.method, headers: init.headers ?? {}, body: JSON.parse(String(init.body)) });
+        return { ok: true, status: 200, json: async () => ({ ok: true, delivered: 1, failed: 0, pruned: [] }) };
+      },
+    });
+    await service.ready;
+    await service.registerGroup({
+      serviceUrl: `http://127.0.0.1:${httpServer.address().port}`,
+      inviteCode: 'fake-invite-code',
+      hostName: 'Push E2E Host',
+    });
+    await waitFor(() => service.status().group.connected === true, 5000);
+
+    // 已配对设备（loopback 代理鉴权要求 deviceId 在册）
+    service.devices.add({ id: SELF_DEVICE_ID, name: 'Self iPhone', platform: 'ios', groupPublicKey: 'pk-self' });
+    service.devices.add({ id: OFFICIAL_DEVICE_ID, name: 'Official iPhone', platform: 'ios', groupPublicKey: 'pk-official' });
+    const selfToken = signGroupSessionToken({
+      privateKey: relayKeys.privateKey,
+      hostId: HOST_ID,
+      deviceId: SELF_DEVICE_ID,
+    }).token;
+    const officialToken = signGroupSessionToken({
+      privateKey: relayKeys.privateKey,
+      hostId: HOST_ID,
+      deviceId: OFFICIAL_DEVICE_ID,
+    }).token;
+    const plainPort = service.status().group.plainPort;
+
+    /** 经本机 loopback 明文代理发请求（相当于 relay 边缘隧道转进来的 App 请求）。 */
+    const loopbackRequest = ({ sessionToken, path, method = 'GET', body, headers = {} }) => new Promise((resolve, reject) => {
+      const clientRequest = http.request({
+        host: '127.0.0.1',
+        port: plainPort,
+        path,
+        method,
+        headers: { host: FQDN, cookie: `${GROUP_SESSION_COOKIE}=${sessionToken}`, ...headers },
+      }, (response) => {
+        const chunks = [];
+        response.on('data', (chunk) => chunks.push(chunk));
+        response.on('end', () => {
+          let json;
+          try { json = JSON.parse(Buffer.concat(chunks).toString('utf8')); } catch { json = undefined; }
+          resolve({ status: response.statusCode, json });
+        });
+      });
+      clientRequest.on('error', reject);
+      if (body !== undefined) clientRequest.write(body);
+      clientRequest.end();
+    });
+
+    // self 设备：旧 body（无 channel）→ 仍走 relay push.register（R1 兼容）
+    const selfRegistered = await loopbackRequest({
+      sessionToken: selfToken,
+      path: PUSH_TOKEN_PATH,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ provider: 'apns', token: SELF_TOKEN, environment: 'development' }),
+    });
+    assert.equal(selfRegistered.status, 200, JSON.stringify(selfRegistered.json));
+    assert.deepEqual(selfRegistered.json.data, { registered: true, channel: 'self', mode: 'self' });
+    await waitFor(() => pushRegisters.length === 1, 3000);
+    assert.deepEqual(pushRegisters[0], {
+      t: 'push.register',
+      deviceId: SELF_DEVICE_ID,
+      provider: 'apns',
+      token: SELF_TOKEN,
+      environment: 'development',
+    });
+
+    // official 设备：新字段，主机不转发 relay（不需要 relay 配推送）
+    const officialRegistered = await loopbackRequest({
+      sessionToken: officialToken,
+      path: PUSH_TOKEN_PATH,
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        provider: 'apns',
+        token: OFFICIAL_TOKEN,
+        environment: 'production',
+        channel: 'official',
+        bundleId: 'com.example.dshremote',
+        hubEndpoint: HUB,
+        credential: CREDENTIAL,
+      }),
+    });
+    assert.equal(officialRegistered.status, 200, JSON.stringify(officialRegistered.json));
+    assert.deepEqual(officialRegistered.json.data, { registered: true, channel: 'official', mode: 'official' });
+    assert.equal(pushRegisters.length, 1, 'official 登记不应触发 relay push.register');
+
+    const pushStatus = service.status().push;
+    assert.deepEqual(pushStatus, {
+      enabled: true,
+      self: { devices: 1, lastError: null },
+      official: { devices: 1, lastError: null, hub: HUB },
+      mode: 'mixed',
+    });
+
+    // 远程 status 也带 push 对象（且不含 token/credential）
+    const remoteStatus = await loopbackRequest({ sessionToken: selfToken, path: STATUS_PATH });
+    assert.deepEqual(remoteStatus.json.data.push, pushStatus);
+    const remoteStatusJson = JSON.stringify(remoteStatus.json);
+    assert.equal(remoteStatusJson.includes(SELF_TOKEN), false, '远程 status 不能有 token');
+    assert.equal(remoteStatusJson.includes(OFFICIAL_TOKEN), false, '远程 status 不能有 token');
+    assert.equal(remoteStatusJson.includes(CREDENTIAL), false, '远程 status 不能有 credential');
+
+    // 会话事件 → 分流：self 一条 relay push.send；official 一次直连 hub
+    const session = { id: 's_e2e', header: { origin: 'chat' } };
+    await service.pushNotifier.onSessionEvent(session, { type: 'session/title', data: { title: '修复登录 bug' } });
+    await service.pushNotifier.onSessionEvent(session, { type: 'turn/start', data: { turn: 0 } });
+    await service.pushNotifier.onSessionEvent(session, {
+      type: 'assistant/message',
+      data: { message: { content: [{ type: 'text', text: '已修好登录重定向' }] } },
+    });
+    await service.pushNotifier.onSessionEvent(session, { type: 'turn/end', data: { reason: { kind: 'completed' } } });
+    await waitFor(() => pushSends.length === 1, 3000);
+    await waitFor(() => hubRequests.length === 1, 3000);
+    assert.equal(pushSends[0].kind, 'turn-end');
+    assert.equal(pushSends[0].title, '修复登录 bug');
+    assert.equal(pushSends[0].body, '已修好登录重定向');
+    assert.equal(pushSends[0].sessionId, 's_e2e');
+    assert.equal(hubRequests[0].url, `${HUB}/v1/push`);
+    assert.equal(hubRequests[0].headers.authorization, `Bearer ${CREDENTIAL}`);
+    assert.deepEqual(hubRequests[0].body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN });
+
+    // relay 回 push.result(pruned=self deviceId) → 只清 self 设备；official 仍保留（mode=official）
+    relaySocket.send(JSON.stringify({
+      t: 'push.result', id: pushSends[0].id, ok: true, delivered: 1, failed: 0, pruned: [SELF_DEVICE_ID], mode: 'self',
+    }));
+    await waitFor(() => service.status().push.self.devices === 0, 3000);
+    assert.deepEqual(service.status().push.official, { devices: 1, lastError: null, hub: HUB });
+    assert.equal(service.status().push.mode, 'official');
+  } finally {
+    try { await service?.dispose(); } catch { /* ignore */ }
+    if (wss) await new Promise((resolve) => wss.close(() => resolve()));
+    if (httpServer) await new Promise((resolve) => httpServer.close(resolve()));
     home.cleanup();
   }
 });

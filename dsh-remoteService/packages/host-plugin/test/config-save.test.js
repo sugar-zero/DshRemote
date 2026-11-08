@@ -305,3 +305,63 @@ test('端到端：组件开关保存后，隧道内 status/restart 立即生效�
     home.cleanup();
   }
 });
+
+test('「推送提醒」：默认开启；保存 pushEnabled 只持久化、不重建运行时（隧道不重连）', async () => {
+  const home = withTempHome();
+  const { saveConfig, loadConfig } = await import('../lib/config.js');
+  try {
+    saveConfig({ enabled: false, groupServiceUrl: SERVICE_URL, groupInsecure: true });
+    assert.equal(loadConfig().pushEnabled, true, 'pushEnabled 默认 true');
+    const service = await makeService();
+    try {
+      assert.equal(service.status().config.pushEnabled, true);
+      assert.equal(service.status().push.enabled, true);
+      // 模拟「正在运行的群体运行时」：status.push.enabled 读自身 config（与真实运行时一致）
+      const fakeRuntime = {
+        stopped: 0,
+        config: { pushEnabled: true },
+        async stop() { this.stopped += 1; },
+        closeUpgradedConnections() { return 0; },
+        status() {
+          return {
+            registered: false,
+            connected: false,
+            push: {
+              enabled: this.config.pushEnabled !== false,
+              self: { devices: 0, lastError: null },
+              official: { devices: 0, lastError: null, hub: null },
+              mode: '',
+            },
+          };
+        },
+      };
+      service.groupRuntime = fakeRuntime;
+
+      const result = await service.updateConfig({ pushEnabled: false });
+      assert.equal(result.applied, false, '推送开关保存不应重建运行时');
+      assert.equal(result.errors.length, 0);
+      assert.equal(service.groupRuntime, fakeRuntime, '运行时实例不应被替换');
+      assert.equal(fakeRuntime.stopped, 0, '隧道不应断开');
+      assert.equal(fakeRuntime.config.pushEnabled, false, '运行中实例 config 引用应同步');
+      assert.equal(loadConfig().pushEnabled, false);
+      assert.equal(service.status().config.pushEnabled, false);
+      assert.equal(service.status().push.enabled, false);
+
+      // 再打开回来：同样只持久化
+      const back = await service.updateConfig({ pushEnabled: true });
+      assert.equal(back.applied, false);
+      assert.equal(fakeRuntime.stopped, 0);
+      assert.equal(loadConfig().pushEnabled, true);
+      assert.equal(service.status().push.enabled, true);
+
+      // 对照：真正的运行时字段变化才 rebuild
+      const next = await service.updateConfig({ enabled: true });
+      assert.equal(next.applied, true, '运行时字段变化必须重建');
+      assert.equal(fakeRuntime.stopped, 1, '应 stop 旧运行时');
+    } finally {
+      await service.dispose();
+    }
+  } finally {
+    home.cleanup();
+  }
+});
