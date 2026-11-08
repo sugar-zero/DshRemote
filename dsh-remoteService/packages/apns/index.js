@@ -51,6 +51,7 @@ export const APNS_REQUEST_TIMEOUT_MS = 15_000;
 export const GENERIC_PUSH_CONTENT = Object.freeze({
   'turn-end': Object.freeze({ title: 'DSH', body: '任务已完成' }),
   'waiting-answer': Object.freeze({ title: 'DSH', body: '正在等待你的回答' }),
+  error: Object.freeze({ title: 'DSH', body: '任务出错，打开查看详情' }),
 });
 
 /**

@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-push-hub",
-  "version": "0.3.1",
+  "version": "0.3.3",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
@@ -17,8 +17,8 @@
     "test": "node --test test/*.test.js"
   },
   "dependencies": {
-    "dsh-remote-apns": "0.1.0",
-    "dsh-remote-protocol": "0.3.1"
+    "dsh-remote-apns": "0.1.1",
+    "dsh-remote-protocol": "0.3.2"
   },
   "engines": {
     "node": ">=22"

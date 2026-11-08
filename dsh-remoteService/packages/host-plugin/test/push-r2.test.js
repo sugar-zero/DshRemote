@@ -97,7 +97,7 @@ function fakeConnector({ connected = true, registerResult = { ok: true, mode: 's
 }
 
 /** 已注册 + loopback 明文代理就绪的运行时（两台设备：self/official 各可登记）。 */
-async function setupRuntime({ fetchImpl, hubTimeoutMs, connector } = {}) {
+async function setupRuntime({ fetchImpl, hubTimeoutMs, connector, pushDetail = false } = {}) {
   const home = withTempHome();
   const relayKey = makeRelaySigningKey();
   saveGroupRegistration({
@@ -117,7 +117,7 @@ async function setupRuntime({ fetchImpl, hubTimeoutMs, connector } = {}) {
     touchById: () => {},
   };
   const runtime = new GroupHostRuntime({
-    config: { pushEnabled: true, groupPlainPort: 0 },
+    config: { pushEnabled: true, groupPlainPort: 0, ...(pushDetail ? { pushDetail: true } : {}) },
     devices,
     proxy: {
       handle: async () => { throw new Error('unexpected proxy request'); },
@@ -220,6 +220,7 @@ test('R2 push-token official：校验通过后内存登记（无需 relay），s
     const push = env.runtime.status().push;
     assert.deepEqual(push, {
       enabled: true,
+      detail: false,
       self: { devices: 0, lastError: null },
       official: { devices: 1, lastError: null, hub: HUB },
       mode: 'official',
@@ -274,6 +275,7 @@ test('R2 push-token official：缺字段/非法字段一律 400 invalid-body，�
       assert.equal(response.json.error.code, 'invalid-body');
     }
     const push = env.runtime.status().push;
+    assert.equal(push.detail, false);
     assert.equal(push.official.devices, 0);
     assert.equal(push.mode, '');
   } finally {
@@ -297,6 +299,7 @@ test('R2 混合设备：self + official 同机登记 → status mode=mixed、计
     let push = env.runtime.status().push;
     assert.deepEqual(push, {
       enabled: true,
+      detail: false,
       self: { devices: 1, lastError: null },
       official: { devices: 1, lastError: null, hub: HUB },
       mode: 'mixed',
@@ -315,7 +318,7 @@ test('R2 混合设备：self + official 同机登记 → status mode=mixed、计
   }
 });
 
-test('R2 分流：self → relay 一条 push.send；official → 逐设备直连 hub（Bearer credential，body 只有 kind/host/token）', async () => {
+test('R2 分流：self → relay 一条 push.send；official → 逐设备直连 hub（Bearer credential，body 含 kind/host/token/sessionId）', async () => {
   const connector = fakeConnector();
   const hub = makeHubFetch();
   const env = await setupRuntime({ connector, fetchImpl: hub.fetchImpl });
@@ -348,7 +351,7 @@ test('R2 分流：self → relay 一条 push.send；official → 逐设备直连
     assert.equal(request.method, 'POST');
     assert.equal(request.headers.authorization, `Bearer ${CREDENTIAL}`);
     assert.match(String(request.headers['content-type']), /application\/json/);
-    assert.deepEqual(request.body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN });
+    assert.deepEqual(request.body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN, sessionId: 's_1' });
 
     assert.deepEqual(summary, {
       self: { devices: 1, sent: 1 },
@@ -356,6 +359,39 @@ test('R2 分流：self → relay 一条 push.send；official → 逐设备直连
     });
     assert.equal(env.runtime.status().push.official.lastError, null);
     assert.equal(env.runtime.status().push.self.lastError, null);
+  } finally {
+    await teardown(env);
+  }
+});
+
+test('R2 分流：pushDetail=true 时 official 请求带 title/body；关闭时只带 kind/host/token', async () => {
+  const hub = makeHubFetch();
+  const env = await setupRuntime({ fetchImpl: hub.fetchImpl, pushDetail: true });
+  try {
+    assert.equal((await pushRequest(env, { body: officialBody() })).status, 200);
+    await env.runtime.deliverPush({
+      id: 'push-detail',
+      kind: 'error',
+      title: '清理缓存',
+      body: '部署步骤超时',
+      sessionId: 's_1',
+    });
+    assert.deepEqual(hub.requests[0].body, {
+      kind: 'error', host: FQDN, token: OFFICIAL_TOKEN, title: '清理缓存', body: '部署步骤超时',
+      sessionId: 's_1',
+    });
+    assert.equal(Object.hasOwn(hub.requests[0].body, 'content'), false);
+
+    // 关闭时（默认）不发送 title/body，即使 deliverPush 收到了它们。
+    const hub2 = makeHubFetch();
+    const env2 = await setupRuntime({ fetchImpl: hub2.fetchImpl });
+    try {
+      assert.equal((await pushRequest(env2, { body: officialBody() })).status, 200);
+      await env2.runtime.deliverPush({ id: 'x', kind: 'turn-end', title: 'T', body: 'B' });
+      assert.deepEqual(hub2.requests[0].body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN });
+    } finally {
+      await teardown(env2);
+    }
   } finally {
     await teardown(env);
   }
@@ -448,6 +484,7 @@ test('R2 分流：hub 返回 pruned:[token] → 删除对应设备记录（App �
     const summary = await env.runtime.deliverPush({ id: 'p5', kind: 'turn-end' });
     assert.deepEqual(summary.official, { devices: 1, sent: 1, failed: 0, pruned: 1 });
     const push = env.runtime.status().push;
+    assert.equal(push.detail, false);
     assert.equal(push.official.devices, 0);
     assert.equal(push.mode, '');
     assert.match(push.official.lastError, /token 已失效/);

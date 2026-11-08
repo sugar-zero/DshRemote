@@ -407,6 +407,7 @@ test('群体服务推送端到端：self+official 混合登记 → 分流发送 
     const pushStatus = service.status().push;
     assert.deepEqual(pushStatus, {
       enabled: true,
+      detail: false,
       self: { devices: 1, lastError: null },
       official: { devices: 1, lastError: null, hub: HUB },
       mode: 'mixed',
@@ -437,7 +438,7 @@ test('群体服务推送端到端：self+official 混合登记 → 分流发送 
     assert.equal(pushSends[0].sessionId, 's_e2e');
     assert.equal(hubRequests[0].url, `${HUB}/v1/push`);
     assert.equal(hubRequests[0].headers.authorization, `Bearer ${CREDENTIAL}`);
-    assert.deepEqual(hubRequests[0].body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN });
+    assert.deepEqual(hubRequests[0].body, { kind: 'turn-end', host: FQDN, token: OFFICIAL_TOKEN, sessionId: 's_e2e' });
 
     // relay 回 push.result(pruned=self deviceId) → 只清 self 设备；official 仍保留（mode=official）
     relaySocket.send(JSON.stringify({

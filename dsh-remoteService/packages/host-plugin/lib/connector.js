@@ -166,6 +166,7 @@ export class RelayConnector {
     if (typeof intent.title === 'string' && intent.title !== '') message.title = intent.title;
     if (typeof intent.body === 'string' && intent.body !== '') message.body = intent.body;
     if (typeof intent.sessionId === 'string' && intent.sessionId !== '') message.sessionId = intent.sessionId;
+    if (intent.content === 'summary' || intent.content === 'generic') message.content = intent.content;
     const previous = this.pendingPushIntents.get(id);
     if (previous) clearTimeout(previous.timer);
     const timer = setTimeout(() => {

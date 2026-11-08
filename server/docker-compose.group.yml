@@ -40,7 +40,7 @@
 #   查看：docker exec dsh-relay-group node packages/relay/bin/relay.js admin-token --config /data/config/relay.json
 #
 # 导出离线镜像：
-#   docker save -o dsh-relay-0.4.0-group-linux-amd64.tar dsh-remote-relay:0.4.0-group
+#   docker save -o dsh-relay-0.4.0-group-linux-amd64.tar dsh-remote-relay:0.4.1-group
 # ============================================================================
 
 name: dsh-remote-group

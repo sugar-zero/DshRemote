@@ -326,11 +326,12 @@ export function createHubServer(options = {}) {
   /**
    * 发送 APNs 结果的后处理：日志 + 归一化（device credential 推送用）。
    * @param {string} scope 日志前缀
-   * @param {{kind: string, host: string, entries: Array<{deviceId: string, token: string, environment: string}>}} input
+   * @param {{kind: string, host: string, title?: string, body?: string,
+   *   entries: Array<{deviceId: string, token: string, environment: string}>}} input
    * @returns {Promise<{ok: true, delivered: number, failed: number, pruned: string[]}
    *   | {ok: false, reason: 'not-configured' | 'error'}>}
    */
-  async function dispatchPush(scope, { kind, host, entries }) {
+  async function dispatchPush(scope, { kind, host, title = '', body = '', sessionId = '', entries }) {
     if (!isApnsConfigured()) {
       logger.error(`${scope}: APNs not configured on this hub; rejecting push (503)`);
       return { ok: false, reason: 'not-configured' };
@@ -338,7 +339,7 @@ export function createHubServer(options = {}) {
     const startedAt = Date.now();
     let result;
     try {
-      result = await sendPushNotifications(apns, { kind, host, entries });
+      result = await sendPushNotifications(apns, { kind, host, title, body, sessionId, entries });
     } catch (error) {
       // 异常文本可能带任意内容，日志前统一脱敏；响应只给稳定错误码。
       logger.error(`${scope}: apns call failed: ${redactSecrets(error && error.message)}`);
@@ -583,6 +584,9 @@ export function createHubServer(options = {}) {
     const result = await dispatchPush('push: mode=device', {
       kind: validated.kind,
       host: validated.host,
+      title: validated.title,
+      body: validated.body,
+      sessionId: validated.sessionId,
       entries,
     });
     if (!result.ok) {

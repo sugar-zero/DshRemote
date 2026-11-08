@@ -231,20 +231,21 @@ test('device push: aud/typ 不匹配 → 401 invalid_credential；bundleId 不�
   }
 });
 
-test('device push: schema 只接受 kind/host/token/environment（title/body/sessionId/tokens 一律 400）', async () => {
+test('device push: schema 接受成对 title/body 与 sessionId，拒绝 tokens 等其它字段', async () => {
   const t = await startTestHub();
   try {
     const credential = await getCredential(t);
     const base = devicePushBody(TOKEN, { host: HOST });
     const cases = [
-      ['title', { ...base, title: '会话标题' }, /unsupported field\(s\): title/],
-      ['body', { ...base, body: '摘要' }, /unsupported field\(s\): body/],
-      ['sessionId', { ...base, sessionId: 's_1' }, /unsupported field\(s\): sessionId/],
+      ['title 单独出现', { ...base, title: '会话标题' }, /title and body must be provided together/],
+      ['body 单独出现', { ...base, body: '摘要' }, /title and body must be provided together/],
+      ['sessionId 过长', { ...base, sessionId: 'x'.repeat(129) }, /sessionId must be at most 128/],
       ['旧式 tokens 数组', { ...base, tokens: [{ token: TOKEN, environment: 'production' }] }, /unsupported field\(s\): tokens/],
       ['kind 非法', { ...base, kind: 'attention' }, /kind must be/],
       ['token 非 64 hex', { ...base, token: 'x'.repeat(64) }, /token must be 64 lowercase hex/],
       ['environment 非法', { ...base, environment: 'prod' }, /environment must be/],
       ['host 太长', { ...base, host: 'h'.repeat(255) }, /host must be shorter than 255/],
+      ['title 过长', { ...base, title: 'x'.repeat(61), body: '摘要' }, /title must be at most 60/],
     ];
     for (const [label, body, pattern] of cases) {
       const response = await requestJson(t.baseUrl, HUB_PUSH_PATH, { token: credential, body });
@@ -253,6 +254,27 @@ test('device push: schema 只接受 kind/host/token/environment（title/body/ses
       assert.match(response.json.error.message, pattern, `case ${label} 错误信息`);
     }
     assert.equal(t.apns.calls.length, 0);
+
+    // 成对 title/body：接受并透传到 APNs；error kind 用通用错误文案。
+    const accepted = await requestJson(t.baseUrl, HUB_PUSH_PATH, {
+      token: credential,
+      body: { ...base, kind: 'error', title: '清理缓存', body: '部署步骤超时', sessionId: 'sess-1' },
+    });
+    assert.equal(accepted.status, 200);
+    assert.equal(t.apns.calls.length, 1);
+    assert.deepEqual(t.apns.calls[0].message, {
+      kind: 'error', title: '清理缓存', body: '部署步骤超时', host: HOST, sessionId: 'sess-1',
+    });
+
+    const generic = await requestJson(t.baseUrl, HUB_PUSH_PATH, {
+      token: credential,
+      body: { ...base, kind: 'error' },
+    });
+    assert.equal(generic.status, 200);
+    assert.equal(t.apns.calls.length, 2);
+    assert.deepEqual(t.apns.calls[1].message, {
+      kind: 'error', title: 'DSH', body: '任务出错，打开查看详情', host: HOST,
+    });
   } finally {
     await t.stop();
   }

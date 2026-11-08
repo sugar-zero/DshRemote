@@ -14,7 +14,7 @@
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
       },
-      "buildNumber": "18"
+      "buildNumber": "20"
     },
     "android": {
       "package": "com.amesucre.dshremote",
@@ -29,7 +29,7 @@
         "USE_BIOMETRIC"
       ],
       "predictiveBackGestureEnabled": false,
-      "versionCode": 18
+      "versionCode": 20
     },
     "web": {
       "favicon": "./assets/favicon.png"

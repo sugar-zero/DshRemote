@@ -1388,6 +1388,7 @@ test('设置页：推送提醒区开关保存 pushEnabled，并展示 self/offic
     restart: { enabled: false },
     push: {
       enabled: true,
+      detail: false,
       self: { devices: 1, lastError: null },
       official: { devices: 2, lastError: null, hub: 'https://push.example.com' },
       mode: 'mixed',
@@ -1461,6 +1462,7 @@ test('设置页：self/official 通道错误与隧道断开提示可读', async 
     devices: [],
     push: {
       enabled: true,
+      detail: false,
       self: { devices: 1, lastError: '推送登记被拒绝：push_disabled' },
       official: { devices: 1, lastError: '官方推送失败：rate_limited（不重试）', hub: 'https://push.example.com' },
       mode: 'mixed',

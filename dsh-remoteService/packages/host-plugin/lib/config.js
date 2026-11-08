@@ -19,12 +19,13 @@ export const DEFAULT_CONFIG = Object.freeze({
   groupInsecure: false,    // 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss）
   restartHostEnabled: false, // 「组件」：允许手机重启主机 DSH（默认关闭；501 拒绝 + App 隐藏 ⏻）
   pushEnabled: true,       // 「推送提醒」：允许把推送意图（push.send）发给 relay（默认开启）
+  pushDetail: false,       // 「详细推送内容」：通知里带会话标题/摘要（默认关闭 = 通用文案）
 });
 
 const ALLOWED_KEYS = new Set([
   'enabled', 'hostName', 'requireApproval', 'maxRequestBytes', 'denyPrefixes',
   'groupServiceUrl', 'groupInviteCode', 'groupPlainPort', 'groupInsecure',
-  'restartHostEnabled', 'pushEnabled',
+  'restartHostEnabled', 'pushEnabled', 'pushDetail',
 ]);
 
 /**

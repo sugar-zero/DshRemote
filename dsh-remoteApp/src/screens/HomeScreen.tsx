@@ -55,11 +55,11 @@ export function HomeScreen({
     const name = displayHostName(connection);
     Alert.alert(
       '删除主机记录',
-      `将删除本机保存的「${name}」配对信息和设备密钥（Keychain/Keystore）。\n\n主机上的设备记录不会被删除（如需彻底解除，请在主机「远程访问」里撤销该设备）。删除后需要重新扫码配对。`,
+      `将删除本机保存的「${name}」配对信息。主机上的设备记录不会被删除；删除后需重新扫码配对。`,
       [
         { text: '取消', style: 'cancel' },
         {
-          text: '删除本机记录',
+          text: '删除',
           style: 'destructive',
           onPress: () => {
             void onDelete(connection);
@@ -149,10 +149,12 @@ export function HomeScreen({
           <Text style={sharedStyles.primaryButtonText}>＋ 配对新主机</Text>
         </TouchableOpacity>
 
-        <Text style={styles.footnote}>
-          群体服务版：每台主机使用独立的 P-256 设备密钥（Secure Enclave/Keystore）+ 短时访问令牌；
-          打开主机后，左上角返回会回到此列表。主机侧撤销设备后，进入主机时会提示重新配对。
-        </Text>
+        {__DEV__ ? (
+          <Text style={styles.footnote}>
+            群体服务版：每台主机使用独立的 P-256 设备密钥（Secure Enclave/Keystore）+ 短时访问令牌；
+            打开主机后，左上角返回会回到此列表。主机侧撤销设备后，进入主机时会提示重新配对。
+          </Text>
+        ) : null}
       </ScrollView>
     </View>
   );

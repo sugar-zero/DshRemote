@@ -136,13 +136,13 @@ export function ExternalPageScreen({ url, title, onClose }: ExternalPageScreenPr
           onError={(event) => {
             const description = event?.nativeEvent?.description;
             setLoading(false);
-            setError(description ? `页面加载失败：${description}` : '页面加载失败，请检查网络后重试。');
+            setError(__DEV__ && description ? `页面加载失败：${description}` : '页面加载失败，请检查网络后重试。');
           }}
           onHttpError={(event) => {
             const statusCode = event?.nativeEvent?.statusCode;
             setLoading(false);
             if (typeof statusCode === 'number' && statusCode >= 400) {
-              setError(`页面返回 HTTP ${statusCode}。`);
+              setError(__DEV__ ? `页面返回 HTTP ${statusCode}。` : '页面加载失败，请稍后重试。');
             }
           }}
           renderLoading={() => (

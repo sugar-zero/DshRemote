@@ -7,13 +7,13 @@
 #
 # 构建上下文必须是 dsh-remoteService 根目录（relay 依赖 workspace 包 dsh-remote-protocol /
 # dsh-remote-apns）：
-#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.4.0-group ../..   # 在 packages/relay 下
+#   docker build -f packages/relay/Dockerfile -t dsh-remote-relay:0.4.1-group ../..   # 在 packages/relay 下
 #   docker compose -f packages/relay/docker-compose.yml build
 #
 # 运行（配置/证书/group.json 都在 /data 卷里；首次启动按 .env 自动生成 /data/config/relay.json）：
 #   docker run -d --name dsh-relay --restart unless-stopped \
 #     -p 80:80 -p 443:443 -p 8443:8443 -p 9443:9443 -p 127.0.0.1:9444:9444 \
-#     -e RELAY_DOMAIN=relay.example.com -v "$PWD/data:/data" dsh-remote-relay:0.4.0-group
+#     -e RELAY_DOMAIN=relay.example.com -v "$PWD/data:/data" dsh-remote-relay:0.4.1-group
 
 # ---- deps: 安装 ws + workspace 依赖（只复制依赖清单，避免把源码/测试带进依赖层） ----
 FROM node:24-alpine AS deps

@@ -81,18 +81,14 @@ function formatVersion(): string {
 function describePushState(status: PushStatus | null): string {
   if (!status) return '检测中…';
   switch (status.state) {
-    case 'registered': {
-      const channel = status.mode ?? status.channel;
-      if (channel === 'official') return '已注册（官方推送）';
-      if (channel === 'self') return '已注册（自部署）';
-      return '已注册';
-    }
+    case 'registered':
+      return '已开启';
     case 'denied':
       return '通知权限被拒';
     case 'unavailable':
       // 「尚未登记 / 已开启待登记」是正常初态，显示未注册；其它（无 token、服务器未开推送）按暂不可用。
       if (status.error?.includes('尚未登记') || status.error?.includes('已开启，进入主机后')) {
-        return '未注册';
+        return '未开启';
       }
       return '暂不可用';
     case 'error':
@@ -106,7 +102,7 @@ function describePushState(status: PushStatus | null): string {
 
 function defaultPushSwitchStatus(enabled: boolean): PushStatus {
   return enabled
-    ? { state: 'unavailable', channel: PUSH_CHANNEL, error: '已开启，进入主机后自动登记推送 token' }
+    ? { state: 'unavailable', channel: PUSH_CHANNEL, error: '进入主机后自动开启' }
     : { state: 'off', channel: PUSH_CHANNEL };
 }
 
@@ -221,12 +217,12 @@ export function SettingsScreen({
     await setPushEnabled(enabled);
     if (!enabled) {
       setPushStatus(defaultPushSwitchStatus(false));
-      setNotice('已关闭本机推送登记。已登记的 token 需要主机「推送提醒」关闭或解除配对后才会彻底停止通知。');
+      setNotice('已关闭推送。');
       return;
     }
     if (!pushTarget) {
       setPushStatus(defaultPushSwitchStatus(true));
-      setNotice('已开启推送。进入任意主机后会自动登记推送 token。');
+      setNotice('已开启推送。');
       return;
     }
     setPushBusy(true);
@@ -234,11 +230,9 @@ export function SettingsScreen({
       const result = await registerPushForConnection(pushTarget, { force: true, requestPermission: true });
       setPushStatus(result);
       setServerPush(await readServerPushStatus(pushTarget));
-      setNotice(result.ok
-        ? `已登记推送 token${result.environment ? `（APNs ${result.environment}）` : ''}。`
-        : `推送登记未完成：${result.error ?? '未知原因'}`);
+      setNotice(result.ok ? '推送已开启。' : '推送开启失败，请稍后重试。');
     } catch (error) {
-      setNotice(`推送登记失败：${errorText(error)}`);
+      setNotice('推送开启失败，请稍后重试。');
     } finally {
       setPushBusy(false);
     }
@@ -247,7 +241,7 @@ export function SettingsScreen({
   const handleReregisterPush = useCallback(async () => {
     if (pushBusy) return;
     if (!pushTarget) {
-      setNotice('还没有已配对主机：请先进入一台主机，再回到设置页重新注册推送。');
+      setNotice('请先进入一台主机后再试。');
       return;
     }
     setPushBusy(true);
@@ -255,11 +249,9 @@ export function SettingsScreen({
       const result = await registerPushForConnection(pushTarget, { force: true, requestPermission: true });
       setPushStatus(result);
       setServerPush(await readServerPushStatus(pushTarget));
-      setNotice(result.ok
-        ? `已重新登记推送 token${result.environment ? `（APNs ${result.environment}）` : ''}。`
-        : `推送登记未完成：${result.error ?? '未知原因'}`);
+      setNotice(result.ok ? '推送已开启。' : '推送开启失败，请稍后重试。');
     } catch (error) {
-      setNotice(`推送登记失败：${errorText(error)}`);
+      setNotice('推送开启失败，请稍后重试。');
     } finally {
       setPushBusy(false);
     }
@@ -296,15 +288,15 @@ export function SettingsScreen({
     setBusy(true);
     try {
       if (!isDshMtlsAvailable) {
-        throw new Error('当前构建未链接原生模块，无法清理 WebView 缓存；请使用包含 dsh-mtls 的原生构建');
+        throw new Error('当前版本暂不支持清理缓存。');
       }
       const cleared = await clearWebCache();
       onCacheCleared();
       setNotice(cleared === false
         ? '清理缓存超时，正在重新加载；若仍看到旧数据请再试一次'
-        : '缓存已清理，主机页面正在重新加载');
+        : '缓存已清理，页面将重新加载。');
     } catch (error) {
-      setNotice(`清理缓存失败：${errorText(error)}`);
+      setNotice('清理缓存失败，请稍后重试。');
     } finally {
       setBusy(false);
     }
@@ -313,7 +305,7 @@ export function SettingsScreen({
   const confirmClearCache = useCallback(() => {
     Alert.alert(
       '清理缓存',
-      '将清理 WebView 的缓存、Cookie 与本地存储，并重新加载当前主机页面。配对信息与设备密钥不会被删除。',
+      '将清理本机网页缓存与登录状态，并重新加载当前主机页面；配对信息不会被删除。',
       [
         { text: '取消', style: 'cancel' },
         { text: '清理', style: 'destructive', onPress: () => { void clearCache(); } },
@@ -341,16 +333,20 @@ export function SettingsScreen({
             <Text style={styles.rowLabel}>DSH Remote</Text>
             <Text style={styles.rowValue}>{formatVersion()}</Text>
           </View>
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>Bundle ID</Text>
-            <Text style={styles.rowValue} numberOfLines={1}>{Application.applicationId ?? '—'}</Text>
-          </View>
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>系统</Text>
-            <Text style={styles.rowValue}>
-              {Platform.OS === 'ios' ? `iOS ${Platform.Version}` : `${Platform.OS} ${Platform.Version}`}
-            </Text>
-          </View>
+          {__DEV__ ? (
+            <>
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>Bundle ID</Text>
+                <Text style={styles.rowValue} numberOfLines={1}>{Application.applicationId ?? '—'}</Text>
+              </View>
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>系统</Text>
+                <Text style={styles.rowValue}>
+                  {Platform.OS === 'ios' ? `iOS ${Platform.Version}` : `${Platform.OS} ${Platform.Version}`}
+                </Text>
+              </View>
+            </>
+          ) : null}
         </View>
 
         <View style={sharedStyles.card}>
@@ -367,12 +363,13 @@ export function SettingsScreen({
               thumbColor={appLockEnabled ? colors.accent : colors.textMuted}
             />
           </View>
-          <Text style={styles.rowHint}>
-            开启后，App 冷启动首次进入时需用 Face ID / Touch ID / 指纹解锁；打开主机连接、
-            同步信息、心跳与切换会话均不会再次要求识别。若希望某台主机在打开时也要求识别，
-            请在该主机卡片上点 ⚙（或进入该主机后点顶栏 ⚙）打开「设备与安全」，再单独开启
-            「打开此连接时要求面容」。
-          </Text>
+          <Text style={styles.rowHint}>开启后，App 冷启动时需要生物识别解锁。</Text>
+          {__DEV__ ? (
+            <Text style={styles.rowHint}>
+              打开主机连接、同步信息、心跳与切换会话不会再次要求识别；如需某台主机单独要求识别，
+              在该主机卡片点 ⚙（或进入主机后点顶栏 ⚙）打开「设备与安全」，开启「打开此连接时要求面容」。
+            </Text>
+          ) : null}
         </View>
 
         <View style={sharedStyles.card}>
@@ -389,16 +386,18 @@ export function SettingsScreen({
               thumbColor={pushEnabledState ? colors.accent : colors.textMuted}
             />
           </View>
-          <View style={styles.row}>
-            <Text style={styles.rowLabel}>推送通道</Text>
-            <Text style={styles.rowValue}>
-              {PUSH_CHANNEL === 'official' ? '官方（设备直连）' : '自部署（经 relay）'}
-            </Text>
-          </View>
-          {pushStatus?.error ? (
+          {__DEV__ ? (
+            <View style={styles.row}>
+              <Text style={styles.rowLabel}>推送通道</Text>
+              <Text style={styles.rowValue}>
+                {PUSH_CHANNEL === 'official' ? '官方（设备直连）' : '自部署（经 relay）'}
+              </Text>
+            </View>
+          ) : null}
+          {__DEV__ && pushStatus?.error ? (
             <Text style={[styles.rowHint, styles.pushError]}>{pushStatus.error}</Text>
           ) : null}
-          {pushTarget ? (
+          {__DEV__ && pushTarget ? (
             <View style={styles.pushServerRows}>
               <View style={styles.row}>
                 <Text style={styles.rowLabel}>服务器</Text>
@@ -443,21 +442,20 @@ export function SettingsScreen({
               ) : null}
             </View>
           ) : null}
-          <Text style={styles.rowHint}>
-            iOS APNs：进入主机并拿到访问令牌后自动登记 APNs device token（不落盘、不打印）。
-            官方构建走官方推送 hub（本机设备凭证由设备私钥登记，主机直连 hub，不依赖 relay 的推送配置）；
-            自部署构建经 relay。前台/后台/锁屏都由系统显示通知；点击通知打开对应主机，
-            自部署模式可直达会话。关闭本开关只停止本机登记；要彻底停止通知，请在主机
-            「设置 → 远程访问 → 推送提醒」关闭。
-            {Platform.OS === 'ios' ? '' : '（Android FCM 未接入，本开关不生效。）'}
-          </Text>
+          <Text style={styles.rowHint}>关闭后不再登记新的提醒；如需完全停止，请在主机端关闭「推送提醒」。</Text>
+          {__DEV__ ? (
+            <Text style={styles.rowHint}>
+              iOS APNs：进入主机后自动登记；前台/后台/锁屏都由系统显示通知，点击打开对应主机。
+              官方构建走官方 hub、自部署构建经 relay。Android FCM 未接入。
+            </Text>
+          ) : null}
           <View style={styles.actions}>
             <TouchableOpacity
               style={[sharedStyles.secondaryButton, pushBusy ? sharedStyles.disabledButton : null]}
               disabled={pushBusy}
               onPress={() => { void handleReregisterPush(); }}
             >
-              <Text style={sharedStyles.secondaryButtonText}>{pushBusy ? '登记中…' : '重新注册'}</Text>
+              <Text style={sharedStyles.secondaryButtonText}>{pushBusy ? '处理中…' : (__DEV__ ? '重新注册' : '重新开启')}</Text>
             </TouchableOpacity>
           </View>
         </View>
@@ -468,9 +466,7 @@ export function SettingsScreen({
             <View style={styles.switchRow}>
               <View style={styles.switchText}>
                 <Text style={styles.rowLabel}>挂件贴底拖动</Text>
-                <Text style={styles.rowHint}>
-                  开启时，主机页面内从屏幕最底边上滑回主屏需连划两次
-                </Text>
+                <Text style={styles.rowHint}>开启后，主机页面内从屏幕底部上滑需要划两次</Text>
               </View>
               <Switch
                 value={bottomEdgeDeferral}
@@ -479,22 +475,19 @@ export function SettingsScreen({
                 thumbColor={bottomEdgeDeferral ? colors.accent : colors.textMuted}
               />
             </View>
-            <Text style={styles.rowHint}>
-              开启：进入主机页面时 defer iOS 底部（Home 指示条）的「上滑回主屏」系统手势——页面里
-              可拖动的悬浮挂件贴到屏幕最底边后，仍能按住自由拖动，不会被系统手势切到后台；
-              代价是从最底边上滑回主屏要连划两次（第一次只高亮 Home 指示条）。
-              关闭：恢复系统默认（一次上滑即回主屏）；挂件贴到最底边时从底边起手拖动仍可能被
-              系统手势抢走。两者都只影响「进入主机页面后」，主机列表 / 本设置页不受影响。
-            </Text>
+            <Text style={styles.rowHint}>关闭后恢复系统默认：一次上滑即回主屏。</Text>
+            {__DEV__ ? (
+              <Text style={styles.rowHint}>
+                开启时进入主机页面会 defer iOS 底部「上滑回主屏」系统手势——悬浮挂件贴到最底边仍可拖动，
+                代价是回主屏需连划两次；关闭后恢复系统默认，但贴底拖动仍可能被系统手势抢走。
+              </Text>
+            ) : null}
           </View>
         ) : null}
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>缓存</Text>
-          <Text style={styles.rowHint}>
-            清理 WebView 的磁盘缓存、Cookie、localStorage 与 URLCache，然后重新加载主机页面。
-            会话数据保存在主机上，不受影响。
-          </Text>
+          <Text style={styles.rowHint}>清理本机网页缓存与登录状态，不会删除配对信息。</Text>
           <View style={styles.actions}>
             <TouchableOpacity
               style={[sharedStyles.secondaryButton, busy ? sharedStyles.disabledButton : null]}
@@ -516,7 +509,8 @@ export function SettingsScreen({
 
         <Text style={styles.footer}>
           DSH Remote · AGPL-3.0-or-later{'\n'}
-          群体服务版：P-256 设备密钥 + 短时 token；relay 终止手机 TLS，部署方可见会话明文。
+          请仅连接你信任的主机与服务。
+          {__DEV__ ? '\n群体服务版：P-256 设备密钥 + 短时 token；relay 终止手机 TLS，部署方可见会话明文。' : ''}
         </Text>
       </ScrollView>
     </View>

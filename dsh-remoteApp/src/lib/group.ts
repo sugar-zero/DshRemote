@@ -85,7 +85,7 @@ function requireGroupNative(): Required<
   if (!isGroupNativeAvailable()) {
     throw new GroupPairingError(
       'native_unavailable',
-      '当前 App 构建没有链接群体版原生能力（设备密钥/签名/Cookie）。请使用包含 modules/dsh-mtls 新版本的原生构建，而不是 Expo Go。',
+      '当前版本缺少必要的组件，请更新 App 后重试。',
     );
   }
   return nativeApi as Required<
@@ -880,7 +880,7 @@ function requireGroupHttpNative(): { groupHttpFetch: GroupHttpNativeFn } {
   if (!isGroupNativeAvailable() || typeof fetchFn !== 'function') {
     throw new GroupPairingError(
       'native_unavailable',
-      '当前 App 构建没有链接原生主机请求能力（modules/dsh-mtls）。请使用包含该模块的最新原生构建，而不是 Expo Go。',
+      '当前版本暂不支持该操作，请更新 App 后重试。',
     );
   }
   return nativeApi as unknown as { groupHttpFetch: GroupHttpNativeFn };

@@ -519,6 +519,7 @@ test('push-token（self 旧 body 兼容）：成功登记返回 registered/chann
     const push = env.runtime.status().push;
     assert.deepEqual(push, {
       enabled: true,
+      detail: false,
       self: { devices: 1, lastError: null },
       official: { devices: 0, lastError: null, hub: null },
       mode: 'self',

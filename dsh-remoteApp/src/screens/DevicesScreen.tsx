@@ -108,7 +108,7 @@ export function DevicesScreen({
   const handleDeleteLocal = useCallback(() => {
     Alert.alert(
       '解除本机配对',
-      '将清除本机保存的这台主机的配对信息和设备密钥（Keychain/Keystore），并回到主机列表。\n\n主机上的设备记录不会因此删除（如需彻底解除，请在主机「远程访问」里撤销该设备）。删除后需要重新扫码配对。',
+      '将删除本机保存的这台主机的配对信息，并回到主机列表。主机上的设备记录不会被删除；删除后需要重新扫码配对。',
       [
         { text: '取消', style: 'cancel' },
         {
@@ -139,44 +139,54 @@ export function DevicesScreen({
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>当前主机</Text>
           <DetailRow label="主机" value={connection.hostName || connection.host} />
-          <DetailRow
-            label="隧道地址"
-            value={connection.port === 443
-              ? `https://${connection.host}/`
-              : `https://${connection.host}:${connection.port}/`}
-            mono
-          />
-          <DetailRow label="中继域名" value={connection.relayDomain} mono />
-          <DetailRow label="短指纹" value={shortFingerprint(connection.hostFingerprint)} mono />
-          <DetailRow
-            label="完整指纹"
-            value={formatFingerprint(connection.hostFingerprint)}
-            mono
-          />
+          {__DEV__ ? (
+            <>
+              <DetailRow
+                label="隧道地址"
+                value={connection.port === 443
+                  ? `https://${connection.host}/`
+                  : `https://${connection.host}:${connection.port}/`}
+                mono
+              />
+              <DetailRow label="中继域名" value={connection.relayDomain} mono />
+              <DetailRow label="短指纹" value={shortFingerprint(connection.hostFingerprint)} mono />
+              <DetailRow
+                label="完整指纹"
+                value={formatFingerprint(connection.hostFingerprint)}
+                mono
+              />
+            </>
+          ) : null}
           <DetailRow label="配对时间" value={formatTimestamp(connection.pairedAt)} />
         </View>
 
-        <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>认证与会话</Text>
-          <DetailRow label="认证模式" value="token（短时令牌，无需本地证书）" />
-          <DetailRow label="主机 ID" value={connection.hostId} mono />
-          <DetailRow label="手机访问端口" value={String(connection.port)} />
-          <Text style={styles.hint}>
-            群体服务版由 relay 终止手机 TLS，主机只做出站隧道；本机使用 Secure Enclave / Keystore
-            中的 P-256 设备密钥对 challenge 签名，换取 15–30 分钟的短时 token（只存在内存与
-            `__Host-` cookie 中，不落盘）。主机侧设备列表请在主机的「远程访问」里查看。
-          </Text>
-        </View>
+        {__DEV__ ? (
+          <View style={sharedStyles.card}>
+            <Text style={styles.sectionTitle}>认证与会话</Text>
+            <DetailRow label="认证模式" value="token（短时令牌，无需本地证书）" />
+            <DetailRow label="主机 ID" value={connection.hostId} mono />
+            <DetailRow label="手机访问端口" value={String(connection.port)} />
+            <Text style={styles.hint}>
+              群体服务版由 relay 终止手机 TLS，主机只做出站隧道；本机使用 Secure Enclave / Keystore
+              中的 P-256 设备密钥对 challenge 签名，换取短时 token。主机侧设备列表请在主机的
+              「远程访问」里查看。
+            </Text>
+          </View>
+        ) : null}
 
         <View style={sharedStyles.card}>
-          <Text style={styles.sectionTitle}>本机设备身份</Text>
+          <Text style={styles.sectionTitle}>本机设备</Text>
           <DetailRow label="设备名称" value={connection.deviceName} />
-          <DetailRow label="设备 ID" value={truncateMiddle(connection.deviceId, 8)} mono />
-          <DetailRow label="设备密钥标签" value={connection.deviceKeyLabel} mono />
-          <Text style={styles.hint}>
-            群体版不保存设备证书；P-256 私钥在 Secure Enclave / Keychain（Android 为
-            AndroidKeyStore）中，只用于对 relay 下发的 challenge 签名，App 与 JS 层都无法读取或导出。
-          </Text>
+          {__DEV__ ? (
+            <>
+              <DetailRow label="设备 ID" value={truncateMiddle(connection.deviceId, 8)} mono />
+              <DetailRow label="设备密钥标签" value={connection.deviceKeyLabel} mono />
+              <Text style={styles.hint}>
+                群体版不保存设备证书；P-256 私钥在 Secure Enclave / Keychain（Android 为 AndroidKeyStore）中，
+                只用于对 relay 下发的 challenge 签名，App 与 JS 层都无法读取或导出。
+              </Text>
+            </>
+          ) : null}
         </View>
 
         <View style={sharedStyles.card}>
@@ -200,18 +210,18 @@ export function DevicesScreen({
               thumbColor={requireBiometric ? colors.accent : colors.textMuted}
             />
           </View>
-          <Text style={styles.hint}>
-            只影响这台主机：开启后，每次从主机列表打开它（或配对完成进入）时要求一次
-            Face ID / Touch ID；其它主机不受影响。App 冷启动时的解锁由「设置 → App 锁」负责。
-          </Text>
+          <Text style={styles.hint}>开启后，每次打开这台主机都需要生物识别。</Text>
+          {__DEV__ ? (
+            <Text style={styles.hint}>
+              只影响这台主机；App 冷启动时的解锁由「设置 → App 锁」负责。
+            </Text>
+          ) : null}
         </View>
 
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>解除本机配对</Text>
           <Text style={styles.bodyText}>
-            删除本机保存的这台主机的配对信息与设备密钥，并返回主机列表（没有其它主机时进入扫码页）。
-            主机上的设备记录不会因此删除——如需彻底解除，请在主机「远程访问」里撤销该设备。
-            想重新连接同一台主机时，从主页「＋ 配对新主机」重新扫码即可。
+            将删除本机保存的这台主机的配对信息；主机上的设备记录不会被删除，如需彻底解除请在主机端撤销该设备。
           </Text>
           <TouchableOpacity
             style={[styles.dangerButton, busy ? styles.disabledButton : null]}
@@ -226,9 +236,11 @@ export function DevicesScreen({
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.footnote}>
-          DSH Remote · 群体模式：P-256 设备密钥 + 短时 token 会话；主机侧可随时撤销设备。
-        </Text>
+        {__DEV__ ? (
+          <Text style={styles.footnote}>
+            DSH Remote · 群体模式：P-256 设备密钥 + 短时 token 会话；主机侧可随时撤销设备。
+          </Text>
+        ) : null}
       </ScrollView>
     </View>
   );
