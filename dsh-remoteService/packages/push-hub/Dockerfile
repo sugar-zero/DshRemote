@@ -9,7 +9,7 @@
 #     不接收会话内容、不持久化设备 token。
 #
 # 构建上下文必须是 dsh-remoteService 根目录（依赖 workspace 包 dsh-remote-apns / dsh-remote-protocol）：
-#   docker build -f packages/push-hub/Dockerfile -t dsh-remote-push-hub:0.3.1 ../..   # 在 packages/push-hub 下
+#   docker build -f packages/push-hub/Dockerfile -t dsh-remote-push-hub:0.3.3 ../..   # 在 packages/push-hub 下
 #   docker compose -f server/docker-compose.push-hub.yml build                        # 在 server/ 下
 #
 # 运行（配置用 `HUB_*` 环境变量；签名 key 与日志卷都在 /data）：
@@ -22,7 +22,7 @@
 #     -e HUB_APNS_TOPIC=<OFFICIAL_BUNDLE_ID> \
 #     -v dsh-push-hub-data:/data \
 #     -v /path/to/apns-keys:/data/apns:ro \
-#     dsh-remote-push-hub:0.3.1
+#     dsh-remote-push-hub:0.3.3
 #   /data 卷需持久化：首次启动会自动生成 /data/push-hub-signing-key.pem（0600），
 #   丢了会导致已签发的 credential 全部失效（客户端重新登记即可，但没必要丢）。
 #

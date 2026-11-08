@@ -180,38 +180,44 @@ function restartFailureError(body: unknown): { code: string; message: string } {
  */
 function describeRestartFailure(status: number, body: unknown): string {
   const error = restartFailureError(body);
-  const suffix = error.message ? `\n\n${error.message}` : '';
-  if (status === 401 || status === 403) {
-    return `主机拒绝了请求（HTTP ${status}）：访问令牌可能已失效，请点右上角刷新重试。${suffix}`;
-  }
-  if (status === 405) {
-    return `主机不支持该重启请求（HTTP 405）：主机端插件可能版本过旧，没有提供重启接口。${suffix}`;
-  }
-  if (status === 501) {
-    if (error.code === 'host-restart-disabled') {
-      return '主机未允许手机重启 DSH：请先在主机「设置 → 远程访问 → 组件」里打开「允许手机重启主机 DSH」。'
-        + suffix;
+  if (__DEV__) {
+    const suffix = error.message ? `\n\n${error.message}` : '';
+    if (status === 401 || status === 403) {
+      return `主机拒绝了请求（HTTP ${status}）：访问令牌可能已失效，请点右上角刷新重试。${suffix}`;
     }
-    if (error.code === 'host-restart-unavailable') {
-      return `主机当前环境不支持重启 DSH（HTTP 501）。${suffix}`;
+    if (status === 405) {
+      return `主机不支持该重启请求（HTTP 405）：主机端插件可能版本过旧，没有提供重启接口。${suffix}`;
     }
-    return `主机不支持重启 DSH（HTTP 501）：重启入口可能被禁用，或当前环境不支持。${suffix}`;
+    if (status === 501) {
+      if (error.code === 'host-restart-disabled') {
+        return '主机未允许手机重启 DSH：请先在主机「设置 → 远程访问 → 组件」里打开「允许手机重启主机 DSH」。'
+          + suffix;
+      }
+      if (error.code === 'host-restart-unavailable') {
+        return `主机当前环境不支持重启 DSH（HTTP 501）。${suffix}`;
+      }
+      return `主机不支持重启 DSH（HTTP 501）：重启入口可能被禁用，或当前环境不支持。${suffix}`;
+    }
+    if (status === 502 || status === 503) {
+      return `主机暂时不可达（HTTP ${status}），可能正在重启或离线，请稍后重试。${suffix}`;
+    }
+    return `重启请求失败（HTTP ${status}）。${suffix}`;
   }
-  if (status === 502 || status === 503) {
-    return `主机暂时不可达（HTTP ${status}），可能正在重启或离线，请稍后重试。${suffix}`;
+  if (status === 501 && error.code === 'host-restart-disabled') {
+    return '主机未开启远程重启功能，请在主机设置中开启后再试。';
   }
-  return `重启请求失败（HTTP ${status}）。${suffix}`;
+  return '重启请求失败，请稍后重试。';
 }
 
 /** 请求没有拿到响应（原生请求失败 / 网络错误 / 超时）时的用户提示。 */
 function describeRestartError(error: unknown): string {
   if (error instanceof GroupPairingError) {
-    if (error.code === 'native_unavailable') {
-      return '当前构建不支持主机请求能力（原生模块未链接），无法重启主机。请使用包含 dsh-mtls 模块的原生构建。';
-    }
-    return error.message;
+    if (error.code === 'native_unavailable') return '当前版本暂不支持该操作。';
+    return __DEV__ ? error.message : '重启请求失败，请稍后重试。';
   }
-  if (error instanceof Error && error.message) return error.message;
+  if (error instanceof Error && error.message) {
+    return __DEV__ ? error.message : '重启请求失败，请稍后重试。';
+  }
   return '重启请求失败，请稍后重试。';
 }
 
@@ -374,7 +380,7 @@ export function WebViewScreen({
       const message = deviceGone
         ? '这台设备已在主机侧失效（被删除或重置）。\n请返回主机列表删除该主机，然后重新扫码配对。'
         : rawMessage;
-      setGroupSessionError(`无法获取访问令牌：${message}`);
+      setGroupSessionError(__DEV__ ? `无法获取访问令牌：${message}` : (deviceGone ? message : '无法连接到主机，请检查网络后重试。'));
       setGroupSessionReady(false);
       return false;
     }
@@ -915,8 +921,7 @@ export function WebViewScreen({
     if (restarting) return;
     Alert.alert(
       '重启主机 DSH',
-      '将请求主机重启 DSH 客户端。重启期间连接会短暂断开，恢复后页面会自动重新加载；'
-        + '若等待超时，可点右上角刷新重试。',
+      '将重启主机，连接会短暂中断，恢复后页面自动重新加载。',
       [
         { text: '取消', style: 'cancel' },
         { text: '重启', style: 'destructive', onPress: () => { void restartHost(); } },
@@ -950,7 +955,7 @@ export function WebViewScreen({
                 style={[styles.statusDot, { backgroundColor: STATUS_COLORS[restarting ? 'connecting' : status] }]}
               />
               <Text style={styles.statusText} numberOfLines={1}>
-                {restarting ? '重启中' : STATUS_LABELS[status]} · {hostIdOf(connection.host)}
+                {restarting ? '重启中' : STATUS_LABELS[status]}{__DEV__ ? ` · ${hostIdOf(connection.host)}` : ''}
               </Text>
             </View>
           </View>
@@ -1046,7 +1051,7 @@ export function WebViewScreen({
             renderLoading={() => (
               <View style={styles.loadingOverlay}>
                 <ActivityIndicator color={colors.accent} size="large" />
-                <Text style={styles.loadingText}>正在通过中继连接 {connection.host}…</Text>
+                <Text style={styles.loadingText}>正在连接主机…</Text>
               </View>
             )}
             // Never allow http:// downgrades or arbitrary origins inside the shell.

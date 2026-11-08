@@ -11,15 +11,16 @@ import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 import { createGroupPushNotifier } from './push.js';
 
-const VERSION = '0.2.6';
+const VERSION = '0.2.8';
 
 /**
  * 未启动群体运行时的推送状态默认值（契约 §6.3 R2 形状；不含 token/credential）。
  * @param {boolean} enabled
  */
-function defaultPushStatus(enabled) {
+function defaultPushStatus(enabled, detail = false) {
   return {
     enabled: enabled !== false,
+    detail: detail === true,
     self: { devices: 0, lastError: null },
     official: { devices: 0, lastError: null, hub: null },
     mode: '',
@@ -368,7 +369,7 @@ export class RemoteService {
       tokenPublicKeyConfigured: Boolean(registration?.tokenPublicKey),
       lastError: this.lastError ?? null,
       // 未启动运行时：推送默认「主机开关生效、两通道都没有已登记设备」。
-      push: defaultPushStatus(config.pushEnabled !== false),
+      push: defaultPushStatus(config.pushEnabled !== false, config.pushDetail === true),
     };
   }
 
@@ -376,7 +377,7 @@ export class RemoteService {
   #pushStatus(group) {
     if (group?.push) return group.push;
     const config = this.config ?? loadConfig();
-    return defaultPushStatus(config.pushEnabled !== false);
+    return defaultPushStatus(config.pushEnabled !== false, config.pushDetail === true);
   }
 
   /** 返回当前状态（管理 API / 桌面 UI）。 */
@@ -407,6 +408,7 @@ export class RemoteService {
         requireApproval: Boolean(config.requireApproval),
         restartHostEnabled: Boolean(config.restartHostEnabled),
         pushEnabled: config.pushEnabled !== false,
+        pushDetail: config.pushDetail === true,
         maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         denyPrefixes: Array.isArray(config.denyPrefixes) ? config.denyPrefixes : [],
         groupServiceUrl: config.groupServiceUrl ?? '',

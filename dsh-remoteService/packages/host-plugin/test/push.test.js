@@ -62,8 +62,9 @@ test('turn/end：生成推送意图交给 deliver（kind=turn-end + 标题/摘�
 
   assert.equal(env.calls.length, 1);
   const intent = env.calls[0];
-  assert.deepEqual(Object.keys(intent).sort(), ['body', 'id', 'kind', 'sessionId', 'title']);
+  assert.deepEqual(Object.keys(intent).sort(), ['body', 'content', 'id', 'kind', 'sessionId', 'title']);
   assert.equal(intent.kind, PUSH_KINDS.TURN_END, 'kind 只能是 turn-end');
+  assert.equal(intent.content, 'generic', '默认不带详细内容');
   assert.equal(intent.title, '修复登录 bug');
   assert.equal(intent.body, '已修好登录重定向，跑完测试');
   assert.equal(intent.sessionId, 's_1');
@@ -165,10 +166,11 @@ test('摘要兜底：失败无助手文本用状态文案，标题退回首条�
   assert.equal(env.calls.length, 1);
   assert.deepEqual(env.calls[0], {
     id: env.calls[0].id,
-    kind: PUSH_KINDS.TURN_END,
+    kind: PUSH_KINDS.ERROR,
     title: '跑一下部署脚本',
     body: '任务出错，打开查看详情',
     sessionId: 's_fallback',
+    content: 'generic',
   });
 
   // 失败但有助手文本 → 摘要前加 ⚠️
@@ -181,6 +183,7 @@ test('摘要兜底：失败无助手文本用状态文案，标题退回首条�
   });
   await env.notifier.onSessionEvent(s2, { type: 'turn/end', data: { reason: { kind: 'max-tokens' } } });
   assert.equal(env.calls.length, 2);
+  assert.equal(env.calls[1].kind, PUSH_KINDS.ERROR);
   assert.equal(env.calls[1].body, '⚠️ 缓存已清空，但部署步骤超时');
 });
 

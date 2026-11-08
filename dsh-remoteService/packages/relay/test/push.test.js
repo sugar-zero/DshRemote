@@ -259,6 +259,33 @@ test('self+generic：waiting-answer 使用固定文案「正在等待你的回�
   assert.equal(apns.calls[0].message.body, '正在等待你的回答');
 });
 
+test('self+generic：error kind 用通用“任务出错”文案', async () => {
+  const apns = fakeApns();
+  const push = createService({}, { apnsClient: apns });
+  registerDevice(push, 'h_test', DEVICE_A, 1);
+  await push.send('h_test', { id: 'intent-error', kind: 'error' });
+  assert.equal(apns.calls[0].message.kind, 'error');
+  assert.equal(apns.calls[0].message.body, '任务出错，打开查看详情');
+});
+
+test('self：host 的 content 可覆盖 relay 默认（summary↔generic）', async () => {
+  // relay 默认 generic，host 显式 summary → 使用摘要
+  const apns = fakeApns();
+  const push = createService({}, { apnsClient: apns });
+  registerDevice(push, 'h_test', DEVICE_A, 1);
+  await push.send('h_test', { id: 'i1', kind: 'turn-end', title: 'T', body: 'B', content: 'summary' });
+  assert.equal(apns.calls[0].message.title, 'T');
+  assert.equal(apns.calls[0].message.body, 'B');
+
+  // relay 默认 summary，host 显式 generic → 仍用通用文案
+  const apns2 = fakeApns();
+  const push2 = createService({ content: 'summary' }, { apnsClient: apns2 });
+  registerDevice(push2, 'h_test', DEVICE_A, 1);
+  await push2.send('h_test', { id: 'i2', kind: 'turn-end', title: 'T', body: 'B', content: 'generic' });
+  assert.equal(apns2.calls[0].message.title, 'DSH');
+  assert.equal(apns2.calls[0].message.body, '任务已完成');
+});
+
 test('self+summary：title ≤60 字、body ≤160 字，空则退回通用文案', async () => {
   const apns = fakeApns();
   const push = createService({ content: 'summary' }, { apnsClient: apns });

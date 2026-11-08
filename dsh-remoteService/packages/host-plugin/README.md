@@ -2,8 +2,10 @@
 
 > 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../../../LICENSE)）。
 >
-> 版本 **0.2.6**：本插件只保留群体服务版（A 模式）主机能力（classic/单体版的 mTLS、主机证书、
+> 版本 **0.2.8**：本插件只保留群体服务版（A 模式）主机能力（classic/单体版的 mTLS、主机证书、
 > 主机侧自托管 APNs 已剥离）；**「重启主机 DSH」作为可关闭的「组件」在群体版恢复**（默认关闭）。
+> 0.2.7 增加「详细推送内容」开关（默认关闭；开启后通知带会话标题/摘要，official 直连 hub / self 经 relay）
+> 与 `error` 推送类型；official 推送携带 `sessionId`（点通知直达会话）；侧栏入口可见时每 2s 轮询状态，取消配对/设备变化无需再点开弹窗。
 > 0.2.6（R2）把**官方 App 推送与 relay 解耦**：官方 App 用设备密钥向官方 hub 换 per-device
 > credential，主机凭 credential **直连官方 hub**；部署方自签 App（self）仍走 relay。两类设备可
 > 同机混用、主机自动分流；**主机不持有任何 Apple 凭据，token/credential 只存内存**。
@@ -92,6 +94,7 @@ DSH 设置 → 远程访问。配置落盘在 `~/.dsh/remote-access/config.json`
 | `groupInsecure` | 仅 POC：允许 http/ws 与自签证书（生产必须 https/wss） |
 | `restartHostEnabled` | 「组件」：允许手机重启主机 DSH（**默认关闭**；关闭时 App 隐藏 ⏻、重启接口 501） |
 | `pushEnabled` | 「推送提醒」：允许把推送意图（`push.send`）发给 relay（**默认开启**；关闭后不再发提醒，保存不重建运行时） |
+| `pushDetail` | 「详细推送内容」：通知标题/正文带会话标题与摘要（**默认关闭**；关闭时只发通用文案，区分 turn-end / waiting-answer / error） |
 | `denyPrefixes` | 反代 deny list（`/connect`、`/oauth`、`/open-in-app`、`/api/remote-access`、`/__dsh_remote`） |
 | `maxRequestBytes` | 远程代理请求体上限（默认 256 MiB） |
 
@@ -197,7 +200,7 @@ Host 半注册在 DSH 本机 webServer：
 }
 ```
 
-`push` 对象（R2 契约 §6.3，**不包含 token/credential**）：`enabled` = 主机「推送提醒」开关；
+`push` 对象（R2 契约 §6.3，**不包含 token/credential**）：`enabled` = 主机「推送提醒」开关；`detail` = 「详细推送内容」；
 `self.devices` / `official.devices` = 两条通道各自已登记的设备数；`self.lastError` /
 `official.lastError` = 可读错误（relay 登记/发送失败、官方 hub 请求失败等）；`official.hub` =
 最近登记的官方 hub 基址（无 official 设备时为 `null`）；`mode` = `self` / `official` / `mixed`

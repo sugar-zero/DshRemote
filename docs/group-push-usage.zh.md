@@ -72,7 +72,7 @@
 | 4 | 改了 relay/hub 配置，推送没变化 | relay/hub 配置需**重建容器**才生效；主机开关保存即时生效 | 重建后 `/healthz` 仍显示旧值 |
 | 5 | 换装另一种 App 构建后收不到 / 表现不一致 | 一台手机只能装一种构建；同 bundle id 覆盖安装会保留配对数据，但通道随构建变化 | 同构建下、登记状态正常却收不到 |
 | 6 | 主机/relay/hub 重启后一段时间收不到 | token/credential 只在内存；App 重新进入主机/回前台才会补报 | App 已重连且显示已注册，仍收不到 |
-| 7 | official 通知没有会话名/摘要；点通知只到主机 | official 通道固定通用文案，不带会话内容；official 通知不带 sessionId（self 才可直达会话） | 通知完全没有任何文案/点不开 App |
+| 7 | official 通知没有会话名/摘要；点通知只到主机 | 需要用户在主机开启「详细推送内容」才会带 title/body；sessionId 已支持（0.3.3 起点通知直达会话） | 通知完全没有任何文案/点不开 App |
 | 8 | 关闭开关后还收到一条 | 关闭只影响**之后**的推送意图；已发出的通知会正常送达 | 关闭保存后仍持续有新通知 |
 | 9 | 同一会话很快连续触发，只收到一条 | 每会话 30s 冷却；`ask_user_question` 有独立触发；子代理会话不推送 | 正常间隔仍收不到 |
 | 10 | App 在前台时没有系统通知 | iOS 前台可能显示应用内卡片/按通知设置处理；请锁屏或切后台验证 | 锁屏/后台也无通知 |
@@ -106,7 +106,7 @@
 ## 6. 安全 / 隐私边界
 
 - 主机**零 Apple 凭据**；不持有 hub 签名密钥；token/credential 只存内存、不落盘、不进日志/status 明文。
-- official：hub 只发**固定通用文案**，schema 拒绝 title/body/sessionId；credential 绑定 tokenHash + hostId + env + bundleId + aud。
+- official：默认发**通用文案**；主机开启「详细推送内容」后 hub 接受成对 title/body；0.3.3 起也接受 `sessionId`（点通知直达会话）。credential 绑定 tokenHash + hostId + env + bundleId + aud。
 - self：relay 用部署方自己的 key 直连 Apple；relay 是部署方自建/自管（A 模式部署方可见明文，风险由部署方承担）。
 - 撤销：主机删除设备记录后，对应 token 清理；relay/hub 重启后 token 表清空（设计取舍：不在服务端持久化设备 token）。
 - 不要提交/外传：`.p8`、credential、设备 token、配对二维码、`server/.env*`、`hub.json`。

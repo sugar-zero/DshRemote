@@ -5,15 +5,19 @@
 > [`group-push-load-evaluation.zh.md`](group-push-load-evaluation.zh.md)（负载/限流默认值）、
 > [`group-push-design.zh.md`](group-push-design.zh.md)（旧 O1 契约：self 推送仍有效；official 转发已删除）、
 > [`group-push-usage.zh.md`](group-push-usage.zh.md)（使用与边界：字段说明/常见误报 bug/排错）。
-> 版本：**protocol 0.3.1 / push-hub 0.3.1 / host-plugin 0.2.6 / App 0.2.0 (build 18，官方构建；self 包为 0.1.9 build 17，代码相同)**；
-> relay **0.4.0**：只保留 self 推送；R2 官方推送不经过 relay。
+> 版本：**protocol 0.3.2 / push-hub 0.3.3 / host-plugin 0.2.8 / App 0.2.0 (build 20，官方构建；self 包为 0.1.9 build 17，代码相同)**；
+> relay **0.4.1**：只保留 self 推送；R2 官方推送不经过 relay。
 > **2026-11-08：credential 默认 TTL 由 7 天延长到 30 天**（只有 App 能 PoP 续期；主机侧续期改造记入 todo，详见 `todo/TODO.md`）。
 > **2026-11-02 决策补充：legacy O1「relay 转发官方 hub」已整体删除**（relay 0.4.0 / hub 0.3.0）——
 > hub 只识别 App 设备（device credential），不再识别 relay；兼容没有必要（官方 App 从未发布旧版本，
 > 且自签 App 的 token 官方 key/topic 也发不动）。
-> 验证记录：`npm test` **296/296**（删除 legacy official/relay-token 用例后）、`validate:artifacts` ✅、**R2 进程级冒烟 18/18**
+> 验证记录：`npm test` **299/299**、`validate:artifacts` ✅、R2 进程级冒烟 18/18
 > （challenge→enroll→credential→device push/限流）；App self 包 0.1.9/17 已装机，
-> **官方包 0.2.0/18（official 通道）已于 2026-11-08 构建并装机，待用户验收**。
+> **官方包 0.2.0 build 20（official 通道）已上传 TestFlight**。
+> **2026-11-09：official 通知携带 `sessionId`（hub 0.3.3 / host 0.2.8），点通知可直达会话**。
+> **2026-11-08：推送详细内容与 error 类型**——主机侧「详细推送内容」开关默认关闭；
+> 开启后 official hub 接受可选 `title/body`（≤60/160 字），关闭时只发通用文案；
+> 通用文案区分 `turn-end` / `waiting-answer` / `error`。
 
 ## 1. 目标与非目标
 
@@ -105,7 +109,13 @@ dshremote-push-enroll-v1
 
 - 请求：`Authorization: Bearer <deviceCredential>`，body ≤16KB。
 - **device credential 模式**（唯一模式；relay token 转发已在 0.3.0 删除，未知 Bearer → 401）：
-  - body：`{ kind, host?, token, environment? }`
+  - body：`{ kind, host?, token, environment?, title?, body?, sessionId? }`
+    - `kind`：`turn-end` / `waiting-answer` / `error`；
+    - `title`/`body`：**可选且必须成对**；仅在主机用户开启「详细推送内容」时发送，
+      上限 60/160 字（Unicode code point），禁止控制字符；hub 不写日志；
+    - `sessionId`：可选（≤128 字符，opaque），用于点通知直达会话；官方通道也携带，
+      与详细内容开关无关；不写日志；
+    - 缺省时 hub 使用 `genericPushContent(kind)` 的通用文案。
   - 校验：JWT 签名（hub 公钥）/exp/typ；`aud === HUB_PUBLIC_URL`；`bundleId === apns.topic`；
     `sha256Base64Url(body.token) === claims.tokenHash`；environment 若提供必须与 claims.env 一致；
     `kind` 合法。
@@ -114,7 +124,7 @@ dshremote-push-enroll-v1
     - 每 credential jti：6 次/分钟；
     - 每 host（body.host 规范化，缺省 `unknown`）：30 次/分钟；
     - 每 IP：60 次/分钟；全局：120 次/分钟。
-  - 发送：现有 APNs 发送器 + 通用文案（`buildPushNotification`），environment 用
+  - 发送：现有 APNs 发送器，`title/body` 存在时使用，否则用通用文案，environment 用
     claims.env；APNs `Unregistered`/410 → 返回 `pruned:[token]`（host 负责删除该设备 token）；
     配置错误不 prune。
   - 返回：`{ ok, delivered, failed, pruned, mode:'device' }`。
@@ -216,13 +226,18 @@ HUB_PUSH_PER_MINUTE_GLOBAL=120
 - 现有 `push.send` 意图入口不变（turn/end、ask_user_question 等），在发送阶段分流：
   - **self 设备**：沿用现有 `connector.sendPushIntent`（push.register 过的设备）；
   - **official 设备**：主机逐设备 `POST {hubEndpoint}/v1/push`
-    `Authorization: Bearer <credential>`，body `{kind, host, token}`；
-    超时 10s；**不重试**；失败记入 status；
+    `Authorization: Bearer <credential>`，body `{kind, host, token, title?, body?, sessionId?}`；
+    `title/body` 仅在主机配置 `pushDetail=true` 时发送（默认关闭）；`sessionId` 始终携带（点通知直达会话）；超时 10s；**不重试**；失败记入 status；
   - 两类并存时都要发；没有 self 设备时不要向 relay 发 push.send（避免空转/额度）。
 - 限速/去重沿用现有（30s/session、ask_user_question 按 callId）。
 - 收到 hub 返回 `pruned:[token]` → 删除对应设备记录。
 
 ### 6.3 status / 设置页
+
+- 主机设置新增「详细推送内容」`pushDetail`（默认 `false`）：开启后 official 请求带 `title/body`，
+  self 请求带 `content=summary`；关闭时两种通道都走通用文案。
+- `status.push` 增加 `detail` 布尔字段（不含 token/credential）。
+- `error` 类型由 `turn/end` 的失败原因（`error` / `max-tokens` / `blocked`）触发。
 
 `/__dsh_remote/status` 的 `push` 扩展（字段不含 token/credential）：
 

@@ -130,7 +130,7 @@ export function createGroupPushService(options = {}) {
   const enabled = config.enabled === true;
   // R2 起只有 self：官方 App 推送直连 hub，relay 不参与（配置层已拒绝其它 mode）。
   const mode = 'self';
-  const content = config.content === 'summary' ? 'summary' : 'generic';
+  const configuredContent = config.content === 'summary' ? 'summary' : 'generic';
   const cooldownSeconds = Number.isInteger(config.cooldownSeconds) && config.cooldownSeconds >= 0
     ? config.cooldownSeconds
     : GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS;
@@ -265,7 +265,9 @@ export function createGroupPushService(options = {}) {
 
   /**
    * 生成一条推送的内容（标题/正文/sessionId）。
-   * generic 用固定文案（忽略 host 上报的 title/body）；仅 self+summary 用摘要。
+   * generic 用固定文案（忽略 host 上报的 title/body）；summary 用摘要。
+   * host 可在 push.send 里显式带 content=generic|summary 覆盖 relay 默认值
+   * （主机侧「详细推送内容」开关）；未带时使用部署配置 group.push.content。
    *
    * @param {string} hostId
    * @param {string} kind
@@ -275,6 +277,9 @@ export function createGroupPushService(options = {}) {
   function buildMessage(hostId, kind, msg) {
     const generic = genericPushContent(kind);
     const host = hostAccessName(hostId);
+    const content = msg && msg.content === 'summary'
+      ? 'summary'
+      : (msg && msg.content === 'generic' ? 'generic' : configuredContent);
     if (content === 'summary') {
       const title = truncate(msg.title, MAX_SUMMARY_TITLE_CHARS);
       const body = truncate(msg.body, MAX_SUMMARY_BODY_CHARS);
@@ -314,7 +319,11 @@ export function createGroupPushService(options = {}) {
     const id = truncate(input.id, MAX_INTENT_ID_LENGTH);
     if (id === '') return { ok: false, code: 'invalid_request', message: 'push.send 缺少 id' };
     if (!isPushKind(input.kind)) {
-      return { ok: false, code: 'invalid_request', message: 'kind 必须是 "turn-end" 或 "waiting-answer"' };
+      return { ok: false, code: 'invalid_request', message: 'kind 必须是 "turn-end"、"waiting-answer" 或 "error"' };
+    }
+    if (input.content !== undefined && input.content !== null && input.content !== ''
+      && input.content !== 'generic' && input.content !== 'summary') {
+      return { ok: false, code: 'invalid_request', message: 'content 必须是 "generic" 或 "summary"' };
     }
     const limiting = intentLimiter.hit(hostId);
     if (limiting.limited) {

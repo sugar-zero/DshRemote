@@ -95,11 +95,13 @@ export function createGroupPushNotifier({
 
   /**
    * 投递一条推送意图（运行时负责 self/official 分流）；不等待回执。
+   * 主机侧「详细推送内容」开启时带 title/body，并标记 content=summary；关闭时 content=generic。
    * @param {{kind: string, title: string, body: string, sessionId: string}} intent
    * @returns {Promise<boolean>} 是否至少投递到一个通道
    */
   async function send(intent) {
-    const message = { id: randomUUID(), ...intent };
+    const detail = config().pushDetail === true;
+    const message = { id: randomUUID(), ...intent, content: detail ? 'summary' : 'generic' };
     let summary;
     try {
       summary = await deliver(message);
@@ -168,9 +170,10 @@ export function createGroupPushNotifier({
       if (kind === 'skip') return;
       const sessionId = String(session?.id ?? '');
       // 没有可投递设备/运行时未就绪时静默跳过，且不消耗冷却状态——恢复后下一轮仍应推送。
+      const pushKind = kind === 'failure' ? PUSH_KINDS.ERROR : PUSH_KINDS.TURN_END;
       if (!hasTargets()) {
-        audit?.append({ action: 'push-trigger', result: 'skipped', hash: PUSH_KINDS.TURN_END });
-        log(`push trigger: ${PUSH_KINDS.TURN_END}${sessionSuffix(sessionId)} skipped（没有已登记的推送设备或运行时不可用）`);
+        audit?.append({ action: 'push-trigger', result: 'skipped', hash: pushKind });
+        log(`push trigger: ${pushKind}${sessionSuffix(sessionId)} skipped（没有已登记的推送设备或运行时不可用）`);
         return;
       }
 
@@ -180,7 +183,7 @@ export function createGroupPushNotifier({
       if (sessionId !== '') lastPushAt.set(sessionId, now);
 
       const content = tracker.compose(session, { kind });
-      await send({ kind: PUSH_KINDS.TURN_END, title: content.title, body: content.body, sessionId });
+      await send({ kind: pushKind, title: content.title, body: content.body, sessionId });
     },
 
     /** 会话结束/卸载时清掉节流状态与摘要缓存。 */

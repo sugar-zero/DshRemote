@@ -153,7 +153,7 @@ JSON（完整示例见 `relay.example.json`）：
 `RELAY_GROUP_ADMIN_PORT/BIND`、`RELAY_GROUP_PUBLIC_CONTROL_PORT`、
 `RELAY_GROUP_EDGE_ENABLED/PORT/CERT_FILE/KEY_FILE`、`RELAY_GROUP_SIGNING_KEY_FILE`、
 `RELAY_ADMIN_TOKEN`、`RELAY_ADMIN_TOKEN_FILE`、`RELAY_TLS_CERT_FILE`、`RELAY_TLS_KEY_FILE`、
-`RELAY_LOG_LEVEL`；服务端集中推送（0.4.0，只有 self，见 §6.5）：
+`RELAY_LOG_LEVEL`；服务端集中推送（0.4.1，只有 self，见 §6.5）：
 `RELAY_GROUP_PUSH_ENABLED/MODE/CONTENT/COOLDOWN_SECONDS`、
 `RELAY_GROUP_PUSH_APNS_KEY_FILE/KEY_ID/TEAM_ID/TOPIC/ENVIRONMENT`
 （`RELAY_GROUP_PUSH_MODE` 只接受 `self`）。
@@ -251,8 +251,8 @@ docker compose logs -f relay
 docker compose exec relay node packages/relay/bin/relay.js invite create --config /data/config/relay.json
 ```
 
-- 镜像 tag：`dsh-remote-relay:0.4.0-group`（离线包 `server/dsh-relay-0.4.0-group-linux-amd64.tar`，
-  62,759,936 bytes，sha256 `41218320c65e4ff04a417006afcafd29702b70d61dd2553d9f35f40915bbc2ea`，
+- 镜像 tag：`dsh-remote-relay:0.4.1-group`（离线包 `server/dsh-relay-0.4.1-group-linux-amd64.tar`，
+  62,761,984 bytes，sha256 `2dc4597b5784e885de33974bfef0e5efa3b2948b98a5f4f5f92a67817859b5ab`，
   2026-11-02 构建 + 容器 `/healthz` 冒烟通过）。
 - `restart: unless-stopped` + 内置 `HEALTHCHECK`（`GET /healthz`）+ 日志轮转（10m × 3）。
 - 升级：`docker compose build && docker compose up -d`；证书与 group.json 在 `./data` 卷里，不受影响。
@@ -422,6 +422,8 @@ listen 的端口，直连时 = 宿主映射端口。relay 不会自动探测，�
 ```
 
 - `content`：`generic` = 固定通用文案（默认）；`summary` = 会话标题 + 助手回复摘要。
+  主机可在 `push.send` 里显式带 `content=generic|summary` 覆盖默认（主机侧「详细推送内容」开关）；
+  `error` kind 使用「任务出错，打开查看详情」通用文案。
 - `cooldownSeconds`：同一 host 两次推送意图的最小间隔（0..3600 秒，默认 30）。
 - `environment`：`auto`（默认）/ `development` / `production`；实际 APNs 环境由 App 构建决定。
 - 控制消息（协议见 `packages/protocol/index.js`）：`push.register` → `push.registered`；

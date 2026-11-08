@@ -1,4 +1,4 @@
-# dsh-remote-push-hub —— 官方推送 hub（群体服务版 · 选项 2，0.3.1 = R2-only）
+# dsh-remote-push-hub —— 官方推送 hub（群体服务版 · 选项 2，0.3.3 = R2-only）
 
 由项目所有者部署/运营的中央推送服务：用**官方 App 的 APNs Auth Key** 发送**固定通用文案**，
 不接收会话内容。**官方推送与部署方 relay 彻底解耦**——hub 不识别 relay，也不接受任何 relay
@@ -6,7 +6,7 @@
 
 ```
 官方 App ──HTTPS──► hub /v1/enroll/challenge + /v1/enroll（P-256 PoP 验签）──► 签发 device credential
-主机插件 ──HTTPS──► hub /v1/push（Authorization: Bearer <deviceCredential>）──► APNs（通用文案）
+主机插件 ──HTTPS──► hub /v1/push（Authorization: Bearer <deviceCredential>）──► APNs（通用/可选摘要）
 ```
 
 - 契约：[`docs/group-push-r2-contract.zh.md`](../../../docs/group-push-r2-contract.zh.md) §4/§4.5
@@ -17,8 +17,11 @@
 
 ## 1. 安全边界（硬约束）
 
-1. **不接收会话内容**：推送 schema 只允许 `kind` / `host` / `token` / `environment`；出现
-   `title`、`body`、`sessionId`、旧的 `tokens` 数组或任何未知字段直接 `400 invalid_request`。
+1. **默认不接收会话内容**：推送 schema 只允许 `kind` / `host` / `token` / `environment`；
+   用户开启主机侧「详细推送内容」后，可选 `title`/`body`（必须成对，≤60/160 字，禁止控制字符）；
+   可选 `sessionId`（≤128 字，用于点通知直达会话，opaque、不写日志）；旧的 `tokens` 数组或
+   任何其它未知字段仍直接 `400 invalid_request`。
+   `title`/`body` 不写日志；关闭时只发通用文案。
    文案在 hub 侧固定（`turn-end` → DSH「任务已完成」；`waiting-answer` → DSH「正在等待你的回答」）。
 2. **device credential 由 hub 的 Ed25519 key 签发**：claims 绑定 `tokenHash + hostId + env +
    bundleId + aud(HUB_PUBLIC_URL) + exp`；签名 key 只在部署方数据卷（默认 `/data`，0600），
@@ -217,7 +220,9 @@ POST /v1/push
 Authorization: Bearer <deviceCredential>
 Content-Type: application/json
 
-{ "kind": "waiting-answer", "host": "h_ab12cd34.relay.example.com", "token": "<64 hex>" }
+{ "kind": "waiting-answer", "host": "h_ab12cd34.relay.example.com", "token": "<64 hex>", "sessionId": "s_ab12cd34" }
+# 可选（主机「详细推送内容」开启时）：
+# { "kind": "error", "host": "...", "token": "<64 hex>", "title": "清理缓存", "body": "部署步骤超时", "sessionId": "s_ab12cd34" }
 ```
 
 `environment` 可省略（以 credential 的 `claims.env` 为准）；提供时必须与之一致。
@@ -234,7 +239,7 @@ hub 不认识任何 relay 凭据（旧式 relay token 也按 `invalid_credential
 | 401 | `invalid_credential` | 缺 Bearer / credential 签名/typ/aud/字段非法、alg 非 EdDSA、Bearer 不是 credential |
 | 401 | `credential_expired` | credential 过期（App 重新登记） |
 | 401 | `token_mismatch` | body.token 与 credential 的 tokenHash 不一致 |
-| 400 | `invalid_request` | 非 JSON / 字段不合法 / 多余字段（含 title/body/sessionId/tokens） |
+| 400 | `invalid_request` | 非 JSON / 字段不合法 / title 与 body 未成对或超长 / sessionId 超长 / tokens 等多余字段 |
 | 413 | `invalid_request` | 请求体超过 16KB |
 | 400 | `unsupported_bundle_id` | bundleId 不是本 hub 的 `apns.topic` |
 | 400 | `challenge_expired` / `challenge_used` | enroll：challenge 过期/未知/已用（重新申请） |
@@ -268,10 +273,9 @@ curl -fsS http://127.0.0.1:19445/healthz
   `push-hub-signing-key.pem`（Ed25519 签名 key，0600，首次启动自动生成）。
 - **不需要任何 relay 配置**：官方 App 内置 hub 地址后自己登记，主机拿到 credential 直连推送；
   部署方 relay 既不需要 token，也没有转发通道。
-- **离线镜像**（已在本机构建/导出，2026-11-08，linux/amd64）：`server/dsh-push-hub-0.3.1-linux-amd64.tar`
-  （62,635,008 bytes，sha256 `97211f903903076dc796f274db299b94f34fb2efbc63ef842e93e4543f87804b`）。
-  0.3.1 = R2-only + credential 默认 TTL 30 天（原 7 天）；服务器上
-  `docker load -i dsh-push-hub-0.3.1-linux-amd64.tar` 后 `up -d --no-build` 即可；
+- **离线镜像**（已在本机构建/导出，2026-11-08，linux/amd64）：`server/dsh-push-hub-0.3.2-linux-amd64.tar`
+  （62,636,032 bytes，sha256 `10bf282d651598b78b9552db9a83402e9325f828d4c4ea3f19906f3760f8422b`）。0.3.3 = R2-only + 可选 title/body 摘要 + error 通用文案 + TTL 30 天；服务器上
+  `docker load -i dsh-push-hub-0.3.2-linux-amd64.tar` 后 `up -d --no-build` 即可；
   镜像内默认 `HUB_LISTEN_HOST=0.0.0.0` / `HUB_PORT=9445` / `HUB_SIGNING_KEY_FILE=/data/push-hub-signing-key.pem`。
 
 ## 6. 运维
@@ -304,5 +308,5 @@ node --test packages/push-hub/test/*.test.js
 ## 8. 版本
 
 `0.3.0`（R2-only：官方 App 设备登记 + 主机直连推送；不再有 relay 凭据/store/relay CLI），
-对应 `docs/group-push-r2-contract.zh.md` §4/§4.5 与 protocol 0.3.1。
+对应 `docs/group-push-r2-contract.zh.md` §4/§4.5 与 protocol 0.3.2。
 许可证：AGPL-3.0-or-later（与仓库其它包一致）。

@@ -101,7 +101,9 @@ window.__ModuleLoader__.load({
       'sw.restartHost': '允许手机重启主机 DSH',
       'sw.restartHostNote': '开启后 App 顶栏显示 ⏻：装了插件/改完功能后可在手机上直接重启主机（会短暂断开连接，随后自动恢复）。关闭后 App 不显示该按钮，重启接口也会拒绝请求；仍可在本机手动重启。',
       'sw.pushEnabled': '推送提醒',
+      'sw.pushDetail': '详细推送内容',
       'sw.pushEnabledNote': '主机只上报「推送意图 + 设备 token」：部署方自签 App（self）经 relay 发送，官方 App（official）由主机凭 credential 直连官方推送 hub；主机不持有 Apple 凭据。关闭后本轮结束/等待回答都不再提醒；保存不重建隧道，立即生效。',
+      'sw.pushDetailNote': '开启后，通知标题显示会话标题、正文显示本轮摘要（任务完成 / 正在等待回答 / 出错）；关闭时只发通用文案。详细内容会经过推送服务（官方 hub 或自部署 relay），请自行判断是否包含敏感信息。',
       'push.mode': '推送通道',
       'push.modeSelf': '自部署（经 relay）',
       'push.modeOfficial': '官方（设备直连 hub）',
@@ -270,7 +272,9 @@ window.__ModuleLoader__.load({
       'sw.restartHost': 'Allow the phone to restart host DSH',
       'sw.restartHostNote': 'When on, the app top bar shows ⏻ so you can restart the host from the phone after installing plugins or changing features (the connection briefly drops and recovers). When off, the button is hidden and restart requests are rejected; manual restarts on this computer still work.',
       'sw.pushEnabled': 'Push notifications',
+      'sw.pushDetail': 'Detailed push content',
       'sw.pushEnabledNote': 'The host only reports push intents and device tokens: self-hosted apps are sent via the relay; official apps are sent by the host directly to the official push hub using the device credential. The host holds no Apple credentials. When off, no reminder is sent for finished turns or waiting questions; saving does not rebuild the tunnel and applies immediately.',
+      'sw.pushDetailNote': 'When enabled, notifications show the session title and a summary for this turn (completed / waiting for answer / error). When off, only generic copy is sent. Detailed content passes through the push service (official hub or self-hosted relay); decide whether it may contain sensitive information.',
       'push.mode': 'Push channel',
       'push.modeSelf': 'Self-hosted (via relay)',
       'push.modeOfficial': 'Official (device → hub)',
@@ -571,6 +575,10 @@ window.__ModuleLoader__.load({
           : (status && status.push && typeof status.push.enabled === 'boolean'
             ? status.push.enabled
             : (prev.pushEnabled === undefined ? true : prev.pushEnabled === true)),
+        // 「详细推送内容」：默认关闭（只发通用文案）。
+        pushDetail: config.pushDetail !== undefined
+          ? config.pushDetail === true
+          : (status && status.push && status.push.detail === true) || prev.pushDetail === true,
         groupServiceUrl: stringOrPrevious(firstDefined(config.groupServiceUrl, group.serviceUrl), prev.groupServiceUrl || ''),
         // 邀请码一次性且只上行：永远不进入 draft 初始值（注册成功后立即清空）。
         groupInviteCode: '',
@@ -988,7 +996,10 @@ window.__ModuleLoader__.load({
         return () => { aliveRef.current = false; };
       }, []);
 
+      const loadingRef = useRef(false);
       const load = useCallback(async () => {
+        if (loadingRef.current) return;
+        loadingRef.current = true;
         try {
           const next = await jget('/status');
           if (aliveRef.current) {
@@ -997,10 +1008,29 @@ window.__ModuleLoader__.load({
           }
         } catch (error) {
           if (aliveRef.current) setLoadError(formatError(error));
+        } finally {
+          loadingRef.current = false;
         }
       }, []);
 
       useEffect(() => { void load(); }, [load]);
+
+      // 侧栏入口常驻：定时刷新状态（配对取消/设备变更/隧道重连后无需再点一下）。
+      // 页面隐藏时跳过，visible/focus 时立即补一次（见下方 visibilitychange/focus）。
+      useEffect(() => {
+        const timer = globalThis.setInterval(() => {
+          if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+          void load();
+        }, POLL_MS);
+        return () => globalThis.clearInterval(timer);
+      }, [load]);
+
+      useEffect(() => {
+        if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return undefined;
+        const onFocus = () => { void load(); };
+        window.addEventListener('focus', onFocus);
+        return () => window.removeEventListener('focus', onFocus);
+      }, [load]);
 
       useEffect(() => {
         if (typeof document === 'undefined' || typeof document.addEventListener !== 'function') return undefined;
@@ -1123,9 +1153,13 @@ window.__ModuleLoader__.load({
         }
       }, [refresh, showFlash, t]);
 
-      const close = useCallback(() => {
+      const close = useCallback(async () => {
         canceledRef.current = true;
-        void jpost('/pairing/cancel', {}).catch(() => {});
+        try {
+          await jpost('/pairing/cancel', {});
+        } catch {
+          /* 忽略：关闭弹窗/取消配对失败不应阻塞 UI */
+        }
         onClose();
       }, [onClose]);
 
@@ -1420,6 +1454,7 @@ window.__ModuleLoader__.load({
         if (draft.restartHostEnabled !== baseline.restartHostEnabled) patch.restartHostEnabled = draft.restartHostEnabled === true;
         // 「推送提醒」：只写 pushEnabled，服务端不重建运行时（保存立即生效，隧道不断）。
         if (draft.pushEnabled !== baseline.pushEnabled) patch.pushEnabled = draft.pushEnabled === true;
+        if (draft.pushDetail !== baseline.pushDetail) patch.pushDetail = draft.pushDetail === true;
         const groupServiceUrl = draft.groupServiceUrl.trim();
         if (groupServiceUrl !== baseline.groupServiceUrl) patch.groupServiceUrl = groupServiceUrl;
         const groupPlainPortRaw = String(draft.groupPlainPort ?? '').trim();
@@ -1737,6 +1772,13 @@ window.__ModuleLoader__.load({
             disabled,
             label: t('sw.pushEnabled'),
             onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
+          })),
+        h(Row, { label: t('sw.pushDetail'), note: t('sw.pushDetailNote') },
+          h(Toggle, {
+            checked: draft.pushDetail,
+            disabled: disabled || !draft.pushEnabled,
+            label: t('sw.pushDetail'),
+            onChange: (value) => setDraft({ ...draft, pushDetail: value }),
           })),
         h(InfoRow, { label: t('push.mode'), value: pushModeLabel }),
         h(InfoRow, { label: t('push.selfDevices'), value: t('push.devicesValue', { count: selfPushDevices }) }),

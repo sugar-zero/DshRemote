@@ -45,7 +45,7 @@ services:
     build:
       context: ../dsh-remoteService
       dockerfile: packages/push-hub/Dockerfile
-    image: ${DSH_PUSH_HUB_IMAGE:-dsh-remote-push-hub:0.3.1}
+    image: ${DSH_PUSH_HUB_IMAGE:-dsh-remote-push-hub:0.3.3}
     container_name: dsh-push-hub
     # 非 root 运行；APNs key 目录与 data 目录的属主需匹配这两个 UID/GID。
     user: "${HUB_UID:-100}:${HUB_GID:-101}"

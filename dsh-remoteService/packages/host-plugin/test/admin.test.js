@@ -96,6 +96,7 @@ test('管理 API：群体版状态只暴露群字段（推送只剩开关/状态
     // 群体版推送（R2）：只有主机开关 + self/official 分流状态，不含 token/credential/Apple 凭据
     assert.deepEqual(data.push, {
       enabled: true,
+      detail: false,
       self: { devices: 0, lastError: null },
       official: { devices: 0, lastError: null, hub: null },
       mode: '',

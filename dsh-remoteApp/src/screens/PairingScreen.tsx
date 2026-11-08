@@ -65,9 +65,9 @@ interface ScreenError {
 }
 
 const GROUP_PHASE_LABELS = [
-  { key: 'requesting', label: '生成 P-256 设备密钥并提交配对请求' },
-  { key: 'pending', label: '等待桌面端确认（核对 SAS）' },
-  { key: 'paired', label: '保存连接（token 认证）' },
+  { key: 'requesting', label: '提交配对请求' },
+  { key: 'pending', label: '等待主机确认' },
+  { key: 'paired', label: '完成配对' },
 ] as const;
 
 function phaseMessage(phase: 'requesting' | 'pending' | 'polling' | 'paired'): string {
@@ -75,9 +75,9 @@ function phaseMessage(phase: 'requesting' | 'pending' | 'polling' | 'paired'): s
     case 'requesting':
       return '正在向主机提交配对请求…';
     case 'pending':
-      return '已提交，等待桌面端确认…';
+      return '已提交，等待主机确认…';
     case 'polling':
-      return '等待桌面端确认（请在主机上允许此设备）…';
+      return '等待主机确认…';
     case 'paired':
       return '配对成功，正在保存连接…';
   }
@@ -96,7 +96,7 @@ function errorTitle(error: GroupPairingError): string {
     case 'expired':
       return '配对已过期';
     case 'fingerprint_mismatch':
-      return '主机指纹不匹配';
+      return '安全码不匹配';
     case 'pending_timeout':
       return '等待确认超时';
     case 'invalid_request':
@@ -233,14 +233,14 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           const sas = pendingSasRef.current;
           setPairingMessage(
             nextPhase === 'polling' && sas
-              ? `等待桌面端确认（核对 SAS：${sas}）…`
+              ? '等待主机确认…'
               : phaseMessage(nextPhase),
           );
         },
         onPending: ({ sas }) => {
           if (!sas) return;
           pendingSasRef.current = sas;
-          setPairingMessage(`等待桌面端确认（核对 SAS：${sas}）…`);
+          setPairingMessage('等待主机确认…');
         },
       });
       onPaired(result.connection);
@@ -277,7 +277,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
       <View style={styles.header}>
         <Text style={styles.title}>连接 DSH 主机</Text>
         <Text style={styles.subtitle}>
-          在主机 DSH「设置 → 远程访问」中点击「配对新设备」，然后扫描二维码。
+          在主机 DSH「设置 → 远程访问」中生成配对二维码，然后扫描。
         </Text>
       </View>
 
@@ -324,7 +324,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
 
       {manualOpen ? (
         <View style={styles.card}>
-          <Text style={styles.inputLabel}>配对链接（dshremote://pair?v=2&auth=token…）</Text>
+          <Text style={styles.inputLabel}>配对链接</Text>
           <TextInput
             value={manualUri}
             onChangeText={setManualUri}
@@ -338,22 +338,19 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           <TouchableOpacity style={styles.primaryButton} onPress={() => handleUri(manualUri)}>
             <Text style={styles.primaryButtonText}>解析链接</Text>
           </TouchableOpacity>
-          <Text style={styles.hint}>
-            只支持群体服务版 v2 配对链接（auth=token）；链接里只有一次性配对密钥
-            （约 120 秒有效），不含账号或长期令牌。
-          </Text>
+          <Text style={styles.hint}>粘贴主机生成的配对链接。</Text>
         </View>
       ) : null}
 
       {parseError ? (
         <View style={[styles.card, styles.errorCard]}>
           <Text style={styles.errorTitle}>链接无效</Text>
-          <Text style={styles.cardBody}>{parseError}</Text>
+          <Text style={styles.cardBody}>{__DEV__ ? parseError : '无法识别该二维码，请使用主机生成的配对链接。'}</Text>
         </View>
       ) : null}
 
       <View style={styles.card}>
-        <Text style={styles.inputLabel}>设备名称（显示在主机设备列表中）</Text>
+        <Text style={styles.inputLabel}>设备名称</Text>
         <TextInput
           value={deviceName}
           onChangeText={setDeviceName}
@@ -364,10 +361,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           placeholder={defaultDeviceName()}
           placeholderTextColor={colors.textFaint}
         />
-        <Text style={styles.hint}>
-          默认使用系统本机设备名；可以改成更好识别的名字（建议包含机型）。若系统只返回通用名
-          （如 iPhone），App 会自动改用机型名。
-        </Text>
+        <Text style={styles.hint}>可以使用更容易识别的名称。</Text>
       </View>
 
       {__DEV__ && !isGroupNativeAvailable() ? (
@@ -389,7 +383,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
         <View style={styles.header}>
           <Text style={styles.title}>确认主机身份</Text>
           <Text style={styles.subtitle}>
-            请核对下面的指纹与主机端显示的一致，再开始配对。
+            请确认主机信息，然后开始配对。
           </Text>
         </View>
 
@@ -399,26 +393,31 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
             {pairing.host}
           </Text>
           <View style={sharedStyles.divider} />
-          <Text style={styles.inputLabel}>中继域名</Text>
-          <Text style={styles.monoValue} selectable>
-            {pairing.relayDomain}
-          </Text>
-          <View style={sharedStyles.divider} />
-          <Text style={styles.inputLabel}>服务端口</Text>
-          <Text style={styles.monoValue} selectable>
-            {pairing.port}
-          </Text>
-          <View style={sharedStyles.divider} />
-          <Text style={styles.inputLabel}>主机指纹（短）</Text>
+          <Text style={styles.inputLabel}>安全码</Text>
           <Text style={styles.shortFingerprint}>{shortFingerprint(pairing.hostFingerprint)}</Text>
-          <Text style={styles.inputLabel}>主机指纹（完整 SHA-256 / base64url）</Text>
-          <Text style={styles.monoValueSmall} selectable>
-            {formatFingerprint(pairing.hostFingerprint)}
-          </Text>
-          <Text style={styles.hint}>
-            短指纹仅用于人工对照；完整指纹才是权威值。群体服务版使用 P-256 设备密钥 +
-            短时 token 认证（不使用设备 mTLS 证书）。
-          </Text>
+          <Text style={styles.hint}>请与主机上显示的安全码一致。</Text>
+          {__DEV__ ? (
+            <>
+              <Text style={styles.inputLabel}>中继域名</Text>
+              <Text style={styles.monoValue} selectable>
+                {pairing.relayDomain}
+              </Text>
+              <View style={sharedStyles.divider} />
+              <Text style={styles.inputLabel}>服务端口</Text>
+              <Text style={styles.monoValue} selectable>
+                {pairing.port}
+              </Text>
+              <View style={sharedStyles.divider} />
+              <Text style={styles.inputLabel}>主机指纹（完整 SHA-256 / base64url）</Text>
+              <Text style={styles.monoValueSmall} selectable>
+                {formatFingerprint(pairing.hostFingerprint)}
+              </Text>
+              <Text style={styles.hint}>
+                短指纹仅用于人工对照；完整指纹才是权威值。群体服务版使用 P-256 设备密钥 +
+                短时 token 认证（不使用设备 mTLS 证书）。
+              </Text>
+            </>
+          ) : null}
         </View>
 
         <View style={styles.card}>
@@ -431,7 +430,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           {secondsLeft <= 0 ? (
             <Text style={styles.warningText}>链接已过期，请在主机上重新生成二维码。</Text>
           ) : (
-            <Text style={styles.hint}>过期后需要重新扫码。主机端可能要求再次确认（显示设备名 + SAS 短码）。</Text>
+            <Text style={styles.hint}>二维码过期后请重新生成。</Text>
           )}
         </View>
 
@@ -458,10 +457,12 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
           </TouchableOpacity>
         </View>
 
-        <Text style={styles.footnote}>
-          配对会生成 P-256 设备密钥；私钥保存在系统安全区，访问 token 只存在内存与
-          `__Host-` cookie 中。
-        </Text>
+        <Text style={styles.footnote}>配对信息保存在本机安全存储中。</Text>
+        {__DEV__ ? (
+          <Text style={styles.footnote}>
+            配对会生成 P-256 设备密钥；私钥保存在系统安全区，访问 token 只存在内存与 `__Host-` cookie 中。
+          </Text>
+        ) : null}
       </>
     );
   };
@@ -490,8 +491,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
       <View style={styles.card}>
         <Text style={styles.cardTitle}>主机端确认</Text>
         <Text style={styles.cardBody}>
-          请在主机上打开 DSH 设置 → 远程访问。若出现配对确认，核对设备名称与 SAS
-          短码是否与本机一致，然后点击「允许」。两边显示不一致时请拒绝。
+          请在主机上确认本次配对请求（核对设备名称），然后点击「允许」。
         </Text>
       </View>
 
@@ -510,7 +510,7 @@ export function PairingScreen({ onPaired, onCancel }: PairingScreenProps) {
       <View style={[styles.card, styles.errorCard]}>
         <Text style={styles.errorTitle}>{error?.title ?? '配对失败'}</Text>
         <Text style={styles.cardBody}>{error?.message ?? '未知错误。'}</Text>
-        {error?.code ? <Text style={styles.errorCode}>code: {error.code}</Text> : null}
+        {__DEV__ && error?.code ? <Text style={styles.errorCode}>code: {error.code}</Text> : null}
       </View>
       {error?.code === 'native_unavailable' ? (
         <View style={styles.card}>

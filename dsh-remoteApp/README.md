@@ -52,11 +52,11 @@
 
 ---
 
-## 当前状态（0.2.0 / 构建号 18，官方构建已装机、待用户验收）
+## 当前状态（0.2.0 / 构建号 20，官方构建已上传 TestFlight，用户确认 UI/推送通过）
 
 | 项 | 状态 |
 |---|---|
-| iOS Release 构建 / 真机安装 | build 15 已装机验收；build 16 已装机；0.1.9 build 17 已装机（self 包）；**0.2.0 build 18 官方包（`EXPO_PUBLIC_PUSH_CHANNEL=official` + 官方 hub 地址）签名构建 ✅ 并已装机（2026-11-08），待用户验收**；手动签名，无 dev-client/DevMenu |
+| iOS Release 构建 / 真机安装 | build 15 已装机验收；build 16 已装机；0.1.9 build 17 已装机（self 包）；**0.2.0 build 20 官方包（`EXPO_PUBLIC_PUSH_CHANNEL=official` + 官方 hub 地址）已构建、上传 TestFlight，用户确认生产 UI 与推送通过（2026-11-09）**；build 19 曾因 “TestFlight Internal Only” 仅内测；手动/分发签名，无 dev-client/DevMenu |
 | 群体版配对（v2 token + P-256 设备密钥 + SAS 确认） | ✅ 0.1.0 真机通过；0.1.1 剥离 classic 后**待用户复测** |
 | token 会话（challenge→签名→token→`__Host-` cookie、单飞/重试、404 设备失效提示） | ✅ 0.1.0 真机通过；0.1.1 **待复测** |
 | 主机列表 / 连接设置（设备与安全）/ App 设置页 | ✅ 已实现；**0.1.6+ 起 App 设置页只保留版本 / App 锁 / 主机页面手势 / 缓存**，设备与安全只从「每个主机」进入（列表卡片 ⚙ 或进入主机后顶栏 ⚙） |
@@ -180,6 +180,8 @@ xcrun devicectl device process launch --device <IPHONE_UDID> <BUNDLE_ID>
 > - 同一 bundle id 覆盖安装会保留 App 数据（SecureStore 里的群体版配对信息不丢）；
 >   但 classic 版遗留的连接记录在 0.1.1 首次加载时会被直接丢弃，需要重新扫码配对。
 > - 签名/描述文件属敏感材料：只留在仓库外，不要提交、不要写进文档。
+> - 每次构建成功后按 AGENTS 7.5 删除上一版 DerivedData / `.xcarchive` / `.ipa`，只保留当前版本；
+>   旧包不长期保留，需要回滚时按对应 git 版本重新构建。
 
 ---
 
@@ -192,8 +194,8 @@ xcrun devicectl device process launch --device <IPHONE_UDID> <BUNDLE_ID>
 | `name` / `slug` | `DSH Remote` / `dsh-remote` | 显示名 / EAS slug |
 | `scheme` | `dshremote` | 与二维码 URI 一致 |
 | `ios.bundleIdentifier` / `android.package` | `<BUNDLE_ID>` | 已注册 App ID（两端对齐） |
-| `version` | `0.2.0`（iOS build **18** / Android versionCode **18**） | 群体版 App 版本线（0.2.0 build 18 = 官方构建；0.1.9 build 17 = self 包，代码相同） |
-| `ios.buildNumber` / `android.versionCode` | `18` / `18` | 每次构建递增，便于区分安装包（build 17 = R2 self 包；build 18 = 官方构建，代码相同） |
+| `version` | `0.2.0`（iOS build **20** / Android versionCode **20**） | 群体版 App 版本线（0.2.0 build 20 = 官方构建/TestFlight；0.1.9 build 17 = self 包，代码相同） |
+| `ios.buildNumber` / `android.versionCode` | `20` / `20` | 每次构建递增（build 17 = R2 self 包；build 18/19 = 官方构建）；build 20 = 当前 TestFlight 构建 |
 | `ios.infoPlist.ITSAppUsesNonExemptEncryption` | `false` | 仅标准 TLS，免出口合规文档 |
 | `plugins` | expo-camera / expo-secure-store / expo-local-authentication / **expo-notifications（color `#4F8DF7`）** / expo-build-properties | 权限文案、APNs entitlement（`aps-environment`）与 iOS 16.4 部署目标 |
 | `EXPO_PUBLIC_PUSH_CHANNEL` / `EXPO_PUBLIC_PUSH_HUB`（**构建环境变量**，不在 app.json） | 默认 `self` / 空 | 官方构建注入 `official` + 官方 hub 公开地址；**真实地址/凭据不写进仓库**（build 18 已按此构建），self 构建无需设置 |
@@ -289,13 +291,14 @@ POST /__group/auth/token { deviceId, nonce, signature }
   challenge 过期（自动换一次）、`unsupported_bundle_id`（官方构建配置不匹配）、`enroll_disabled` 等可读原因。
 - **通知点击**：`body.host`/`body.hostId` 匹配本机已配对连接打开对应主机；`body.sessionId`
   （self 模式）存在时，WebView 页面加载完成后注入
-  `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)` 直达会话；official 模式不带 sessionId。
+  `window.__DSH_REMOTE_OPEN_SESSION__(sessionId)` 直达会话；official 0.3.3 起也携带 sessionId。
 - **设置页「推送」卡**：本地开关（默认开）、「推送通道：官方（设备直连）/ 自部署（经 relay）」、
   状态文案（未注册 / 已注册（官方推送/自部署）/ 权限被拒 / 服务器未开启 / 错误原因）、
   服务器状态（`/__dsh_remote/status.push`：R2 按通道的 `self.devices` / `official.devices`
   与 `lastError`、`mode=self|official|mixed`、官方 `hub`；旧版 Host 回退扁平字段）、「重新注册」。
 - **关闭开关的边界**：只停止本机登记；主机侧「设置 → 远程访问 → 推送提醒」关闭或设备撤销后
   才会彻底停止推送；官方 credential 到期（hub 默认 30 天，0.3.1 起）后由 App 进入主机/回前台时续期。
+> 0.2.0 起通知支持通用文案区分「任务完成 / 等待回答 / 出错」；主机开启「详细推送内容」后才会显示会话标题/摘要。
 - **Android**：FCM 未接入（返回明确原因「Android FCM 未接入」）。
 
 > 真机验收需要：官方包内置官方 hub 地址且 hub 已部署（https）；self 需要 relay 配好 APNs；
@@ -406,7 +409,7 @@ npm run check:android-env # Android SDK 环境自检
       拒绝后显示「通知权限被拒」，进入主机/会话等主流程不受影响。
 - [ ] **self 模式**：App 在前台、后台、锁屏三种状态下都能收到系统通知（`turn-end`「任务已完成」与
       `ask_user_question`「正在等待你的回答」各验证一次；会话摘要通知一次）。
-- [ ] **official 模式**：经官方推送 hub 收到通用文案通知；点通知打开对应主机（不带 sessionId）。
+- [ ] **official 模式**：经官方推送 hub 收到通知；点通知打开对应主机（0.3.3 起带 sessionId 可直达会话）。
 - [ ] 点通知：App 在后台运行与被杀（冷启动）两种状态下都能打开通知对应主机；
       self 模式带 `sessionId` 时进入后直接打开该会话。
 - [ ] 通知对应主机不在本机（已解除配对）时提示无法打开，不崩溃、不跳到错误主机。
@@ -457,7 +460,7 @@ npm run check:android-env # Android SDK 环境自检
   未在有 Android SDK 的环境编译；FCM 推送未接入（App 返回「Android FCM 未接入」）。
 - 推送只有 iOS APNs（Android FCM 未接入）。R2 `official` 通道只对**内置官方 hub 地址的官方构建**生效
   （仓库默认 `self` + 空 endpoint，真实 hub 地址由 owner 注入，不写进仓库）；official 模式不带
-  `sessionId`（点通知只打开主机）；credential 缓存有效期由 hub 决定（默认 30 天，0.3.1 起；进入主机/回前台续期）。
+  `sessionId`（0.3.3 起点通知直达会话）；credential 缓存有效期由 hub 决定（默认 30 天，0.3.1 起；进入主机/回前台续期）。
 - App 本地「推送」开关只停止新登记，已登记 token 的注销依赖主机侧开关 / 设备撤销 / relay 重启。
 - 设备列表/撤销仍只在主机侧「远程访问」里操作（App 不调用主机本地管理 API）。
 - 文件上传/下载（WebView 原生选择器、分享面板）未专门处理。

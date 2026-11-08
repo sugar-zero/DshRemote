@@ -16,12 +16,12 @@ async function setup() {
   return { home, service };
 }
 
-test('RemoteService：版本与管理 API 展示的版本一致（0.2.6）', async () => {
+test('RemoteService：版本与管理 API 展示的版本一致（0.2.8）', async () => {
   const { home, service } = await setup();
   try {
     const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     assert.equal(service.status().version, pkgVersion);
-    assert.equal(pkgVersion, '0.2.6');
+    assert.equal(pkgVersion, '0.2.8');
   } finally {
     await service.dispose();
     home.cleanup();
@@ -104,6 +104,7 @@ test('RemoteService：updateConfig 落到群体字段并重启运行时（未启
     assert.equal(status.config.pushEnabled, true);
     assert.deepEqual(status.push, {
       enabled: true,
+      detail: false,
       self: { devices: 0, lastError: null },
       official: { devices: 0, lastError: null, hub: null },
       mode: '',

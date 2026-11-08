@@ -512,6 +512,7 @@ export class GroupHostRuntime {
       : (targets.self > 0 ? PUSH_CHANNELS.SELF : (targets.official > 0 ? PUSH_CHANNELS.OFFICIAL : ''));
     return {
       enabled: this.config?.pushEnabled !== false,
+      detail: this.config?.pushDetail === true,
       self: {
         devices: targets.self,
         lastError: this.pushSelfLastError || null,
@@ -628,6 +629,17 @@ export class GroupHostRuntime {
     const host = this.registration ? `${this.registration.hostId}.${this.registration.relayDomain}` : '';
     if (host !== '') body.host = host;
     body.token = device.token;
+    // 用户开启「详细推送内容」才把会话标题/摘要发给 hub；默认只发通用文案。
+    if (this.config?.pushDetail === true
+      && typeof intent?.title === 'string' && intent.title !== ''
+      && typeof intent?.body === 'string' && intent.body !== '') {
+      body.title = intent.title;
+      body.body = intent.body;
+    }
+    // sessionId 只用于点通知跳会话；与详细内容开关无关，官方通道也带（opaque，不写日志）。
+    if (typeof intent?.sessionId === 'string' && intent.sessionId !== '') {
+      body.sessionId = intent.sessionId.slice(0, 128);
+    }
     const controller = new AbortController();
     let timer;
     const timeout = new Promise((resolve) => {

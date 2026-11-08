@@ -7,12 +7,12 @@
 
 | 组件 | 版本 | 状态 |
 |---|---|---|
-| relay | **0.4.0**（镜像 `dsh-remote-relay:0.4.0-group`，已构建/导出） | 群体版全部能力 + **self 推送（部署方自签 App 用自己的 APNs key 直连 Apple）**；**official 转发官方 hub 的 legacy 已于 0.4.0 删除**（R2 官方 App 直连 hub，不经过 relay）；设备 token 只存内存 |
-| host-plugin | **0.2.6** | 群体版 + **推送意图 / 按设备分流（`self`→relay，`official`→直连官方 hub）/ 「推送提醒」开关**；远程重启为可选组件（默认关闭） |
-| protocol | **0.3.1** | 群体版协议常量/QR v2/帧/签名校验 + 推送枚举/控制消息 + **R2 通道/channel/bundleId/设备登记消息** |
-| apns（新） | **0.1.0** | APNs HTTP/2 发送器（relay `self` 与官方 hub 共用，零第三方依赖） |
-| push-hub（新） | **0.3.1** | 官方推送 hub（**R2-only**）：设备登记（P-256 PoP）/ EdDSA device credential / 按 device·host·IP·全局配额限流 / 主机直连；固定通用文案、无状态、不落 token；**不识别 relay**（legacy relay-token 已删除） |
-| App | **0.2.0（iOS build 18 官方包 / Android versionCode 18）** | 群体 token 模式 + **R2 官方推送（App 向官方 hub 登记凭证、主机直连）+ 键盘避让修复（build 16 起）** + 通知点击跳转/推送设置卡；App 锁、远程重启 UI 保留；**0.2.0 build 18 = official 通道官方构建（2026-11-08 构建/装机）**；0.1.9 build 17 = self 包（代码相同）；⏳ 真机 R2 推送 + 键盘回归验收待用户确认 |
+| relay | **0.4.1**（镜像 `dsh-remote-relay:0.4.1-group`，已构建/导出） | 群体版全部能力 + **self 推送（部署方自签 App 用自己的 APNs key 直连 Apple）**；**official 转发官方 hub 的 legacy 已于 0.4.0 删除**（R2 官方 App 直连 hub，不经过 relay）；设备 token 只存内存 |
+| host-plugin | **0.2.8** | 群体版 + **推送意图 / 按设备分流（`self`→relay，`official`→直连官方 hub）/ 「推送提醒」+「详细推送内容」开关**；远程重启为可选组件（默认关闭） |
+| protocol | **0.3.2** | 群体版协议常量/QR v2/帧/签名校验 + 推送枚举/控制消息 + **R2 通道/channel/bundleId/设备登记消息** |
+| apns（新） | **0.1.1** | APNs HTTP/2 发送器（relay `self` 与官方 hub 共用，零第三方依赖） |
+| push-hub（新） | **0.3.3** | 官方推送 hub（**R2-only**）：设备登记（P-256 PoP）/ EdDSA device credential / 按 device·host·IP·全局配额限流 / 主机直连；通用文案 + 可选 title/body + sessionId、无状态、不落 token；**不识别 relay**（legacy relay-token 已删除） |
+| App | **0.2.0（iOS build 20 官方包 / Android versionCode 20）** | 群体 token 模式 + **R2 官方推送（App 向官方 hub 登记凭证、主机直连）+ 键盘避让修复（build 16 起）** + 通知点击跳转/推送设置卡；App 锁、远程重启 UI 保留；**0.2.0 build 20 = official 通道官方构建（2026-11-08 已上传 TestFlight）**；0.1.9 build 17 = self 包（代码相同）；TestFlight build 20 UI/推送已由用户确认（2026-11-09）；验收见 ACCEPTANCE |
 
 ## 2026-11-02 决策补充：删除 legacy O1 official 转发（R2 彻底解耦）
 
@@ -30,7 +30,7 @@
 - **镜像**：relay 0.4.0 / hub 0.3.0 已于 2026-11-02 构建/导出并做容器冒烟（见下方「镜像构建与冒烟」）；
   VPS 上的 relay 换镜像时清理旧的 official 配置（你本机 `server/.env` 未配过 push，安全）；hub 首次部署即可。
 
-## 2026-11-02 镜像构建与冒烟（relay 0.4.0 / hub 0.3.0；hub 0.3.1 见 11-08 章节）
+## 2026-11-02 镜像构建与冒烟（历史记录；relay 0.4.0 / hub 0.3.0 / hub 0.3.1 对应旧包已按 7.5 删除）
 
 - 构建机：Apple Silicon，通过 colima `cch-amd64`（x86_64）原生 linux/amd64 构建（2026-11-02）。
 - `dsh-remote-relay:0.4.0-group` → `server/dsh-relay-0.4.0-group-linux-amd64.tar`
@@ -41,7 +41,10 @@
 - `dsh-remote-push-hub:0.3.0` → `server/dsh-push-hub-0.3.0-linux-amd64.tar`
   （62,633,984 bytes，sha256 `ec63991e…b49e0`）；**2026-11-08 已升级为 0.3.1**（TTL 30 天），
   新 tar：`server/dsh-push-hub-0.3.1-linux-amd64.tar`（62,635,008 bytes，sha256 `97211f90…87804b`，
-  容器 `/healthz` 冒烟 `credential.ttlDays=30` 通过）。
+  容器 `/healthz` 冒烟 `credential.ttlDays=30` 通过；**对应旧包已按 7.5 删除**）。
+
+> 以上 0.3.0/0.3.1 与 relay 0.4.0 为历史构建记录；对应 tar 已按 AGENTS 7.5 删除，
+> 当前产物见「部署产物」（hub 0.3.2 / relay 0.4.1）。
   - 容器冒烟：`/healthz` 只含 `apns/credential/enroll/limits`（**无 legacy/relays**）；
     旧式 relayToken `POST /v1/push` → 401 `invalid_credential`；签名 key 自动生成到
     `/data/push-hub-signing-key.pem`（0600）；`relay create/list/revoke` 子命令已不存在。
@@ -80,6 +83,29 @@
 
   通知点击跳转、credential 续期、关闭推送开关、撤销清理、日志无 token/credential、键盘删字回归、
   其它功能回归 —— 详见 `dsh-remoteApp/docs/ACCEPTANCE.md` 0.2.0 build 18 章节。
+
+## 2026-11-08 推送详细内容（可选）+ error 类型
+
+- **主机侧「详细推送内容」开关**（host-plugin 0.2.7，默认关闭）：开启后通知标题=会话标题、
+  正文=本轮摘要（失败为 `⚠️ 摘要`）；关闭时只发通用文案。开关在 DSH「设置 → 远程访问 → 推送」，
+  保存不重建隧道。
+- **official hub 支持可选 title/body**（push-hub 0.3.2）：`/v1/push` 接受成对 `title`/`body`
+  （≤60/160 字，禁止控制字符），缺省用通用文案；`sessionId` 可选（0.3.3 起，≤128）；hub 不写日志。
+- **通用文案区分三类**：`turn-end` =「任务已完成」、`waiting-answer` =「正在等待你的回答」、
+  `error` =「任务出错，打开查看详情」；self 推送（relay 0.4.1）同样支持 error，并允许主机在
+  `push.send` 里用 `content=generic|summary` 覆盖 relay 默认内容策略。
+- **验证**：`npm test` **299/299**；`validate:artifacts` ✅；host 详细推送/关闭两种路径、hub
+  title/body 校验与 error 文案、relay content 覆盖均有测试。
+- **2026-11-09 真机验收（用户确认）**：详细 turn-end / waiting、通用 waiting 文案、official 通知
+  点击直达会话（`sessionId`）均通过；hub 0.3.3 / host 0.2.8。
+- **镜像**：`dsh-remote-push-hub:0.3.3` / `dsh-remote-relay:0.4.1-group` 已构建/导出（产物与 sha256 见上）。
+- **侧栏状态刷新修复（host-plugin 0.2.7）**：左下角「远程访问」入口在页面可见时每 2s 轮询 `/status`，
+  窗口 focus/重新可见时立即刷新；配对弹窗取消会等 `/pairing/cancel` 完成后再关闭，取消配对后
+  不再需要点开二维码界面才能看到状态变化。
+- **official sessionId（hub 0.3.3 / host 0.2.8）**：官方通道也携带 opaque `sessionId`（≤128），
+  点通知可直接打开对应会话（此前 official 只能到主机）；App 无需重新构建。
+- **部署**：VPS 上加载新 hub 镜像并 `up -d --no-build`；relay 可选升级；host-plugin 需重启 DSH 才能加载
+  0.2.8（详细推送内容、侧栏轮询、official sessionId 同时生效）。App 无需重新构建/上传（系统通知自动显示 title/body）。
 
 ## 验收状态
 
@@ -163,12 +189,11 @@
   6. compose 渲染核对：relay 的 push env 与 `data/apns` 只读挂载、hub 的 `HUB_*` env 与只读根文件系统。
 - 未验证项：真实 APNs 推送（需部署方 APNs key / 官方 hub 真实公网部署与 nginx）、
   Android FCM（无 SDK，未接入）。
-- 部署产物（2026-11-02 更新：relay 0.4.0 + hub 0.3.0 均已构建/导出）：
-  - `server/dsh-relay-0.4.0-group-linux-amd64.tar`（62,759,936 bytes，
-    sha256 `41218320c65e4ff04a417006afcafd29702b70d61dd2553d9f35f40915bbc2ea`）；
-  - `server/dsh-push-hub-0.3.1-linux-amd64.tar`（62,635,008 bytes，
-    sha256 `97211f903903076dc796f274db299b94f34fb2efbc63ef842e93e4543f87804b`）；
-  - 上一版 `dsh-relay-0.3.1-group-linux-amd64.tar` 仍在 `server/`，仅作回滚/过渡。
+- 部署产物（2026-11-08 更新：relay 0.4.1 + hub 0.3.2；**旧包已按 AGENTS 7.5 删除**）：
+  - `server/dsh-push-hub-0.3.3-linux-amd64.tar`（62,637,056 bytes，
+    sha256 `3267629982f4eef93b3a993880b6f2bb1a60d43b14ab89d9c24028f4ed610ed6`）；
+  - `server/dsh-relay-0.4.1-group-linux-amd64.tar`（62,761,984 bytes，
+    sha256 `2dc4597b5784e885de33974bfef0e5efa3b2948b98a5f4f5f92a67817859b5ab`）。
 
 ### 契约偏差（已记录）
 

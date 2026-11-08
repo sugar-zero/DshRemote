@@ -402,8 +402,8 @@ export function parseCookieHeader(headerValue) {
 export const PUSH_PROVIDER = Object.freeze({ APNS: 'apns' });
 /** APNs 环境：开发签名包走 sandbox，发布签名包走 production（由 App 上报）。 */
 export const PUSH_ENVIRONMENT = Object.freeze({ DEVELOPMENT: 'development', PRODUCTION: 'production' });
-/** 推送类型：一轮结束 / 等待用户回答（主机侧判定，relay/hub 只认这两个枚举）。 */
-export const PUSH_KINDS = Object.freeze({ TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer' });
+/** 推送类型：一轮结束 / 等待用户回答 / 本轮出错（主机侧判定，relay/hub 只认这三个枚举）。 */
+export const PUSH_KINDS = Object.freeze({ TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer', ERROR: 'error' });
 /** relay 对同一 host 的推送意图最小间隔（秒）；host 侧另有会话级 30s 冷却。 */
 export const GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS = 30;
 /** 同一主机最多保留的设备推送 token 数。 */

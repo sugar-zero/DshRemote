@@ -115,7 +115,7 @@ test('群体版推送常量（0.3.0）', () => {
   assert.equal(RELAY_MSG.PUSH_RESULT, 'push.result');
   assert.deepEqual(protocol.PUSH_PROVIDER, { APNS: 'apns' });
   assert.deepEqual(protocol.PUSH_ENVIRONMENT, { DEVELOPMENT: 'development', PRODUCTION: 'production' });
-  assert.deepEqual(protocol.PUSH_KINDS, { TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer' });
+  assert.deepEqual(protocol.PUSH_KINDS, { TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer', ERROR: 'error' });
   assert.equal(protocol.isValidApnsDeviceToken('a'.repeat(64)), true);
   assert.equal(protocol.isValidApnsDeviceToken('A'.repeat(64)), false, 'APNs token 只接受小写 hex');
   assert.equal(protocol.isValidApnsDeviceToken('a'.repeat(63)), false);

@@ -1,7 +1,7 @@
 # DSH Remote · 群体服务版 relay 部署手册
 
 本目录用于在公网 VPS 上部署**群体服务版（A 模式）** relay。
-适用版本：relay **0.4.0-group**（本分支只提供群体版，不包含 classic 单机版；0.4.0 起只保留 self 推送，official 转发已删除，见 §6；0.4.0 镜像已构建/导出，见 §3.2）。
+适用版本：relay **0.4.1-group**（本分支只提供群体版，不包含 classic 单机版；0.4.0 起只保留 self 推送，official 转发已删除；0.4.1 增加 error kind 与主机 content 覆盖；镜像已构建/导出，见 §3.2）。
 
 > **安全前提（务必先读）**：A 模式下 relay 在边缘**终止手机 TLS**，部署方可以看到会话明文
 > 与元数据，风险与责任由部署方承担；relay 同时也是设备身份的信任方，请部署在自己信任的
@@ -68,18 +68,18 @@ chown -R 100:101 data                 # 容器内 relay 用户 UID/GID
 DOCKER_DEFAULT_PLATFORM=linux/amd64 docker compose --env-file .env.group -f docker-compose.group.yml up -d --build
 
 # B. 服务器离线镜像（推荐生产）
-#   0.4.0 镜像已在本机构建/导出（2026-11-02，linux/amd64；scp 到 VPS 后 load 即可）：
-#     server/dsh-relay-0.4.0-group-linux-amd64.tar   （62,759,936 bytes）
-#     sha256: 41218320c65e4ff04a417006afcafd29702b70d61dd2553d9f35f40915bbc2ea
-#   校验：shasum -a 256 dsh-relay-0.4.0-group-linux-amd64.tar   # macOS
-#         sha256sum dsh-relay-0.4.0-group-linux-amd64.tar       # Linux
+#   0.4.1 镜像已在本机构建/导出（2026-11-08，linux/amd64；scp 到 VPS 后 load 即可）：
+#     server/dsh-relay-0.4.1-group-linux-amd64.tar   （62,761,984 bytes）
+#     sha256: 2dc4597b5784e885de33974bfef0e5efa3b2948b98a5f4f5f92a67817859b5ab
+#   校验：shasum -a 256 dsh-relay-0.4.1-group-linux-amd64.tar   # macOS
+#         sha256sum dsh-relay-0.4.1-group-linux-amd64.tar       # Linux
 #   （server/*.tar 被本仓库 .git/info/exclude 忽略，不会进 git）
-#   上一版 0.3.1 离线包仍在 server/，仅作回滚/过渡（含已删除的 official 转发，不推荐新部署）：
-#     dsh-relay-0.3.1-group-linux-amd64.tar（62,767,616 bytes，sha256 170ba4f9…78b1e6）
-docker load -i dsh-relay-0.4.0-group-linux-amd64.tar
+#   ⚠️ 构建/导出成功后按 AGENTS 7.5 删除同组件旧 tar，只保留当前版本；不长期保留回滚包。
+#   旧版本 relay tar 已按 AGENTS 7.5 删除；需要回滚时按对应 git 版本重新构建。
+docker load -i dsh-relay-0.4.1-group-linux-amd64.tar
 docker compose --env-file .env.group -f docker-compose.group.yml up -d --no-build
 # ⚠️ 若服务器 .env 里显式写了 DSH_RELAY_IMAGE（旧值），先改成
-#    DSH_RELAY_IMAGE=dsh-remote-relay:0.4.0-group，否则会继续跑旧镜像。
+#    DSH_RELAY_IMAGE=dsh-remote-relay:0.4.1-group，否则会继续跑旧镜像。
 ```
 
 生产服务器建议整理成标准目录（Compose 不关心文件名，只关心 `-f` 与 env 文件）：
@@ -158,7 +158,7 @@ relay 自己终止手机 TLS，nginx **只做 L4 SNI 透传**，不要做 HTTPS 
 推送由**服务端统一发送**，主机（朋友的电脑）不需要 Apple 开发者账号、不需要 `.p8`/Team ID/Key ID。
 不配置 = 不推送（App 设置页会显示「服务器未开启推送」），其它功能不受影响。
 实现契约：R2（官方 App 设备直连官方 hub）见
-[`../docs/group-push-r2-contract.zh.md`](../docs/group-push-r2-contract.zh.md)（hub 0.3.1 / relay 0.4.0）；
+[`../docs/group-push-r2-contract.zh.md`](../docs/group-push-r2-contract.zh.md)（hub 0.3.2 / relay 0.4.1）；
 O1 自部署推送（self）历史契约见 [`../docs/group-push-design.zh.md`](../docs/group-push-design.zh.md)。
 **使用与边界（自签 App 必须配 relay；官方 App 不需要；常见误报 bug）：
 [`../docs/group-push-usage.zh.md`](../docs/group-push-usage.zh.md)**。
@@ -168,7 +168,7 @@ O1 自部署推送（self）历史契约见 [`../docs/group-push-design.zh.md`](
 | App / 场景 | 推送链路 | relay 配置 | 部署方需要做什么 |
 |---|---|---|---|
 | 部署方自签 App（`self`） | 主机 → relay → 部署方自己的 APNs key | `MODE=self` + `data/apns/*.p8` | 见 §6.1 |
-| 官方 App（R2；host-plugin ≥0.2.6） | App 向官方 hub 登记换 credential → 主机直连官方 hub | **不需要**（R2 与 relay 解耦） | 无需配置（官方 App 内置 hub 地址） |
+| 官方 App（R2；host-plugin ≥0.2.7） | App 向官方 hub 登记换 credential → 主机直连官方 hub | **不需要**（R2 与 relay 解耦） | 无需配置（官方 App 内置 hub 地址） |
 
 > relay 0.4.0 起**只支持 self 推送**：legacy O1 的「relay 转发官方 hub」（`mode=official`、
 > `relayId`/`relayTokenFile`、`data/hub-token`）已删除。官方 App 推送不经过任何部署方 relay。
@@ -228,7 +228,7 @@ hub 部署与运维（R2 设备登记 / 签名 key / 配额）：见 §6.5。
 | 主机 `/healthz` 的 `push.official.devices=0` | App 没走官方通道（检查打包 `EXPO_PUBLIC_PUSH_CHANNEL=official` / `EXPO_PUBLIC_PUSH_HUB`）、hub 不可达、或 bundleId ≠ hub `HUB_APNS_TOPIC` |
 | hub 返回 429 `rate_limited` | 命中 R2 配额（token/credential/host/IP/全局）：看 429 message 的层级，等 `Retry-After` 或按 §6.5 调大 env |
 
-### 6.4 已有部署升级注意（0.3.1 → 0.4.0，推送能力收窄）
+### 6.4 已有部署升级注意（0.3.1 → 0.4.0 → 0.4.1，推送能力收窄 + error/content）
 
 - **relay 0.4.0 删除 official 转发**：`.env.group` / `relay.json` 里如果配过
   `RELAY_GROUP_PUSH_MODE=official`、`RELAY_GROUP_PUSH_HUB_*`、`group.push.official`、
@@ -237,7 +237,7 @@ hub 部署与运维（R2 设备登记 / 签名 key / 配额）：见 §6.5。
   部署方无需 Apple 凭据、无需 relay 凭据。
 - self 推送（部署方自己的 APNs key）行为不变：仍用 `RELAY_GROUP_PUSH_*` 的 self 一组配置。
 - **同步新版 `docker-compose.group.yml`**（0.4.0 已去掉 `RELAY_GROUP_PUSH_HUB_*` 透传）；
-  镜像换成 `dsh-remote-relay:0.4.0-group`。已有 `data/config/relay.json` 不用删
+  镜像换成 `dsh-remote-relay:0.4.1-group`。已有 `data/config/relay.json` 不用删
   （entrypoint 不覆盖），但要把其中 `group.push.official` 段删掉。
 - 重建后 `/healthz` 的 `push.mode` 恒为 `self`（未开启推送时 `enabled=false`）。
 
@@ -267,11 +267,11 @@ curl -fsS http://127.0.0.1:19445/healthz
 - hub 不需要任何 relay 凭据 / relay 管理命令：官方 App 直接向 `/v1/enroll*` 登记。
 - **离线镜像**（已在本机构建/导出，2026-11-08，linux/amd64；scp 到 VPS 后 load）：
   ```bash
-  docker load -i dsh-push-hub-0.3.1-linux-amd64.tar   # server/dsh-push-hub-0.3.1-linux-amd64.tar
-  # 62,635,008 bytes；sha256 97211f903903076dc796f274db299b94f34fb2efbc63ef842e93e4543f87804b
+  docker load -i dsh-push-hub-0.3.3-linux-amd64.tar   # server/dsh-push-hub-0.3.3-linux-amd64.tar
+  # 62,637,056 bytes；sha256 3267629982f4eef93b3a993880b6f2bb1a60d43b14ab89d9c24028f4ed610ed6
   docker compose --env-file .env.push-hub -f docker-compose.push-hub.yml up -d --no-build
   ```
-  0.3.1 = R2-only + **credential 默认 TTL 30 天**（原 7 天；2026-11-08）；
+  0.3.3 = R2-only + **可选 title/body 摘要** + **sessionId（点通知直达会话）** + **error 通用文案** + TTL 30 天（2026-11-09）；
   镜像内默认 `HUB_LISTEN_HOST=0.0.0.0` / `HUB_PORT=9445` / `HUB_SIGNING_KEY_FILE=/data/push-hub-signing-key.pem`（compose 会显式传同样值）。
 - App 侧只需要官方构建注入 `EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB=https://push.example.com`
   （由官方 hub 运营方提供地址，仓库默认 `self`）。
@@ -361,7 +361,7 @@ openssl s_client -connect <relayDomain>:<mobilePort> -servername <hostId>.<relay
 
 本分支已删除 classic 单机版；如果服务器上还跑着旧 relay（0.2.x / classic 镜像）：
 
-1. `docker load` 新镜像 `dsh-remote-relay:0.4.0-group`（0.4.0：只保留 self 推送；official 转发已删除），改 `.env` 的 `DSH_RELAY_IMAGE`，`up -d --force-recreate`；
+1. `docker load` 新镜像 `dsh-remote-relay:0.4.1-group`（0.4.0 起只保留 self 推送；0.4.1 增加 error/content），改 `.env` 的 `DSH_RELAY_IMAGE`，`up -d --force-recreate`；
 2. 旧 `data/config/relay.json` 会被保留（entrypoint 不覆盖）：里面的 classic 字段
    （`mode`/`dataPort`/`tokensFile`/`hostTokens`/`push`）在新版会被忽略并打 warn；建议对照
    `group/relay.group.example.json` 手动精简一次，或备份后删除让 entrypoint 重新生成；
