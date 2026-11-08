@@ -1234,8 +1234,8 @@ test('设置页：只展示群体服务字段，切换到启用后保存提交 e
   // 「推送提醒」区（R2：self 经 relay / official 直连官方 hub；主机不持有 Apple 凭据）
   assert.match(pageText, /推送提醒/);
   assert.match(pageText, /推送通道/);
-  assert.match(pageText, /自部署设备/);
-  assert.match(pageText, /官方直连设备/);
+  assert.match(pageText, /私有推送/);
+  assert.match(pageText, /官方推送/);
 
   // 打开「启用远程访问」开关后保存 → POST /config { enabled: true }
   const enableToggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
@@ -1425,9 +1425,9 @@ test('设置页：推送提醒区开关保存 pushEnabled，并展示 self/offic
   // 状态行：通道（mixed → 混合自动分流）+ self/official 设备数；hub 地址不在界面展示。
   const pageText = collectText(tree);
   assert.match(pageText, /推送通道/);
-  assert.match(pageText, /混合（自动分流）/);
-  assert.match(pageText, /自部署设备/);
-  assert.match(pageText, /官方直连设备/);
+  assert.match(pageText, /私有 \+ 官方（TestFlight）/);
+  assert.match(pageText, /私有推送/);
+  assert.match(pageText, /官方推送/);
   assert.doesNotMatch(pageText, /官方推送 hub/);
   assert.doesNotMatch(pageText, /https:\/\/push\.example\.com/);
   assert.match(pageText, /1 台/);
@@ -1506,5 +1506,5 @@ test('设置页：self/official 通道错误与隧道断开提示可读', async 
   renderer2.mount(setup2.clientModule.__test.SettingsPage, { t: setup2.t, initialStatus: offline });
   await flushAsync();
   const text2 = collectText(renderer2.render());
-  assert.match(text2, /隧道未连接：自部署设备暂不可用；官方直连设备不受影响/);
+  assert.match(text2, /隧道未连接：私有推送暂不可用；官方推送不受影响/);
 });

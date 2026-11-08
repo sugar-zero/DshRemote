@@ -132,13 +132,14 @@ Windows 的 kill/拉起为 best-effort。若 DSH 由 launchd（`KeepAlive`）或
 占用退出，不影响先起的实例）；这类部署建议在 supervisor 层重启。
 
 **推送提醒 / 详细推送内容**
-主机只上报「推送意图 + 设备 token」：自部署 App（self）经 relay 发送，官方 App（official）
-由主机凭 credential 直连官方推送 hub；主机不持有 Apple 凭据。关闭「推送提醒」后，本轮结束 /
-等待回答都不再提醒；保存不重建隧道、立即生效。
+界面用「私有」/「官方（TestFlight）」区分两条通道：私有 App（self）经 relay 发送，
+官方 App（official）由主机凭 credential 直连官方推送 hub；主机不持有 Apple 凭据。
+关闭「推送提醒」后，本轮结束 / 等待回答都不再提醒；保存不重建隧道、立即生效。
 「详细推送内容」开启后，通知标题显示会话标题、正文显示本轮摘要（任务完成 / 正在等待回答 /
-出错）；关闭时只发通用文案。详细内容会经过推送服务（官方 hub 或自部署 relay），请自行判断
+出错）；关闭时只发通用文案。详细内容会经过推送服务（官方 hub 或私有 relay），请自行判断
 是否包含敏感信息。
-官方 hub 地址不在界面展示；排障时看 `GET /api/remote-access/status` 的 `push.official`。
+推送通道与「私有推送 / 官方推送」设备数只是状态展示；官方 hub 地址不在界面展示，
+排障时看 `GET /api/remote-access/status` 的 `push.official`。
 
 ### 从单体版（≤0.1.x）升级
 
