@@ -112,7 +112,6 @@ window.__ModuleLoader__.load({
       'push.selfDevices': '自部署设备',
       'push.officialDevices': '官方直连设备',
       'push.devicesValue': '{count} 台',
-      'push.hub': '官方推送 hub',
       'push.noTokens': '还没有设备登记推送 token（App 进入主机后会自动登记）',
       'push.relayOfflineSelf': '隧道未连接：自部署设备暂不可用；官方直连设备不受影响',
       'field.hostName': '主机名称',
@@ -278,7 +277,6 @@ window.__ModuleLoader__.load({
       'push.selfDevices': 'Self-hosted devices',
       'push.officialDevices': 'Official hub devices',
       'push.devicesValue': '{count}',
-      'push.hub': 'Official push hub',
       'push.noTokens': 'No device has registered a push token yet (the app registers automatically when it opens this host)',
       'push.relayOfflineSelf': 'Tunnel disconnected: self-hosted devices are temporarily unavailable; official hub devices are unaffected.',
       'field.hostName': 'Host name',
@@ -1749,7 +1747,6 @@ window.__ModuleLoader__.load({
       const selfPushDevices = Number(selfPush.devices ?? 0) || 0;
       const officialPushDevices = Number(officialPush.devices ?? 0) || 0;
       const pushDeviceCount = selfPushDevices + officialPushDevices;
-      const pushHub = String(officialPush.hub ?? '');
       const pushSection = h(Section, { title: t('section.push') },
         h(Row, { label: t('sw.pushEnabled'), note: t('sw.pushEnabledNote') },
           h(Toggle, {
@@ -1768,7 +1765,6 @@ window.__ModuleLoader__.load({
         h(InfoRow, { label: t('push.mode'), value: pushModeLabel }),
         h(InfoRow, { label: t('push.selfDevices'), value: t('push.devicesValue', { count: selfPushDevices }) }),
         h(InfoRow, { label: t('push.officialDevices'), value: t('push.devicesValue', { count: officialPushDevices }) }),
-        pushHub !== '' ? h(InfoRow, { label: t('push.hub'), value: pushHub }) : null,
         selfPush.lastError
           ? h(InfoRow, {
             label: `${t('push.selfDevices')} · ${t('group.lastError')}`,

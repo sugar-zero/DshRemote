@@ -138,6 +138,7 @@ Windows 的 kill/拉起为 best-effort。若 DSH 由 launchd（`KeepAlive`）或
 「详细推送内容」开启后，通知标题显示会话标题、正文显示本轮摘要（任务完成 / 正在等待回答 /
 出错）；关闭时只发通用文案。详细内容会经过推送服务（官方 hub 或自部署 relay），请自行判断
 是否包含敏感信息。
+官方 hub 地址不在界面展示；排障时看 `GET /api/remote-access/status` 的 `push.official`。
 
 ### 从单体版（≤0.1.x）升级
 
