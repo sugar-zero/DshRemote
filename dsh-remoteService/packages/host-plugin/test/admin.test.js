@@ -82,7 +82,7 @@ test('管理 API：有效设备不能删除（409），未知设备 404', async 
   }
 });
 
-test('管理 API：群体版状态只暴露群字段（不再有推送 / TLS / 中继字段）', async () => {
+test('管理 API：群体版状态只暴露群字段（推送只剩开关/状态，无 TLS/中继/Apple 凭据）', async () => {
   const { home, service, handler } = await setup();
   try {
     const result = await request(handler, { method: 'GET', path: '/api/remote-access/status' });
@@ -93,9 +93,15 @@ test('管理 API：群体版状态只暴露群字段（不再有推送 / TLS / �
     assert.equal(typeof data.group, 'object');
     assert.equal(data.group.registered, false);
     assert.equal(typeof data.host.fingerprint, 'string');
-    assert.equal(data.push, undefined, 'status 不应再有 push 字段');
+    // 群体版推送（R2）：只有主机开关 + self/official 分流状态，不含 token/credential/Apple 凭据
+    assert.deepEqual(data.push, {
+      enabled: true,
+      self: { devices: 0, lastError: null },
+      official: { devices: 0, lastError: null, hub: null },
+      mode: '',
+    });
     assert.deepEqual(data.restart, { enabled: false }, '「重启主机」组件默认关闭');
-    assert.equal(data.config.pushEnabled, undefined);
+    assert.equal(data.config.pushEnabled, true);
     assert.equal(data.config.apnsKeyFile, undefined);
     assert.equal(data.config.relayUrl, undefined);
     assert.equal(data.config.tlsCertFile, undefined);

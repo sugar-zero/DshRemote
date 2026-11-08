@@ -2,7 +2,7 @@ import { readdirSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 
 const files = [];
-for (const pkg of ['protocol', 'host-plugin', 'relay']) {
+for (const pkg of ['protocol', 'apns', 'host-plugin', 'relay', 'push-hub']) {
   const dir = `packages/${pkg}/test`;
   try {
     for (const name of readdirSync(dir)) {

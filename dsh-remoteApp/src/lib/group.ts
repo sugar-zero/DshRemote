@@ -343,13 +343,18 @@ function byteAt(bytes: number[], index: number): number {
   return value === undefined ? 0 : value;
 }
 
-/** base64(utf8) for the challenge message (ASCII-only: hostId/deviceId/nonce). */
-export function encodeChallengeMessage(value: string): string {
+/**
+ * base64(UTF-8) 编码，仅接受 ASCII 输入。
+ *
+ * 群体版的签名消息（challenge: `<hostId>\n<deviceId>\n<nonce>`；R2 推送登记：
+ * `pushEnrollMessage()`）都是 ASCII，这里手写编码器避免依赖 btoa（Hermes 不保证有）。
+ */
+export function encodeAsciiToBase64(value: string): string {
   const bytes: number[] = [];
   for (let index = 0; index < value.length; index += 1) {
     const code = value.charCodeAt(index);
     if (code > 0x7f) {
-      throw new GroupPairingError('invalid_request', '挑战消息包含非 ASCII 字符，无法编码。');
+      throw new GroupPairingError('invalid_request', '签名消息包含非 ASCII 字符，无法编码。');
     }
     bytes.push(code);
   }
@@ -366,17 +371,42 @@ export function encodeChallengeMessage(value: string): string {
   return out;
 }
 
+/** base64(utf8) for the challenge message (ASCII-only: hostId/deviceId/nonce). */
+export function encodeChallengeMessage(value: string): string {
+  return encodeAsciiToBase64(value);
+}
+
 /** Challenge message signed by the device key: `<hostId>\n<deviceId>\n<nonce>` (base64). */
 export function buildChallengeMessageBase64(hostId: string, deviceId: string, nonce: string): string {
   return encodeChallengeMessage(`${hostId}\n${deviceId}\n${nonce}`);
 }
 
-async function signChallenge(label: string, hostId: string, deviceId: string, nonce: string): Promise<string> {
+/**
+ * 读取群体版设备公钥（base64url 未压缩 P-256 点，65 字节）。
+ * 原生模块未链接 / 密钥不存在时返回 null（调用方给出可读提示）。
+ */
+export async function readGroupDevicePublicKey(label: string): Promise<string | null> {
+  const api = nativeModule as unknown as {
+    getGroupDevicePublicKey?: (label?: string) => Promise<unknown>;
+  };
+  if (typeof api.getGroupDevicePublicKey !== 'function') return null;
+  try {
+    const raw = await api.getGroupDevicePublicKey(label);
+    return typeof raw === 'string' && raw !== '' ? raw : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * 用群体版设备私钥对**原始消息**签名（调用方自己构造字节并 base64）。
+ * 返回 base64url(DER ECDSA-SHA256)；原生不可用/无签名时抛 {@link GroupPairingError}。
+ *
+ * R2 官方推送设备登记复用此函数（消息格式见 `protocol.pushEnrollMessage()`）。
+ */
+export async function signGroupDeviceMessage(label: string, messageBase64: string): Promise<string> {
   const api = requireGroupNative();
-  const rawSignature: unknown = await api.signGroupChallenge(
-    label,
-    buildChallengeMessageBase64(hostId, deviceId, nonce),
-  );
+  const rawSignature: unknown = await api.signGroupChallenge(label, messageBase64);
   // 原生 wrapper 目前返回 `{ signature }`；兼容直接返回字符串的旧实现。
   const signature = typeof rawSignature === 'string'
     ? rawSignature
@@ -387,6 +417,10 @@ async function signChallenge(label: string, hostId: string, deviceId: string, no
     throw new GroupPairingError('invalid_response', '原生模块没有返回设备签名。');
   }
   return signature;
+}
+
+async function signChallenge(label: string, hostId: string, deviceId: string, nonce: string): Promise<string> {
+  return signGroupDeviceMessage(label, buildChallengeMessageBase64(hostId, deviceId, nonce));
 }
 
 // ---------------------------------------------------------------------------
@@ -574,10 +608,62 @@ async function waitForGroupPairing(options: WaitGroupPairingOptions): Promise<Gr
 
 interface CachedGroupSession extends GroupSessionToken {
   key: string;
+  host: string;
+  port: number;
+  deviceId: string;
   hostId: string;
 }
 
 let cachedSession: CachedGroupSession | undefined;
+
+/**
+ * 「会话 token 已可用/已刷新」事件。
+ *
+ * 注意：**事件里不带 token 本身**——token 仍然只存在 group.ts 的内存缓存 +
+ * WebView 的 `__Host-dsh_session` cookie 里，不交给 App 层，避免被误打印/误落盘。
+ * 订阅方（App.tsx）只据此知道「当前连接已经可以发已鉴权请求了」，用来触发推送
+ * token 登记等旁路动作。
+ */
+export interface GroupSessionAvailableEvent {
+  host: string;
+  port: number;
+  hostId: string;
+  deviceId: string;
+  /** token 过期时间（epoch ms；用于判断是否需要等下一次刷新）。 */
+  expiresAt: number;
+}
+
+export type GroupSessionAvailableListener = (event: GroupSessionAvailableEvent) => void;
+
+const sessionAvailableListeners = new Set<GroupSessionAvailableListener>();
+
+/**
+ * 订阅会话可用/刷新事件（返回取消订阅函数）。
+ * 进入主机拿到 token、以及 30s 续期复用缓存时都会触发；订阅方需自行做节流/去重。
+ */
+export function onGroupSessionAvailable(listener: GroupSessionAvailableListener): () => void {
+  sessionAvailableListeners.add(listener);
+  return () => {
+    sessionAvailableListeners.delete(listener);
+  };
+}
+
+function emitGroupSessionAvailable(session: CachedGroupSession): void {
+  const event: GroupSessionAvailableEvent = {
+    host: session.host,
+    port: session.port,
+    hostId: session.hostId,
+    deviceId: session.deviceId,
+    expiresAt: session.expiresAt,
+  };
+  for (const listener of [...sessionAvailableListeners]) {
+    try {
+      listener(event);
+    } catch {
+      // 订阅方异常不能影响会话续期/页面加载。
+    }
+  }
+}
 
 /** 并发 ensureGroupSession 单飞：避免首次进入时重复 challenge/token 互相消费。 */
 let inflightSessionEnsure: { key: string; promise: Promise<GroupSessionToken> } | null = null;
@@ -677,11 +763,15 @@ export async function ensureGroupSession(params: GroupSessionParams): Promise<Gr
   });
   const session: CachedGroupSession = {
     key: sessionCacheKey(params.host, params.port, params.deviceId),
+    host: params.host,
+    port: params.port,
+    deviceId: params.deviceId,
     hostId: params.hostId,
     token: tokenData.token,
     expiresAt,
   };
   cachedSession = session;
+  emitGroupSessionAvailable(session);
   return { token: session.token, expiresAt: session.expiresAt };
 }
 
@@ -722,6 +812,7 @@ export async function ensureGroupSessionIfNeeded(
           expiresAt: cachedSession.expiresAt,
           now,
         });
+        emitGroupSessionAvailable(cachedSession);
         return { token: cachedSession.token, expiresAt: cachedSession.expiresAt };
       } catch {
         // Cookie injection failed (native unavailable): fall through to a fresh session.

@@ -87,7 +87,13 @@ test('rejects host.hello with a bad token, then accepts the registered token', a
     assert.equal(ready.hostname, `${host.hostId}.relay.test`);
     assert.equal(ready.dataPort, undefined, 'classic dataPort must no longer be advertised');
     assert.deepEqual(relay.onlineHostIds(), [host.hostId]);
-    assert.deepEqual(relay.health(), { ok: true, domain: 'relay.test', hosts: [host.hostId] });
+    assert.deepEqual(relay.health(), {
+      ok: true,
+      domain: 'relay.test',
+      hosts: [host.hostId],
+      // 0.3.1 起 /healthz（及 health()）带服务端推送摘要；未配置推送时 enabled=false。
+      push: { enabled: false, mode: 'self', tokens: 0 },
+    });
     good.close();
   } finally {
     await relay.close();

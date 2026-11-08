@@ -77,11 +77,16 @@ class AdminFailureLimiter {
  * @param {number} options.mobilePort 下发给主机的手机访问端口
  * @param {string} options.adminToken 部署方 admin token
  * @param {() => string[]} [options.onlineHostIds]
+ * @param {() => {enabled: boolean, mode: string, tokens: number}} [options.pushSummary]
+ *   服务端集中推送摘要（只含 enabled/mode/token 数，不含 token/密钥）
+ * @param {(hostId: string) => void} [options.onHostRevoked] 主机被撤销后的清理（relay 用它删推送 token）
  * @param {any} [options.logger]
  */
 export function createGroupAdminHandler(options) {
   const { groupFile, domain, mobilePort, adminToken } = options;
   const onlineHostIds = typeof options.onlineHostIds === 'function' ? options.onlineHostIds : () => [];
+  const pushSummary = typeof options.pushSummary === 'function' ? options.pushSummary : () => undefined;
+  const onHostRevoked = typeof options.onHostRevoked === 'function' ? options.onHostRevoked : () => {};
   const logger = options.logger ?? { info() {}, warn() {}, error() {}, debug() {} };
   const limiter = new AdminFailureLimiter();
 
@@ -178,6 +183,8 @@ export function createGroupAdminHandler(options) {
             registrationEnabled: true,
             hosts,
             invites: listInvites(groupFile),
+            // 可选摘要（只含 enabled/mode/token 数；未接线时为 undefined，JSON 里自动省略）
+            push: pushSummary(),
           },
         });
         return;
@@ -215,6 +222,7 @@ export function createGroupAdminHandler(options) {
       if (hostRevoke && method === 'POST') {
         const hostId = decodeURIComponent(hostRevoke[1]).toLowerCase();
         const revoked = revokeHost(groupFile, hostId);
+        if (revoked) onHostRevoked(hostId);
         logger.info(`admin: revoke host ${hostId}: ${revoked}`);
         sendJson(res, revoked ? 200 : 404, revoked
           ? { ok: true, data: { revoked: true, hostId } }

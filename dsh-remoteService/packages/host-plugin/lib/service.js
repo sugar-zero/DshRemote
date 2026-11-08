@@ -9,15 +9,30 @@ import { PairingManager } from './pairing.js';
 import { DshProxy, REMOTE_STREAM_MUX_PATH } from './proxy.js';
 import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
+import { createGroupPushNotifier } from './push.js';
 
-const VERSION = '0.2.4';
+const VERSION = '0.2.6';
+
+/**
+ * 未启动群体运行时的推送状态默认值（契约 §6.3 R2 形状；不含 token/credential）。
+ * @param {boolean} enabled
+ */
+function defaultPushStatus(enabled) {
+  return {
+    enabled: enabled !== false,
+    self: { devices: 0, lastError: null },
+    official: { devices: 0, lastError: null, hub: null },
+    mode: '',
+  };
+}
 
 /**
  * 会影响「群体运行时（隧道 / loopback 代理 / 配对）」装配的配置字段。
  *
  * 只有这些字段变化才需要重建 `GroupHostRuntime`（会断开重连隧道、重新刷新注册信息）；
- * 其余字段（典型：`restartHostEnabled` 这类组件开关）**只持久化**，不重启运行时——
- * 否则只是切一下「允许手机重启主机 DSH」也会把隧道断开重连，保存慢且可能失败。
+ * 其余字段（典型：`restartHostEnabled` 这类组件开关、`pushEnabled` 推送开关）**只持久化**，
+ * 不重启运行时——否则只是切一下「允许手机重启主机 DSH」或「推送提醒」也会把隧道断开重连，
+ * 保存慢且可能失败。
  */
 export const RUNTIME_CONFIG_KEYS = Object.freeze([
   'enabled', 'groupServiceUrl', 'groupInviteCode', 'hostName', 'groupPlainPort', 'groupInsecure',
@@ -61,11 +76,15 @@ export class RemoteService {
    *   spawnHostRestart?: typeof import('node:child_process').spawn,
    *   hostRestartDedupeMs?: number,
    *   hostRestartEnv?: NodeJS.ProcessEnv,
-   * }} [options] 测试注入（spawn 必须是假的，绝不真的杀进程）
+   *   fetchImpl?: typeof fetch,
+   *   hubTimeoutMs?: number,
+   * }} [options] 测试注入（spawn 必须是假的，绝不真的杀进程；fetchImpl 用于 mock 官方 hub）
    */
   constructor(ctx, options = {}) {
     this.ctx = ctx;
     this.lastError = null;
+    this.fetchImpl = typeof options.fetchImpl === 'function' ? options.fetchImpl : undefined;
+    this.hubTimeoutMs = options.hubTimeoutMs;
     this.log = (message) => {
       try { console.log(`[dsh-remote] ${message}`); } catch { /* ignore */ }
     };
@@ -79,6 +98,22 @@ export class RemoteService {
         env: options.hostRestartEnv,
       }),
     });
+    // 群体服务版推送（R2）：notifier 只做「什么时候该提醒」；发送阶段由 groupRuntime 按设备
+    // channel 分流（self → relay push.send；official → 主机直连官方 hub）。主机不持有 Apple 凭据。
+    this.pushNotifier = createGroupPushNotifier({
+      getConfig: () => this.config ?? {},
+      getTargets: () => this.groupRuntime?.pushTargets?.() ?? { self: 0, official: 0 },
+      deliver: (intent) => this.groupRuntime?.deliverPush(intent),
+      audit: { append: (entry) => this.audit?.append(entry) },
+      log: this.log,
+    });
+    if (typeof ctx.effect === 'function' && typeof ctx.on === 'function') {
+      ctx.effect(() => ctx.on('session/event', (session, event) => {
+        Promise.resolve(this.pushNotifier.onSessionEvent(session, event))
+          .catch((error) => this.log(`push trigger failed: ${error?.message ?? error}`));
+      }), 'dsh-remote-service: push triggers');
+      ctx.effect(() => ctx.on('session/disposed', (session) => this.pushNotifier.reset(session?.id)), 'dsh-remote-service: push reset');
+    }
     this.ready = this.#init().catch((error) => {
       this.lastError = error.message;
       this.log(`init failed: ${error.stack ?? error.message}`);
@@ -172,6 +207,9 @@ export class RemoteService {
       version: VERSION,
       // 手机经隧道 POST /__dsh_remote/restart 时由 GroupHostRuntime 调用（内部再校验组件开关）。
       restartHost: (request) => this.restartHost(request),
+      // 官方 hub 直连（R2）：测试可注入假 fetch / 缩短超时。
+      ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}),
+      ...(Number(this.hubTimeoutMs) > 0 ? { hubTimeoutMs: Number(this.hubTimeoutMs) } : {}),
     });
     try {
       await this.groupRuntime.start();
@@ -329,7 +367,16 @@ export class RemoteService {
       plainPort: 0,
       tokenPublicKeyConfigured: Boolean(registration?.tokenPublicKey),
       lastError: this.lastError ?? null,
+      // 未启动运行时：推送默认「主机开关生效、两通道都没有已登记设备」。
+      push: defaultPushStatus(config.pushEnabled !== false),
     };
+  }
+
+  /** 推送状态（运行中读 GroupHostRuntime；未运行时给默认值，契约 §6.3）。 */
+  #pushStatus(group) {
+    if (group?.push) return group.push;
+    const config = this.config ?? loadConfig();
+    return defaultPushStatus(config.pushEnabled !== false);
   }
 
   /** 返回当前状态（管理 API / 桌面 UI）。 */
@@ -351,12 +398,15 @@ export class RemoteService {
       restart: { enabled: config.restartHostEnabled === true },
       // 群体服务版（A 模式）：注册/隧道状态（唯一模式）
       group,
+      // 推送状态（契约 §6：「推送提醒」开关 / relay 通道 / 已登记设备数 / 错误；不含 token）
+      push: this.#pushStatus(group),
       // 管理 UI 需要读取的配置子集（密钥类字段不落配置，也没有可回显的密钥）
       config: {
         enabled: Boolean(config.enabled),
         hostName: config.hostName ?? '',
         requireApproval: Boolean(config.requireApproval),
         restartHostEnabled: Boolean(config.restartHostEnabled),
+        pushEnabled: config.pushEnabled !== false,
         maxRequestBytes: Number(config.maxRequestBytes ?? 0),
         denyPrefixes: Array.isArray(config.denyPrefixes) ? config.denyPrefixes : [],
         groupServiceUrl: config.groupServiceUrl ?? '',
@@ -373,7 +423,7 @@ export class RemoteService {
    * 1. **历史迁移**：config.groupServiceUrl 为空但 group.json 有注册时，保存前用
    *    registration.serviceUrl 回填，避免任何保存都被 `validateConfig` 判成非法配置；
    * 2. **按需重建**：只有 `RUNTIME_CONFIG_KEYS` 里的字段真的变化才 `#apply()`（重建运行时）；
-   *    `restartHostEnabled` 这类纯状态字段只持久化，保存立即返回，隧道不断；
+   *    `restartHostEnabled` / `pushEnabled` 这类纯状态字段只持久化，保存立即返回，隧道不断；
    * 3. **只对重建返回校验错误**：没重建运行时的保存不再被历史遗留校验问题阻塞（否则
    *    只切一个组件开关也会 400 → 客户端「保存失败」）。
    *

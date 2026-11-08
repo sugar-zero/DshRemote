@@ -18,6 +18,7 @@ import { readFileSync } from 'node:fs';
 import {
   GROUP_CHALLENGE_DEFAULT_TTL_MS,
   GROUP_DEFAULT_MOBILE_PORT,
+  GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS,
   GROUP_REGISTER_BODY_LIMIT_BYTES,
   GROUP_SESSION_DEFAULT_TTL_MS,
 } from 'dsh-remote-protocol';
@@ -51,6 +52,13 @@ export const RELAY_GROUP_DEFAULTS = Object.freeze({
     tokenTtlMs: GROUP_SESSION_DEFAULT_TTL_MS,
     challengeTtlMs: GROUP_CHALLENGE_DEFAULT_TTL_MS,
     maxAttemptsPerMinutePerIp: 30,
+  }),
+  /** 服务端集中推送（默认关闭；R2 起只有 self：部署方 APNs key 直连 Apple）。 */
+  push: Object.freeze({
+    enabled: false,
+    mode: 'self',
+    content: 'generic',
+    cooldownSeconds: GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS,
   }),
 });
 
@@ -190,6 +198,85 @@ function normalizeMode(raw) {
   );
 }
 
+/** 内容策略 / APNs 环境取值（语义与 dsh-remote-protocol 常量一致）。 */
+const PUSH_CONTENTS = new Set(['generic', 'summary']);
+const PUSH_ENVIRONMENTS = new Set(['auto', 'development', 'production']);
+/** R2 起唯一保留的推送通道：部署方自己的 APNs key（relay 直连 Apple）。 */
+const PUSH_MODE = 'self';
+
+/**
+ * @param {unknown} value
+ * @returns {string | undefined}
+ */
+function optionalString(value) {
+  if (value === undefined || value === null) return undefined;
+  const text = String(value).trim();
+  return text === '' ? undefined : text;
+}
+
+/**
+ * 规范化/校验群体版服务端集中推送配置（`group.push`）。
+ *
+ * R2（0.4.0）起 relay 只做 **self** 推送：部署方自签 App 用自己的 APNs Auth Key，
+ * 由 relay 直连 Apple。官方 App 的推送改为「App 向官方 hub 登记 → 主机直连 hub」，
+ * 不经过 relay；因此 `mode` 只接受 `"self"`，`official` 及其他值在启动阶段直接报错。
+ *
+ * 启动阶段就校验（避免带病启动）：
+ *   - `enabled=true` 时 self 必填 APNs key/keyId/teamId/topic；
+ *   - cooldownSeconds 必须是 0..3600 整数；
+ *   - 私钥文件**只记录路径、不读取内容**：首次实际推送时才读，失败给可操作错误。
+ *
+ * @param {unknown} raw
+ */
+function normalizePush(raw) {
+  const input = raw && typeof raw === 'object' && !Array.isArray(raw) ? /** @type {Record<string, any>} */ (raw) : {};
+  const enabled = input.enabled === true;
+
+  const mode = optionalString(input.mode)?.toLowerCase() ?? PUSH_MODE;
+  if (mode !== PUSH_MODE) {
+    if (mode === 'official') {
+      throw new Error(
+        'group.push.mode="official" 已删除：R2 起官方 App 推送直连官方 hub（App 向 hub 登记、主机直连），relay 只做 self 推送',
+      );
+    }
+    throw new Error(`invalid group.push.mode ${JSON.stringify(input.mode)}: 只支持 "self"（relay 用部署方自己的 APNs key 推送自签 App）`);
+  }
+  const content = optionalString(input.content)?.toLowerCase() ?? 'generic';
+  if (!PUSH_CONTENTS.has(content)) {
+    throw new Error(`invalid group.push.content ${JSON.stringify(input.content)}: expected "generic" or "summary"`);
+  }
+  const cooldownRaw = input.cooldownSeconds === undefined || input.cooldownSeconds === null || input.cooldownSeconds === ''
+    ? RELAY_GROUP_DEFAULTS.push.cooldownSeconds
+    : Number(input.cooldownSeconds);
+  if (!Number.isInteger(cooldownRaw) || cooldownRaw < 0 || cooldownRaw > 3600) {
+    throw new Error(`invalid group.push.cooldownSeconds ${JSON.stringify(input.cooldownSeconds)}: expected integer 0..3600 (seconds)`);
+  }
+
+  // self 模式（部署方自己的 APNs Auth Key；keyFile 只在首次推送时读取）。
+  const selfInput = input.self && typeof input.self === 'object' && !Array.isArray(input.self)
+    ? /** @type {Record<string, any>} */ (input.self)
+    : {};
+  const environment = optionalString(selfInput.environment)?.toLowerCase() ?? 'auto';
+  if (!PUSH_ENVIRONMENTS.has(environment)) {
+    throw new Error(`invalid group.push.self.environment ${JSON.stringify(selfInput.environment)}: expected "auto" | "development" | "production"`);
+  }
+  const self = {
+    keyFile: optionalString(selfInput.keyFile),
+    keyId: optionalString(selfInput.keyId),
+    teamId: optionalString(selfInput.teamId),
+    topic: optionalString(selfInput.topic),
+    environment,
+  };
+
+  if (enabled && (!self.keyFile || !self.keyId || !self.teamId || !self.topic)) {
+    throw new Error(
+      'group.push.mode="self" 需要 group.push.self.{keyFile,keyId,teamId,topic}（APNs Auth Key / Key ID / Apple Team ID / bundle id）',
+    );
+  }
+
+  return { enabled, mode: PUSH_MODE, content, cooldownSeconds: cooldownRaw, self };
+}
+
 /**
  * 规范化 group 配置（群体版唯一产品线；group.file 必填）。
  * @param {unknown} raw
@@ -316,6 +403,7 @@ function normalizeGroup(raw, dev = false) {
     apiBind,
     adminBind,
     publicControlPort,
+    push: normalizePush(input.push),
   };
 }
 
@@ -387,6 +475,11 @@ export function normalizeConfig(raw = {}) {
     );
   }
 
+  // 测试注入点：APNs 客户端替身（JSON 配置无法表达函数，仅 createRelay 程序化测试用）。
+  const pushClients = input.pushClients && typeof input.pushClients === 'object' && !Array.isArray(input.pushClients)
+    ? /** @type {Record<string, any>} */ (input.pushClients)
+    : undefined;
+
   return {
     domain: normalizeDomain(input.domain),
     group,
@@ -397,6 +490,7 @@ export function normalizeConfig(raw = {}) {
     dev,
     tls,
     logger,
+    pushClients,
     timings: {
       handshakeTimeoutMs: normalizeTiming(input.handshakeTimeoutMs, 'handshakeTimeoutMs', RELAY_TIMINGS.handshakeTimeoutMs),
       heartbeatIntervalMs: normalizeTiming(input.heartbeatIntervalMs, 'heartbeatIntervalMs', RELAY_TIMINGS.heartbeatIntervalMs),

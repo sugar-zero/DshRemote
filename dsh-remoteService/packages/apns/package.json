@@ -1,0 +1,16 @@
+{
+  "name": "dsh-remote-apns",
+  "version": "0.1.0",
+  "private": true,
+  "license": "AGPL-3.0-or-later",
+  "type": "module",
+  "description": "DSH 群体服务版推送：APNs HTTP/2 发送器（relay self 模式与官方推送 hub 共用，零第三方依赖）",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

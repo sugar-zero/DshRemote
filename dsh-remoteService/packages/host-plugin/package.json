@@ -1,6 +1,6 @@
 {
   "name": "dsh-remote-service",
-  "version": "0.2.4",
+  "version": "0.2.6",
   "type": "module",
   "description": "DSH 群体服务版主机插件：自助注册部署方 relay、出站隧道、loopback 明文反代、token 验签、群体配对与管理 API",
   "license": "AGPL-3.0-or-later",

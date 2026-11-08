@@ -1,9 +1,9 @@
 /**
  * dsh-remote-protocol 测试（群体服务版，A 模式）。
  *
- * 0.2.0 起 protocol 只服务群体版：classic 配对 URI v1、隧道 HTTP classic 路径、
- * relay push 控制消息与管理路由常量已删除，对应测试一并删除；
- * 本文件覆盖保留的群体版常量/辅助函数/设备会话鉴权/流帧。
+ * 0.2.0 起 protocol 只服务群体版：classic 配对 URI v1、隧道 HTTP classic 路径与 classic
+ * 单机推送路由已删除；0.3.0 新增「服务端集中推送」常量（`PUSH_*` / `RELAY_MSG.PUSH_*`），
+ * 本文件覆盖保留的群体版常量/辅助函数/推送枚举/设备会话鉴权/流帧。
  */
 
 import assert from 'node:assert/strict';
@@ -93,7 +93,6 @@ test('classic 符号已删除（回归守卫）', () => {
     'parsePairingUri',
     'PAIR_URI_VERSION',
     'PAIR_APPROVE_PATH',
-    'PUSH_TOKEN_PATH',
     'AUDIT_PATH',
     'DEVICES_PATH',
     'DEVICE_REVOKE_PATH_PREFIX',
@@ -103,9 +102,88 @@ test('classic 符号已删除（回归守卫）', () => {
   ]) {
     assert.equal(Object.hasOwn(protocol, name), false, `${name} 应已从 protocol 删除`);
   }
-  for (const message of ['PUSH_REGISTER', 'PUSH_SEND', 'PUSH_RESULT', 'HOST_STATUS']) {
+  for (const message of ['HOST_STATUS']) {
     assert.equal(Object.hasOwn(RELAY_MSG, message), false, `RELAY_MSG.${message} 应已删除`);
   }
+});
+
+test('群体版推送常量（0.3.0）', () => {
+  assert.equal(protocol.PUSH_TOKEN_PATH, '/__dsh_remote/push-token');
+  assert.equal(RELAY_MSG.PUSH_REGISTER, 'push.register');
+  assert.equal(RELAY_MSG.PUSH_REGISTERED, 'push.registered');
+  assert.equal(RELAY_MSG.PUSH_SEND, 'push.send');
+  assert.equal(RELAY_MSG.PUSH_RESULT, 'push.result');
+  assert.deepEqual(protocol.PUSH_PROVIDER, { APNS: 'apns' });
+  assert.deepEqual(protocol.PUSH_ENVIRONMENT, { DEVELOPMENT: 'development', PRODUCTION: 'production' });
+  assert.deepEqual(protocol.PUSH_KINDS, { TURN_END: 'turn-end', WAITING_ANSWER: 'waiting-answer' });
+  assert.equal(protocol.isValidApnsDeviceToken('a'.repeat(64)), true);
+  assert.equal(protocol.isValidApnsDeviceToken('A'.repeat(64)), false, 'APNs token 只接受小写 hex');
+  assert.equal(protocol.isValidApnsDeviceToken('a'.repeat(63)), false);
+  assert.equal(protocol.isValidApnsDeviceToken('g'.repeat(64)), false);
+  assert.equal(protocol.isPushEnvironment('development'), true);
+  assert.equal(protocol.isPushEnvironment('production'), true);
+  assert.equal(protocol.isPushEnvironment('sandbox'), false);
+  assert.equal(protocol.isPushKind('turn-end'), true);
+  assert.equal(protocol.isPushKind('waiting-answer'), true);
+  assert.equal(protocol.isPushKind('attention'), false);
+  assert.ok(protocol.GROUP_PUSH_MAX_TOKENS_PER_HOST > 0);
+  assert.ok(protocol.GROUP_PUSH_MAX_INTENTS_PER_MINUTE > 0);
+  assert.ok(protocol.GROUP_PUSH_DEFAULT_COOLDOWN_SECONDS > 0);
+});
+
+test('R2 推送通道/登记契约（0.3.1）', () => {
+  assert.deepEqual(protocol.PUSH_CHANNELS, { OFFICIAL: 'official', SELF: 'self' });
+  assert.equal(protocol.PUSH_ENROLL_VERSION, 'dshremote-push-enroll-v1');
+  assert.equal(protocol.PUSH_CREDENTIAL_TYP, 'dsh-push-device');
+  assert.equal(protocol.PUSH_ENROLL_CHALLENGE_PATH, '/v1/enroll/challenge');
+  assert.equal(protocol.PUSH_ENROLL_PATH, '/v1/enroll');
+  assert.equal(protocol.PUSH_SEND_PATH, '/v1/push');
+
+  assert.equal(protocol.isPushChannel('official'), true);
+  assert.equal(protocol.isPushChannel('self'), true);
+  assert.equal(protocol.isPushChannel('relay'), false);
+  assert.equal(protocol.isPushChannel(undefined), false);
+  assert.equal(protocol.normalizePushChannel(undefined), 'self', '旧客户端缺省 self');
+  assert.equal(protocol.normalizePushChannel('official'), 'official');
+  assert.equal(protocol.normalizePushChannel('bogus'), '');
+
+  assert.equal(protocol.isValidBundleId('com.example.dshremote'), true);
+  assert.equal(protocol.isValidBundleId('com.example.dsh-remote'), true);
+  assert.equal(protocol.isValidBundleId('ab'), false);
+  assert.equal(protocol.isValidBundleId('.com.example'), false);
+  assert.equal(protocol.isValidBundleId('com.example.'), false);
+  assert.equal(protocol.isValidBundleId('com..example'), true, '连续点不在协议层禁止（由 APNs 校验）');
+  assert.equal(protocol.isValidBundleId('com example'), false);
+
+  const message = protocol.pushEnrollMessage({
+    challengeId: 'ch-1',
+    nonce: 'nonce-1',
+    devicePublicKey: 'pk-1',
+    hostId: 'h_ab12cd34',
+    token: 'a'.repeat(64),
+    environment: 'development',
+    bundleId: 'com.example.dshremote',
+  });
+  assert.equal(
+    message.toString('utf8'),
+    [
+      'dshremote-push-enroll-v1',
+      'ch-1',
+      'nonce-1',
+      'pk-1',
+      'h_ab12cd34',
+      'a'.repeat(64),
+      'development',
+      'com.example.dshremote',
+    ].join('\n'),
+  );
+  assert.equal(message.at(-1), 0x65, '消息末尾不能有换行');
+  // hostId 可缺省为空串，且 App 与 hub 的字节必须一致。
+  const noHost = protocol.pushEnrollMessage({
+    challengeId: 'ch-1', nonce: 'n', devicePublicKey: 'pk',
+    token: 'b'.repeat(64), environment: 'production', bundleId: 'com.example.dshremote',
+  });
+  assert.ok(noHost.toString('utf8').split('\n')[4] === '');
 });
 
 test('群体版常量：控制面/隧道/注册/会话', () => {

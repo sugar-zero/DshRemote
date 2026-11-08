@@ -128,6 +128,13 @@ test('群体版 status：cookie 与 Bearer 等价鉴权，返回 restart.enabled
         relayConnected: false,
         version: '0.2.1-test',
         restart: { enabled: restartHostEnabled },
+        // 推送状态（R2 契约 §6.3）；无设备时两通道都为 0、mode 为空
+        push: {
+          enabled: true,
+          self: { devices: 0, lastError: null },
+          official: { devices: 0, lastError: null, hub: null },
+          mode: '',
+        },
         devices: { total: 1, active: 1 },
       };
       const cookieRes = await plainRequest({ port: env.runtime.plainPort, path: STATUS_PATH, headers: cookieHeaders(env.token) });

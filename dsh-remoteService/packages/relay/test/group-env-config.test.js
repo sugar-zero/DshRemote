@@ -4,7 +4,9 @@
  * 覆盖：
  *   - 缺失配置文件 + .env 齐备 → 生成 0600 JSON（域名/端口/证书路径/后台/鉴权文件）；
  *   - 已存在配置文件 → 绝不覆盖；
- *   - 缺 RELAY_DOMAIN / 证书缺失 → 可操作报错（exit 1）。
+ *   - 缺 RELAY_DOMAIN / 证书缺失 → 可操作报错（exit 1）；
+ *   - 服务端集中推送（RELAY_GROUP_PUSH_*，R2 起只有 self）→ 生成 group.push 段，
+ *     产物可被 normalizeConfig 接受；mode=official 在 entrypoint 直接报错（已删除）。
  *
  * 直接执行仓库里的 relay-entrypoint.sh（host 上 sh + node 即可；不需要 /app）。
  */
@@ -16,6 +18,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { normalizeConfig } from '../index.js';
+import { silentLogger } from './helpers/certs.js';
 
 const ENTRYPOINT = fileURLToPath(new URL('../relay-entrypoint.sh', import.meta.url));
 
@@ -93,6 +97,86 @@ test('group entrypoint：按 .env 自动生成 relay.json（0600），且不覆�
     const unchanged = JSON.parse(readFileSync(configPath, 'utf8'));
     assert.equal(unchanged.domain, 'relay.test');
     assert.equal(unchanged.group.mobilePort, 1443);
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('group entrypoint：按 RELAY_GROUP_PUSH_* 生成 self 模式 push 段，产物通过 relay 配置校验', () => {
+  const temp = tempDir();
+  try {
+    const { cert, key } = writeCerts(temp.dir);
+    const configPath = join(temp.dir, 'config', 'relay.json');
+    const env = {
+      RELAY_DOMAIN: 'relay.test',
+      RELAY_TLS_CERT_FILE: cert,
+      RELAY_TLS_KEY_FILE: key,
+      RELAY_GROUP_EDGE_CERT_FILE: cert,
+      RELAY_GROUP_EDGE_KEY_FILE: key,
+      RELAY_GROUP_PUSH_ENABLED: 'true',
+      RELAY_GROUP_PUSH_MODE: 'self',
+      RELAY_GROUP_PUSH_CONTENT: 'generic',
+      RELAY_GROUP_PUSH_COOLDOWN_SECONDS: '45',
+      RELAY_GROUP_PUSH_APNS_KEY_FILE: '/data/apns/AuthKey_TESTKEYID1.p8',
+      RELAY_GROUP_PUSH_APNS_KEY_ID: 'TESTKEYID1',
+      RELAY_GROUP_PUSH_APNS_TEAM_ID: 'TESTTEAMID',
+      RELAY_GROUP_PUSH_APNS_TOPIC: 'com.example.app',
+      RELAY_GROUP_PUSH_APNS_ENVIRONMENT: 'development',
+    };
+    const result = runEntrypoint(temp.dir, env, configPath);
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(result.stdout, /服务端推送 enabled=true mode=self/);
+
+    const generated = JSON.parse(readFileSync(configPath, 'utf8'));
+    assert.deepEqual(generated.group.push, {
+      enabled: true,
+      mode: 'self',
+      content: 'generic',
+      cooldownSeconds: 45,
+      self: {
+        keyFile: '/data/apns/AuthKey_TESTKEYID1.p8',
+        keyId: 'TESTKEYID1',
+        teamId: 'TESTTEAMID',
+        topic: 'com.example.app',
+        environment: 'development',
+      },
+    });
+    assert.equal(generated.group.push.official, undefined, 'R2 起不再生成 official 段');
+
+    // 生成的配置文件必须能直接通过 relay 的 normalizeConfig（证书/密钥文件不在配置阶段读取）。
+    const normalized = normalizeConfig({ ...generated, logger: silentLogger });
+    assert.equal(normalized.group.push.enabled, true);
+    assert.equal(normalized.group.push.mode, 'self');
+    assert.equal(normalized.group.push.self.keyId, 'TESTKEYID1');
+  } finally {
+    temp.cleanup();
+  }
+});
+
+test('group entrypoint：RELAY_GROUP_PUSH_MODE=official 直接报可操作错误（R2 已删除，不生成配置）', () => {
+  const temp = tempDir();
+  try {
+    const { cert, key } = writeCerts(temp.dir);
+    const configPath = join(temp.dir, 'config', 'relay.json');
+    const result = runEntrypoint(temp.dir, {
+      RELAY_DOMAIN: 'relay.test',
+      RELAY_TLS_CERT_FILE: cert,
+      RELAY_TLS_KEY_FILE: key,
+      RELAY_GROUP_EDGE_CERT_FILE: cert,
+      RELAY_GROUP_EDGE_KEY_FILE: key,
+      RELAY_GROUP_PUSH_ENABLED: 'true',
+      RELAY_GROUP_PUSH_MODE: 'official',
+    }, configPath);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /official.*已删除.*self/);
+    let generated = false;
+    try {
+      readFileSync(configPath);
+      generated = true;
+    } catch {
+      generated = false;
+    }
+    assert.equal(generated, false, '非法 mode 不得生成半成品配置');
   } finally {
     temp.cleanup();
   }

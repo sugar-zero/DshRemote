@@ -1,10 +1,10 @@
 {
   "name": "dsh-remote-relay",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "license": "AGPL-3.0-or-later",
   "type": "module",
-  "description": "群体服务版（A 模式）relay：边缘 TLS 终止、主机出站隧道、邀请码注册、部署方后台",
+  "description": "群体服务版（A 模式）relay：边缘 TLS 终止、主机出站隧道、邀请码注册、部署方后台、服务端集中推送",
   "bin": {
     "dsh-remote-relay": "./bin/relay.js"
   },
@@ -13,6 +13,7 @@
     "test": "node --test test"
   },
   "dependencies": {
+    "dsh-remote-apns": "0.1.0",
     "ws": "^8.22.0"
   },
   "engines": {

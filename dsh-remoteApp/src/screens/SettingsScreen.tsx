@@ -10,9 +10,13 @@
  *     打开主机连接、同步信息、心跳、切会话、回前台都不要求识别；
  *   - 单台主机的「打开此连接时要求面容」开关在 DevicesScreen（设备与安全），
  *     仅在全局 App 锁开启时生效；
+ *   - 「推送」（0.1.8+；0.1.9 R2）：本地偏好开关（默认开）、推送通道（官方=设备直连 /
+ *     自部署=经 relay）、当前状态（已注册/未注册/权限被拒/服务器未开启/错误原因）、
+ *     「重新注册」按钮；从当前主机的 `/__dsh_remote/status.push` 显示按通道的已登记
+ *     设备数与失败原因（旧版 Host 无该字段时显示未知）。
+ *     APNs device token / 官方 credential 不打印；被拒/失败只提示，不影响进入主机；
  *   - 「挂件贴底拖动」（iOS）：进入主机页面时 defer 底部「上滑回主屏」手势，默认开启；
  *     关闭后恢复一次上滑回主屏（挂件贴底时从底边起手拖可能被系统手势抢走）；
- *   - 不再有 APNs 推送 / 应用内通知 / 通知权限设置（群体版暂不实现本机推送）；
  *   - 不再有 classic/mTLS/设备证书相关设置项；
  *   - 清理缓存调用原生模块 `clearWebCache()`（WKWebView 的 cache/cookie/存储 + URLCache）。
  */
@@ -40,6 +44,17 @@ import {
   isBottomEdgeGestureDeferralEnabled,
   setBottomEdgeGestureDeferralEnabled,
 } from '../lib/settings';
+import {
+  getPushStatus,
+  isPushEnabled,
+  readServerPushStatus,
+  registerPushForConnection,
+  setPushEnabled,
+  type PushStatus,
+} from '../lib/push';
+import { PUSH_CHANNEL } from '../lib/pushConfig';
+import type { GroupPushServerStatusData } from '../lib/protocol';
+import type { StoredConnection } from '../lib/store';
 import { clearWebCache, isDshMtlsAvailable } from '../../modules/dsh-mtls/src';
 import { colors, radii, sharedStyles, spacing, typography } from '../theme';
 
@@ -47,6 +62,8 @@ interface SettingsScreenProps {
   onCacheCleared: () => void;
   /** App 锁开关变化（App.tsx 用它同步内存状态；开关本身存 SecureStore）。 */
   onAppLockChanged?: (enabled: boolean) => void;
+  /** 当前/最近打开的主机连接：用于「重新注册」与读取服务端推送状态；null = 还没进过主机。 */
+  pushTarget?: StoredConnection | null;
   onClose: () => void;
 }
 
@@ -60,9 +77,97 @@ function formatVersion(): string {
   return `${version} (build ${build})`;
 }
 
+/** 推送状态 → 设置页文案（通道来自登记结果，缺失时用构建标记兜底）。 */
+function describePushState(status: PushStatus | null): string {
+  if (!status) return '检测中…';
+  switch (status.state) {
+    case 'registered': {
+      const channel = status.mode ?? status.channel;
+      if (channel === 'official') return '已注册（官方推送）';
+      if (channel === 'self') return '已注册（自部署）';
+      return '已注册';
+    }
+    case 'denied':
+      return '通知权限被拒';
+    case 'unavailable':
+      // 「尚未登记 / 已开启待登记」是正常初态，显示未注册；其它（无 token、服务器未开推送）按暂不可用。
+      if (status.error?.includes('尚未登记') || status.error?.includes('已开启，进入主机后')) {
+        return '未注册';
+      }
+      return '暂不可用';
+    case 'error':
+      return '登记失败';
+    case 'off':
+      return '已关闭';
+    default:
+      return '未知';
+  }
+}
+
+function defaultPushSwitchStatus(enabled: boolean): PushStatus {
+  return enabled
+    ? { state: 'unavailable', channel: PUSH_CHANNEL, error: '已开启，进入主机后自动登记推送 token' }
+    : { state: 'off', channel: PUSH_CHANNEL };
+}
+
+/**
+ * 主机 status.push →「服务器」行文案。
+ * R2（host-plugin 0.2.6+）有按通道的 `self`/`official`；旧版 Host 只有扁平字段。
+ */
+function describeServerPushState(status: GroupPushServerStatusData | null): string {
+  if (status === null) return '未知（旧版主机或状态暂不可达）';
+  const selfDevices = status.self?.devices ?? 0;
+  const officialDevices = status.official?.devices ?? 0;
+  if (status.self !== undefined || status.official !== undefined) {
+    if (status.mode === 'mixed' || (selfDevices > 0 && officialDevices > 0)) {
+      return '已开启推送（自部署 + 官方混用）';
+    }
+    if (officialDevices > 0) return '已开启推送（官方）';
+    if (selfDevices > 0) return '已开启推送（自部署）';
+    return status.enabled === false ? '未开启推送' : '已开启推送（暂无已登记设备）';
+  }
+  if (status.serverEnabled === false) return '未开启推送';
+  if (status.serverEnabled === true) return '已开启推送';
+  return '未知';
+}
+
+/** 某通道已登记设备数（旧版 Host 没有按通道拆分时显示 未知）。 */
+function describeChannelDevices(
+  status: GroupPushServerStatusData,
+  channel: 'self' | 'official',
+): string {
+  const data = channel === 'self' ? status.self : status.official;
+  if (data === undefined) {
+    if (typeof status.tokens === 'number' && status.mode === channel) return `${status.tokens} 台（旧版统计）`;
+    return '未知';
+  }
+  return typeof data.devices === 'number' ? `${data.devices} 台` : '未知';
+}
+
+/** 主机侧推送错误（按通道；不含 token/credential）。 */
+function pushServerErrors(status: GroupPushServerStatusData): string[] {
+  const lines: string[] = [];
+  if (status.self?.lastError) lines.push(`自部署：${status.self.lastError}`);
+  if (status.official?.lastError) lines.push(`官方：${status.official.lastError}`);
+  if (status.self === undefined && status.official === undefined && status.lastError) {
+    lines.push(status.lastError);
+  }
+  return lines;
+}
+
+/** 官方 hub 基址 → 只显示 host（UI 行宽有限；不含凭据）。 */
+function displayHubHost(endpoint: string): string {
+  try {
+    return new URL(endpoint).host;
+  } catch {
+    return endpoint;
+  }
+}
+
 export function SettingsScreen({
   onCacheCleared,
   onAppLockChanged,
+  pushTarget = null,
   onClose,
 }: SettingsScreenProps) {
   const insets = useSafeAreaInsets();
@@ -73,6 +178,11 @@ export function SettingsScreen({
   const [biometrics, setBiometrics] = useState<BiometricAvailability | null>(null);
   // 主机页面底部手势 defer（iOS）：默认开启，关闭后恢复一次上滑回主屏。
   const [bottomEdgeDeferral, setBottomEdgeDeferralState] = useState(true);
+  // 推送（iOS APNs）：本地开关 + 当前状态 + 主机侧 `/__dsh_remote/status.push`。
+  const [pushEnabledState, setPushEnabledState] = useState(true);
+  const [pushStatus, setPushStatus] = useState<PushStatus | null>(null);
+  const [serverPush, setServerPush] = useState<GroupPushServerStatusData | null>(null);
+  const [pushBusy, setPushBusy] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -88,6 +198,72 @@ export function SettingsScreen({
     });
     return () => { cancelled = true; };
   }, []);
+
+  // 推送状态：本地开关/权限 + 当前主机的服务端状态（旧版 Host 没有 push 字段 → 未知）。
+  useEffect(() => {
+    let cancelled = false;
+    void (async () => {
+      const [enabled, status] = await Promise.all([isPushEnabled(), getPushStatus()]);
+      if (cancelled) return;
+      setPushEnabledState(enabled);
+      setPushStatus(status);
+      if (pushTarget) {
+        const server = await readServerPushStatus(pushTarget);
+        if (!cancelled) setServerPush(server);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [pushTarget]);
+
+  const handleTogglePush = useCallback(async (enabled: boolean) => {
+    if (pushBusy) return;
+    setPushEnabledState(enabled);
+    await setPushEnabled(enabled);
+    if (!enabled) {
+      setPushStatus(defaultPushSwitchStatus(false));
+      setNotice('已关闭本机推送登记。已登记的 token 需要主机「推送提醒」关闭或解除配对后才会彻底停止通知。');
+      return;
+    }
+    if (!pushTarget) {
+      setPushStatus(defaultPushSwitchStatus(true));
+      setNotice('已开启推送。进入任意主机后会自动登记推送 token。');
+      return;
+    }
+    setPushBusy(true);
+    try {
+      const result = await registerPushForConnection(pushTarget, { force: true, requestPermission: true });
+      setPushStatus(result);
+      setServerPush(await readServerPushStatus(pushTarget));
+      setNotice(result.ok
+        ? `已登记推送 token${result.environment ? `（APNs ${result.environment}）` : ''}。`
+        : `推送登记未完成：${result.error ?? '未知原因'}`);
+    } catch (error) {
+      setNotice(`推送登记失败：${errorText(error)}`);
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushBusy, pushTarget]);
+
+  const handleReregisterPush = useCallback(async () => {
+    if (pushBusy) return;
+    if (!pushTarget) {
+      setNotice('还没有已配对主机：请先进入一台主机，再回到设置页重新注册推送。');
+      return;
+    }
+    setPushBusy(true);
+    try {
+      const result = await registerPushForConnection(pushTarget, { force: true, requestPermission: true });
+      setPushStatus(result);
+      setServerPush(await readServerPushStatus(pushTarget));
+      setNotice(result.ok
+        ? `已重新登记推送 token${result.environment ? `（APNs ${result.environment}）` : ''}。`
+        : `推送登记未完成：${result.error ?? '未知原因'}`);
+    } catch (error) {
+      setNotice(`推送登记失败：${errorText(error)}`);
+    } finally {
+      setPushBusy(false);
+    }
+  }, [pushBusy, pushTarget]);
 
   const handleToggleBottomEdgeDeferral = useCallback(async (enabled: boolean) => {
     setBottomEdgeDeferralState(enabled);
@@ -199,6 +375,93 @@ export function SettingsScreen({
           </Text>
         </View>
 
+        <View style={sharedStyles.card}>
+          <Text style={styles.sectionTitle}>推送</Text>
+          <View style={styles.switchRow}>
+            <View style={styles.switchText}>
+              <Text style={styles.rowLabel}>推送提醒</Text>
+              <Text style={styles.rowHint}>{describePushState(pushStatus)}</Text>
+            </View>
+            <Switch
+              value={pushEnabledState}
+              onValueChange={(enabled) => { void handleTogglePush(enabled); }}
+              trackColor={{ false: colors.borderStrong, true: colors.accentPressed }}
+              thumbColor={pushEnabledState ? colors.accent : colors.textMuted}
+            />
+          </View>
+          <View style={styles.row}>
+            <Text style={styles.rowLabel}>推送通道</Text>
+            <Text style={styles.rowValue}>
+              {PUSH_CHANNEL === 'official' ? '官方（设备直连）' : '自部署（经 relay）'}
+            </Text>
+          </View>
+          {pushStatus?.error ? (
+            <Text style={[styles.rowHint, styles.pushError]}>{pushStatus.error}</Text>
+          ) : null}
+          {pushTarget ? (
+            <View style={styles.pushServerRows}>
+              <View style={styles.row}>
+                <Text style={styles.rowLabel}>服务器</Text>
+                <Text style={styles.rowValue}>{describeServerPushState(serverPush)}</Text>
+              </View>
+              {serverPush !== null ? (
+                serverPush.self !== undefined || serverPush.official !== undefined ? (
+                  <>
+                    <View style={styles.row}>
+                      <Text style={styles.rowLabel}>自部署设备</Text>
+                      <Text style={styles.rowValue}>{describeChannelDevices(serverPush, 'self')}</Text>
+                    </View>
+                    <View style={styles.row}>
+                      <Text style={styles.rowLabel}>官方设备</Text>
+                      <Text style={styles.rowValue}>{describeChannelDevices(serverPush, 'official')}</Text>
+                    </View>
+                    {serverPush.official?.hub ? (
+                      <View style={styles.row}>
+                        <Text style={styles.rowLabel}>官方 hub</Text>
+                        <Text style={styles.rowValue} numberOfLines={1}>
+                          {displayHubHost(serverPush.official.hub)}
+                        </Text>
+                      </View>
+                    ) : null}
+                    {pushServerErrors(serverPush).map((line) => (
+                      <Text key={line} style={[styles.rowHint, styles.pushError]}>{line}</Text>
+                    ))}
+                  </>
+                ) : (
+                  <>
+                    {typeof serverPush.tokens === 'number' ? (
+                      <View style={styles.row}>
+                        <Text style={styles.rowLabel}>主机已登记设备</Text>
+                        <Text style={styles.rowValue}>{serverPush.tokens}</Text>
+                      </View>
+                    ) : null}
+                    {serverPush.lastError ? (
+                      <Text style={[styles.rowHint, styles.pushError]}>主机侧错误：{serverPush.lastError}</Text>
+                    ) : null}
+                  </>
+                )
+              ) : null}
+            </View>
+          ) : null}
+          <Text style={styles.rowHint}>
+            iOS APNs：进入主机并拿到访问令牌后自动登记 APNs device token（不落盘、不打印）。
+            官方构建走官方推送 hub（本机设备凭证由设备私钥登记，主机直连 hub，不依赖 relay 的推送配置）；
+            自部署构建经 relay。前台/后台/锁屏都由系统显示通知；点击通知打开对应主机，
+            自部署模式可直达会话。关闭本开关只停止本机登记；要彻底停止通知，请在主机
+            「设置 → 远程访问 → 推送提醒」关闭。
+            {Platform.OS === 'ios' ? '' : '（Android FCM 未接入，本开关不生效。）'}
+          </Text>
+          <View style={styles.actions}>
+            <TouchableOpacity
+              style={[sharedStyles.secondaryButton, pushBusy ? sharedStyles.disabledButton : null]}
+              disabled={pushBusy}
+              onPress={() => { void handleReregisterPush(); }}
+            >
+              <Text style={sharedStyles.secondaryButtonText}>{pushBusy ? '登记中…' : '重新注册'}</Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+
         {Platform.OS === 'ios' ? (
           <View style={sharedStyles.card}>
             <Text style={styles.sectionTitle}>主机页面手势</Text>
@@ -299,6 +562,13 @@ const styles = StyleSheet.create({
     gap: 2,
   },
   actions: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm, marginTop: spacing.sm },
+  pushServerRows: {
+    marginTop: spacing.sm,
+    borderTopWidth: StyleSheet.hairlineWidth,
+    borderTopColor: colors.border,
+    paddingTop: spacing.xs,
+  },
+  pushError: { color: colors.danger },
   notice: {
     backgroundColor: colors.surfaceRaised,
     borderRadius: radii.md,
