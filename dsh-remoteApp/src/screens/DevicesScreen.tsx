@@ -138,7 +138,7 @@ export function DevicesScreen({
       >
         <View style={sharedStyles.card}>
           <Text style={styles.sectionTitle}>当前主机</Text>
-          <DetailRow label="主机" value={connection.hostName || connection.host} />
+          <DetailRow label="主机" value={connection.hostName || '未命名主机'} />
           {__DEV__ ? (
             <>
               <DetailRow
