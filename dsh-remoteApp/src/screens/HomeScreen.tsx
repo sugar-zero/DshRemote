@@ -30,7 +30,7 @@ interface HomeScreenProps {
 }
 
 function displayHostName(connection: StoredConnection): string {
-  return connection.hostName || connection.host;
+  return connection.hostName || '未命名主机';
 }
 
 function formatPairedAt(epochMs: number): string {
@@ -112,9 +112,6 @@ export function HomeScreen({
                   <View style={styles.textWrap}>
                     <Text style={styles.hostName} numberOfLines={1}>
                       {name}
-                    </Text>
-                    <Text style={styles.hostAddress} numberOfLines={1}>
-                      {connection.host}:{connection.port}
                     </Text>
                     <Text style={styles.meta}>
                       {connection.deviceName}
@@ -200,7 +197,6 @@ const styles = StyleSheet.create({
   hostGlyphText: { color: colors.accent, fontWeight: '700', fontSize: 12 },
   textWrap: { flex: 1, gap: 2 },
   hostName: { color: colors.text, fontSize: 16, fontWeight: '600' },
-  hostAddress: { color: colors.textMuted, fontSize: 12 },
   meta: { color: colors.textFaint, fontSize: 12 },
   cardActions: { alignItems: 'center', gap: spacing.xs },
   gearButton: { width: 40, height: 32, alignItems: 'center', justifyContent: 'center' },
