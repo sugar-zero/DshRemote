@@ -103,6 +103,8 @@ const HOST_RESTART_PROBE_TIMEOUT_MS = 3000;
 const HOST_RESTART_POLL_TIMEOUT_MS = 30_000;
 /** 组件开关动态刷新：进入主机后每 10s 拉一次 status（Host 设置变化无需退出重进）。 */
 const HOST_STATUS_REFRESH_INTERVAL_MS = 10_000;
+/** 主机重新可达（status 200）时，错误态页面自动 reload 的最小间隔。 */
+const AUTO_RECOVER_MIN_INTERVAL_MS = 5_000;
 /** 发起重启请求本身的最长等待（主机应尽快回 202；等不到就按失败提示）。 */
 const HOST_RESTART_REQUEST_TIMEOUT_MS = 10_000;
 /** 读取「重启主机」组件开关的 status 请求超时（进入主机时探一次，失败保持隐藏）。 */
@@ -301,6 +303,8 @@ export function WebViewScreen({
   // 当前等待主机恢复的轮询会话（卸载/切主机时置 cancelled，轮询下一拍退出）。
   const restartSessionRef = useRef<{ cancelled: boolean } | null>(null);
   const restartAvailabilitySeq = useRef(0);
+  /** 上次因「主机重新可达」自动 reload 的时间（防止连续 reload）。 */
+  const autoRecoverAtRef = useRef(0);
   // refreshRestartAvailability 在 reload / onLoadEnd / WS 桥消息之后才定义；
   // 用 ref 让这些早定义的回调也能在「刷新 / 重连 / 页面加载完成」时刷新组件状态。
   const refreshRestartAvailabilityRef = useRef<() => void>(() => {});
@@ -457,6 +461,15 @@ export function WebViewScreen({
       if (seq !== restartAvailabilitySeq.current) return;
       if (response.status !== 200) return; // 异常状态交给页面错误态；组件状态保持上一次值
       setRestartAvailable(restartEnabledFromStatusBody(response.body));
+      // 主机已重新可达，但页面还停在错误态（WS 自动恢复预算用尽 / 加载失败）：
+      // 自动 reload 一次，省得用户手动点「重试」。
+      if (statusRef.current === 'error' && !restartInFlightRef.current) {
+        const now = Date.now();
+        if (now - autoRecoverAtRef.current >= AUTO_RECOVER_MIN_INTERVAL_MS) {
+          autoRecoverAtRef.current = now;
+          reload();
+        }
+      }
     } catch {
       // 网络抖动 / 主机重启中：保持上一次已知状态；页面加载完成 / WS 重连后会再刷新。
     }
@@ -465,6 +478,7 @@ export function WebViewScreen({
     connection.deviceKeyLabel,
     connection.host,
     connection.hostId,
+    reload,
     tunnelPort,
   ]);
 
