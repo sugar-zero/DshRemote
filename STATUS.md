@@ -14,6 +14,24 @@
 | push-hub（新） | **0.3.3** | 官方推送 hub（**R2-only**）：设备登记（P-256 PoP）/ EdDSA device credential / 按 device·host·IP·全局配额限流 / 主机直连；通用文案 + 可选 title/body + sessionId、无状态、不落 token；**不识别 relay**（legacy relay-token 已删除） |
 | App | **0.2.0（iOS build 20 官方包 / Android versionCode 20）** | 群体 token 模式 + **R2 官方推送（App 向官方 hub 登记凭证、主机直连）+ 键盘避让修复（build 16 起）** + 通知点击跳转/推送设置卡；App 锁、远程重启 UI 保留；**0.2.0 build 20 = official 通道官方构建（2026-11-08 已上传 TestFlight）**；0.1.9 build 17 = self 包（代码相同）；TestFlight build 20 UI/推送已由用户确认（2026-11-09）；验收见 ACCEPTANCE |
 
+## 2026-11-09 远程重启后无法重连：控制通道看门狗 + App 自动恢复（App 0.2.1 build 23）
+
+- **现象**：手机点 ⏻ 重启主机后 App 一直连不上（WKWebView `NSURLErrorDomain -1005`），
+  手动刷新也只报网络中断；实测要等约 4 分钟才自行恢复。
+- **根因**：重启后主机与 relay 的控制连接半开——relay 按 30s 心跳超时已把主机踢掉，
+  主机侧 TCP 未断、仍以为在线，直到 3.5 分钟后才收到 `relay-disconnect`。期间 relay 边缘
+  直接关闭外部连接；App 的自动 reload 预算（2 次）十几秒内用尽，只能停在错误页。
+  旧修复（`WS_RECOVERY_MAX_RELOADS`）解决的是「无限重连循环」，覆盖不了分钟级空窗。
+- **修复**：
+  - host-plugin：`RelayConnector` 加握手看门狗（10s 无 `host.ready` 重连）与静默看门狗
+    （35s 没收到 relay 任何消息即重连），不再等 TCP 超时 —— `eeb0c5c`；
+  - App：错误态下每次 `/__dsh_remote/status` 探测成功就自动 reload（10s 周期），
+    相当于一直重试到主机回来。
+- **实测（用户确认「现在重启好了」）**：点 ⏻ → 08:35:48 受理 → 08:35:56 隧道就绪 →
+  08:36:05 页面 WS 恢复，约 17 秒自动恢复，无需手动刷新。
+- **版本**：App **0.2.1 build 23**（本机验收包；官方 TestFlight 仍为 0.2.0 build 20）；
+  host-plugin 仍 **0.2.8**（按用户要求版本号先不升）。
+
 ## 2026-11-02 决策补充：删除 legacy O1 official 转发（R2 彻底解耦）
 
 - **背景**：R2 的目标是官方 App 推送与部署方 relay 彻底解耦。只要 relay 还能「转发 official 给 hub」，

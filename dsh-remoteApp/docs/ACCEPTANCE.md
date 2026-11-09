@@ -11,6 +11,26 @@
 
 ---
 
+## 2026-11-09 远程重启后自动恢复（App 0.2.1 build 23）真机验收记录
+
+> 设备：iPhone 17 Pro Max（iOS 27.0）；host-plugin **0.2.8**（含控制通道看门狗 `eeb0c5c`）；
+> App **0.2.1 build 23**（iOS Release，官方推送通道构建）。
+> 背景：远程重启后 relay 已把主机踢掉、主机侧连接半开，约 3.5 分钟后才发现断开；
+> 期间 App 不再被 relay 路由，旧版只能等 TCP 超时。
+
+| 项目 | 值 |
+|---|---|
+| 构建 | iOS Release；`EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB`（hub 基址不入库）；本机开发描述文件手动签名（材料不入库） |
+| 产物 | `CFBundleShortVersionString=0.2.1` / `CFBundleVersion=23`；`main.jsbundle` 内联官方 hub 基址 |
+| 静态检查 | `npx tsc --noEmit`、`npm run check:native` 通过；`check:shell` 本机无头 Chrome 挂起（exit 13，环境问题，与本次改动无关） |
+| 安装 | `devicectl` 覆盖安装成功；一次启动因手机锁屏被拒（`Locked`），解锁后正常 |
+
+- [x] **远程重启后自动恢复**：手机点 ⏻ → 主机 08:35:48 受理 → 08:35:56 隧道就绪 →
+      08:36:05 页面 WebSocket 恢复；全程约 **17 秒**，未手动刷新（用户确认“现在重启好了”）。
+- [ ] 主页主机卡片不再显示 `主机ID.域名:端口`、推送设置显示「已开启」：随 build 23 交付，待逐项确认。
+
+---
+
 ## 2026-11-09 推送详细内容 / 通知跳会话 真机验收记录
 
 > 版本：host-plugin **0.2.8** / push-hub **0.3.3** / App 0.2.0 build 20（App 无需重新构建）
