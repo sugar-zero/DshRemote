@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { X509Certificate, createPrivateKey, createPublicKey, generateKeyPairSync, randomBytes, sign, verify } from 'node:crypto';
@@ -10,6 +10,45 @@ import { sha256Base64Url } from 'dsh-remote-protocol';
 
 function readText(file) {
   return readFileSync(file, 'utf8');
+}
+
+let opensslConfFile;
+
+/**
+ * Windows 上 conda / 精简版 OpenSSL 经常没有默认 openssl.cnf，`openssl req` 会在校验前就退出。
+ * 仅在 Windows 下为子进程补最小配置，已有且存在的 OPENSSL_CONF 保持不动。
+ */
+function opensslChildEnv() {
+  const env = { ...process.env };
+  if (process.platform !== 'win32' || (env.OPENSSL_CONF && existsSync(env.OPENSSL_CONF))) return env;
+  if (!opensslConfFile || !existsSync(opensslConfFile)) {
+    const dir = join(paths.dir(), 'openssl');
+    ensureDir(dir);
+    opensslConfFile = join(dir, 'openssl.cnf');
+    writeFileSync(opensslConfFile, [
+      'openssl_conf = openssl_init',
+      '[openssl_init]',
+      '[req]',
+      'distinguished_name = req_dn',
+      'prompt = no',
+      '[req_dn]',
+      'CN = dsh-remote',
+      '',
+    ].join('\n'));
+  }
+  env.OPENSSL_CONF = opensslConfFile;
+  return env;
+}
+
+function opensslErrorText(error) {
+  const stderr = error?.stderr ? String(error.stderr) : '';
+  return `${stderr}\n${error?.message ?? ''}`;
+}
+
+/** openssl 因找不到配置文件退出，而不是判定 CSR 非法。 */
+function isOpensslConfigError(error) {
+  const text = opensslErrorText(error);
+  return /openssl\.cnf/i.test(text) && /Can'?t open|No such file|no such file|BIO_new_file/i.test(text);
 }
 
 function randomSerial() {
@@ -147,7 +186,7 @@ export function parseDeviceCsr(csrPem) {
       engine: 'openssl',
     };
   }
-  if (!isMissingExecutable(opensslError)) {
+  if (!isMissingExecutable(opensslError) && !isOpensslConfigError(opensslError)) {
     // openssl 明确拒绝（签名不对/CSR 非法）→ 不能保底放行
     const error = new Error(`CSR 解析失败（forge: ${forgeError.message}; ${opensslError.message}）`);
     error.cause = opensslError;
@@ -201,10 +240,11 @@ export function verifyCsrWithOpenssl(csrPem) {
     const csrPath = join(dir, 'device.csr');
     writeFileSync(csrPath, csrPem, { mode: 0o600 });
     try {
-      execFileSync('openssl', ['req', '-in', csrPath, '-verify', '-noout'], { stdio: 'pipe', timeout: 10_000 });
+      execFileSync('openssl', ['req', '-in', csrPath, '-verify', '-noout'], { stdio: 'pipe', timeout: 10_000, env: opensslChildEnv() });
     } catch (error) {
-      // 找不到 openssl（ENOENT）时保留原始错误，让调用方回退纯 JS；其余失败视为校验不通过
-      if (isMissingExecutable(error)) throw error;
+      // 找不到 openssl，或只是缺少 openssl.cnf：保留原始错误，让调用方回退纯 JS。
+      // 其余失败视为校验不通过，不能放行。
+      if (isMissingExecutable(error) || isOpensslConfigError(error)) throw error;
       const detail = error?.stderr ? String(error.stderr).trim().split('\n').slice(-3).join(' | ') : error.message;
       const wrapped = new Error(`openssl 校验 CSR 失败: ${detail}`);
       wrapped.code = 'OPENSSL_CSR_VERIFY_FAILED';
@@ -243,7 +283,7 @@ export function signDeviceCertificateWithOpenssl({ ca, csrPem, deviceId, commonN
         '-CA', caCertPath, '-CAkey', caKeyPath, '-CAcreateserial',
         '-days', String(Math.max(1, days)), '-sha256',
         '-extfile', extPath, '-out', certPath,
-      ], { stdio: 'pipe', timeout: 15_000 });
+      ], { stdio: 'pipe', timeout: 15_000, env: opensslChildEnv() });
     } catch (error) {
       const detail = error?.stderr ? String(error.stderr).trim().split('\n').slice(-3).join(' | ') : error.message;
       throw new Error(`openssl 签发设备证书失败: ${detail}`);

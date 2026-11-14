@@ -1,7 +1,43 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import { X509Certificate } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+import { join } from 'node:path';
 import { withTempHome, makeCsr, makeEcCsr } from './helpers.js';
+
+test('OpenSSL child environment adds a fallback only on Windows', async (t) => {
+  const { verifyCsrWithOpenssl } = await import('../lib/identity.js');
+  const home = withTempHome();
+  const platform = Object.getOwnPropertyDescriptor(process, 'platform');
+  const previousConf = process.env.OPENSSL_CONF;
+  const run = t.mock.method(childProcess, 'execFileSync', () => {});
+  syncBuiltinESMExports();
+  try {
+    const customConf = join(home.dir, 'custom.cnf');
+    const fallbackConf = join(home.dir, 'remote-access', 'openssl', 'openssl.cnf');
+    writeFileSync(customConf, '# custom configuration\n');
+    for (const name of ['darwin', 'linux', 'win32']) {
+      Object.defineProperty(process, 'platform', { value: name });
+      delete process.env.OPENSSL_CONF;
+      verifyCsrWithOpenssl('test CSR');
+      assert.equal(run.mock.calls.at(-1).arguments[2].env.OPENSSL_CONF, name === 'win32' ? fallbackConf : undefined);
+      assert.equal(existsSync(fallbackConf), name === 'win32');
+
+      process.env.OPENSSL_CONF = customConf;
+      verifyCsrWithOpenssl('test CSR');
+      assert.equal(run.mock.calls.at(-1).arguments[2].env.OPENSSL_CONF, customConf);
+    }
+  } finally {
+    run.mock.restore();
+    syncBuiltinESMExports();
+    Object.defineProperty(process, 'platform', platform);
+    if (previousConf === undefined) delete process.env.OPENSSL_CONF;
+    else process.env.OPENSSL_CONF = previousConf;
+    home.cleanup();
+  }
+});
 
 test('host identity is stable across reloads; device CA signs CSR', async () => {
   const home = withTempHome();

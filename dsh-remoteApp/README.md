@@ -2,7 +2,7 @@
 
 
 > 许可证：**AGPL-3.0-or-later**（完整文本见根目录 [`LICENSE`](../LICENSE)）。
-DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 优先、Android 同步搭骨架。
+DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 与 Android 均已有真机 mTLS 验收记录。
 
 > 相关文档：
 > [根目录总览](../README.md) ·
@@ -22,14 +22,14 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 
 ---
 
-## 当前状态（2026-10-26）
+## 当前状态（2026-11-02）
 
 | 项 | 状态 |
 |---|---|
 | iOS Release 构建 / 真机安装 | ✅ 已完成（手动签名 + `devicectl`；无 dev-client/DevMenu） |
 | iOS 原生 mTLS WebView（Secure Enclave 设备证书） | ✅ 真机通过 |
 | 配对 / 设备证书 / 撤销 / 审计 / App 锁 | ✅ 已实现 |
-| Android 源码（mTLS WebView / CSR / Keystore） | ✅ 源码完成；⏳ 未在有 Android SDK 的环境编译 |
+| Android 调试构建 / USB 安装 / 真机 mTLS | Windows 构建与 Xiaomi 17 / Android 16 配对、原生 WebView、公网聊天烟雾测试通过；debug 包需要 Metro。见 [Windows / Android 验收记录](../docs/diagnostics/12-windows-android-e2e.md) |
 | iOS 推送 | ✅ 自托管 APNs 直连（APNs device token + aps-environment；通知取会话标题+助手回复摘要；点击通知跳对应会话，2026-10-25 真机验证；App 锁屏时按系统通知显示）；Android FCM 未接入 |
 | 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，20s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
 | 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
@@ -38,7 +38,7 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | 配对默认设备名 | ✅ 使用系统本机设备名（`expo-device`；系统只给通用名时回退机型名），可自定义；不再写死「我的 iPhone」 |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
 
-> 原生构建需要 macOS + Xcode；本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
+> iOS 原生构建需要 macOS + Xcode；Android 可在 Windows + JDK 17 + Android SDK 构建。本仓库不提交生成的 `ios/`/`android/` 目录和签名材料。
 > 0.1.8 起新增 `expo-device`（读取系统设备名）——升级安装包需要重新 `pod install` / 构建原生包，不能只换 JS bundle。
 
 ## 目录结构
@@ -58,9 +58,9 @@ dsh-remoteApp/
 │   │   └── pairing.ts             # 可注入 PairingTransport 的配对流程骨架（CSR → /pair → 轮询 → 持久化）
 │   └── screens/
 │       ├── PairingScreen.tsx      # 相机扫码 + 手动粘贴 + 指纹/SAS/备用码 + 桌面确认等待
-│       ├── WebViewScreen.tsx      # 主界面：状态条 / 刷新 / 外链 / mTLS WebView 接入 TODO
+│       ├── WebViewScreen.tsx      # 主界面：状态条 / 刷新 / 外链 / 原生 mTLS WebView
 │       └── DevicesScreen.tsx      # 设备与安全：本地身份/证书状态、POC 证书导入、重新配对
-└── modules/dsh-mtls/              # 本地 Expo Module（POC，未编译）
+└── modules/dsh-mtls/              # 本地 Expo Module（iOS / Android 均已编译验收）
     ├── expo-module.config.json
     ├── package.json
     ├── src/index.ts               # JS 桥（requireOptionalNativeModule，缺失时优雅降级）
@@ -80,7 +80,10 @@ dsh-remoteApp/
 
 ---
 
-## 前置要求
+## 前置要求（iOS）
+
+Windows / Android 的工具链、编译、USB 安装与 Metro 步骤见
+[Windows 安装与 Android 真机端到端烟雾测试](../docs/diagnostics/12-windows-android-e2e.md)。
 
 - **macOS + 完整 Xcode**（App Store 安装，打开一次同意许可；`xcode-select -p` 应指向 `Xcode.app/Contents/Developer`，而不是 Command Line Tools）。
 - **CocoaPods**（`brew install cocoapods` 或 `sudo gem install cocoapods`）。
@@ -166,12 +169,11 @@ xcrun devicectl device capture screenshot --device <UDID> --destination /tmp/pho
 >   描述文件过期后 App 会启动失败，需要重新签名安装（设备 UDID 不在描述文件里同理）。
 > - 同一 bundle id 覆盖安装会保留 App 数据（SecureStore 里的配对信息不丢，无需重新配对）。
 
-Android（结构已就绪，未在本机验证）：
+Android（Windows 调试构建与真机烟雾测试已通过）：
 
-```bash
-npx expo prebuild --clean
-npx expo run:android --device
-```
+按 [详细复现与验收记录](../docs/diagnostics/12-windows-android-e2e.md) 中的 PowerShell 步骤执行，
+其中包括 SDK 安装名称、prebuild 后的 CMake 长路径处理、可选代理及 debug 包所需的 Metro / USB reverse。
+使用 `prebuild --clean` 重新生成 Android 工程后，需补回 CMake 长路径设置。
 
 ---
 
@@ -309,11 +311,15 @@ base64 -i device.p12 | pbcopy        # macOS
 4. 成功后 `certRef` 会写回本地连接记录；返回主界面会切换到原生 mTLS WebView 并重新加载。
 5. 在「设备与安全 → 原生 mTLS 模块」确认 `identityPresent = 是`、证书主题/到期时间正确。
 
-**注意**：POC 手动证书只是测试链路；私钥在 Mac 上生成意味着它不再是"不可导出"，正式发布前必须切换到原生密钥生成。
+**注意**：POC 手动导入路径仅用于调试，私钥在 Mac 上生成，不具备设备内生成密钥的不可导出边界。
+正常扫码配对已使用原生密钥生成和 CSR 链路。
 
 ---
 
 ## 本次交付实际执行过的验证
+
+以下保留早期 POC 阶段的命令记录。当前平台状态见上方状态表，2026-11-02 的 Windows / Android
+构建、配对与公网聊天结果见 [完整验收记录](../docs/diagnostics/12-windows-android-e2e.md)。
 
 ```text
 $ npm install
@@ -335,7 +341,7 @@ $ node <protocol.ts 编译后的 Node 自测>
 #         备用码校验 / API URL 拼接 / buildPairingUri 往返
 ```
 
-**未执行**（本机环境限制，不能声称完成）：
+**早期 POC 阶段未执行的项目**：
 
 - `npx expo prebuild` / `pod install` / `npx expo run:ios` —— 需要完整 Xcode；
 - Android Gradle 构建 —— 需要 Android SDK；
@@ -361,8 +367,10 @@ $ node <protocol.ts 编译后的 Node 自测>
 
 ## 已知差距 / TODO
 
+原生 `generateCsr`、Secure Enclave / AndroidKeyStore 密钥生成与证书安装均已实现；Android 正常配对与
+原生 mTLS WebView 链路已于 2026-11-02 通过真机验证。以下保留其余待办和调试路径的验证项。
+
 **安全/身份**
-- 原生 CSR 与 Secure Enclave / AndroidKeyStore 密钥生成（`generateCsr` 目前抛未实现异常）。
 - 证书自动续期（默认 30 天，可配 7–90 天）与到期提醒。
 - 可选：pin TLS 叶证书 SPKI（注意 `hostfp` 是**主机身份公钥**指纹，不是 TLS 证书指纹，二者不能混用）。
 - App 锁：已接入生物识别（`expo-local-authentication`），交互/超时行为待真机验收。
@@ -374,7 +382,7 @@ $ node <protocol.ts 编译后的 Node 自测>
 - 会话列表/审批等原生页面（App 审核 4.2 的长期对策）；多主机列表/删除/主机名同步已实现（0.1.8）。
 - iOS 下拉刷新：`react-native-webview` 无 iOS 下拉刷新，当前用顶部刷新按钮；原生 WebView 落地时可补。
 - 文件上传/下载（WebView 原生选择器、分享面板）未专门处理。
-- Android 的 KeyChain alias 选择/安装后回填、`importP12` 密码校验、AndroidKeyStore 正式路径需真机联调。
+- Android 的 KeyChain alias 选择/安装后回填、`importP12` 密码校验等手动导入路径仍需分别验证。
 
 **工程**
 - 未写 Jest/RNTL 组件测试；协议层已有 Node 自测（可提成正式测试）。

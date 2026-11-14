@@ -1,11 +1,22 @@
 # DSH Remote Access — 项目状态 / 验收清单
 
-快照：2026-10-19（实施第 14 轮）· 方案：**B2（自托管盲中继 + 设备 mTLS + 自建域名）**
+快照：2026-11-02 · 方案：**B2（自托管盲中继 + 设备 mTLS + 自建域名）**
 
 ## 一句话
 
-POC 与 MVP 的**代码、文档、测试、部署产物、本地端到端验收均已完成**；
-剩余 3 项需要外部环境：**iOS 真机验收（需 Xcode/iPhone）、Android 编译（需 Android SDK）、生产 relay 上线（需 VPS+域名）**。
+已有 iOS 真机记录；2026-11-02 新增 **Windows 工具链搭建、Android debug 编译与 USB 安装、
+Android 真机配对 / 原生 mTLS WebView / 公网聊天烟雾测试**。
+
+## 2026-11-02：Windows 安装与 Android 真机 E2E 烟雾测试
+
+- Windows 11 / JDK 17 / Android SDK 下完成 App 0.1.14（code 17）调试 APK 编译与小米 17（Android 16）USB 安装。
+- 真机扫码使用原生 AndroidKeyStore 身份配对；原生 mTLS WebView 已截图确认加载公网 DSH 页面，用户确认手机聊天烟雾测试通过，Desktop 可见同一会话及 `ok` 回复。
+- debug APK 未内嵌 JS，运行时需要 Metro + `adb reverse tcp:8081 tcp:8081`。
+- 完整 PR 保留 Kotlin 透明背景 setter 修复、Windows 主机父进程识别与 OpenSSL 配置兼容，以及跨平台测试适配；服务端依赖锁文件同步已有包版本和许可证元数据。生成的 Android 工程及本机 CMake 长路径设置不提交。
+- 回归：服务 161 passed / 2 skipped / 0 failed；App typecheck、原生桥一致性通过；既有手机壳检查未识别 Windows 浏览器路径，明确记为跳过。
+- Android 离线增量复编通过：`BUILD SUCCESSFUL in 54s`，339 项任务中 22 项执行、317 项已是最新，退出码 0；APK 的 SHA-256 与此前真机验收版本一致。
+- PC 配对弹窗自动续码、设备数与在线数混淆留待后续处理；弹窗修复与测试已保存为独立补丁。
+- 复现命令、版本、脱敏审计和产物摘要见 [完整验收记录](docs/diagnostics/12-windows-android-e2e.md)。下方按日期保留历史记录。
 
 ## 2026-10-27 修复：应用内通知卡片停留时间 5s → 20s
 
@@ -489,6 +500,9 @@ v1 单连接记录，把早已删除的旧主机「复活」。现 v1 读取时�
 
 ## 可自验证据（当前机器即可跑）
 
+下列命令需在相应平台运行，命令块保留早期开发环境的执行结果。
+2026-11-02 的 Windows 构建与回归结果见顶部记录及 [完整验收记录](docs/diagnostics/12-windows-android-e2e.md)。
+
 ```bash
 cd dsh-remoteService
 npm install
@@ -530,7 +544,7 @@ npm run check:android-env   # ❌ 本机缺 Android SDK（同上）
 
 - 扫码配对手动输入 fallback、主机指纹校验、SecureStore 存储（私钥永不进 JS）
 - 自定义 WKWebView/WebView mTLS 客户端证书挑战
-- 原生：iOS Secure Enclave 优先的 P-256 密钥 + PKCS#10 CSR + 证书安装 + URLSession mTLS；Android AndroidKeyStore + 手写 PKCS#10 + setKeyEntry + HttpsURLConnection mTLS（源码完成，未编译）
+- 原生：iOS Secure Enclave 优先的 P-256 密钥 + PKCS#10 CSR + 证书安装 + URLSession mTLS；Android AndroidKeyStore + 手写 PKCS#10 + setKeyEntry + HttpsURLConnection mTLS（2026-11-02 已完成调试构建、真机配对与原生 mTLS WebView 验收）
 - 设备管理（列表/撤销）、主机状态、安全审计（均走 mTLS tunnel API）
 - 推送注册、生物识别 App 锁、诊断页；设置页（版本 / 应用内通知开关 / 通知权限 / 清理 WebView 缓存）；前台推送应用内卡片
 - 注入式手机壳：会话侧栏 → 左侧抽屉、窄屏单列布局、右栏（sidebar-right）全屏覆盖层、
@@ -593,13 +607,16 @@ xcrun devicectl device install app --device <UDID> /tmp/dsh-ios-device/Build/Pro
 
 ### B. Android 编译/验收（需 Android SDK + JDK）
 
+2026-11-02 已完成 Windows 构建、USB 安装、AndroidKeyStore 配对、原生 mTLS WebView 和公网聊天验证。
+Windows 复现步骤见 [完整验收记录](docs/diagnostics/12-windows-android-e2e.md)，下方保留通用构建命令：
+
 ```bash
 cd dsh-remoteApp
 npm run check:android-env
 npx expo prebuild --platform android
 npx expo run:android --device
 ```
-验收清单同 ACCEPTANCE.md（指纹锁、Keystore 身份、FCM 推送、撤销断链）。
+App 锁、撤销断链等其余项目按 ACCEPTANCE.md 逐项验证；Android FCM 尚未接入。
 
 ### C. 生产 relay 上线（需 VPS + 域名）
 
@@ -615,14 +632,12 @@ cd dsh-remoteService
 
 ## 已知限制 / 风险（MVP 待收尾）
 
-- iOS/Android 原生**未编译**（本机无 Xcode/Android SDK）；已用独立 Swift POC 验证 WKWebView/URLSession 客户端证书、P-256 CSR 链路
 - 推送：iOS 自托管 APNs 代码就绪，需配置 APNs Auth Key 并真机验收（key 环境范围需覆盖运行包）；Android FCM 未接入；旧 relay/Expo 通道保留但非默认
 - 推送通道升级：自托管 APNs 是默认通道；旧配置（无 `pushProvider` 字段）升级后按 `apns` 处理，
   未配置 APNs 的机器不会推送，也**不会自动回退**旧 relay→Expo 通道（需要旧通道请在设置页显式
   关闭「自托管直连 APNs」）
 - 生产证书需要你的域名 DNS-01 签发；`check-deploy.sh` 已在本地成功路径 + 失败路径演练
 - 审计/设备管理暴露给所有已配对设备（owner-equivalent 设计；如需"仅桌面管理"需改为本地审批）
-- iOS 真机 Secure Enclave 身份来源（Keychain/SE）仍需真机确认（代码路径已实现）
 
 ## 相关文档
 
