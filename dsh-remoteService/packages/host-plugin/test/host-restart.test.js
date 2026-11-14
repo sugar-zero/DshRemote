@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import childProcess from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
 import {
   DESKTOP_HOST_ENV,
   DESKTOP_RELAUNCH_DELAY_MS,
@@ -12,6 +14,7 @@ import {
   detectDesktopShell,
   extractMacBundlePath,
   isDesktopHostEntry,
+  readParentCommand,
   requestHostRestart,
   scheduleHostRestart,
   shellQuote,
@@ -23,6 +26,27 @@ const MAC_BUNDLE = '/Applications/DSH Test.app';
 const WIN_EXEC = 'C:\\Program Files\\DSH\\DSH.exe';
 const SHELL_PID = 4242;
 const HOST_PID = 4243;
+
+test('readParentCommand: Windows PowerShell preserves Unicode in redirected paths', {
+  skip: process.platform !== 'win32' && 'Requires Windows PowerShell',
+}, (t) => {
+  const expected = 'C:\\Users\\测试\\DSH 桌面.exe';
+  const encoded = Buffer.from(expected, 'utf16le').toString('base64');
+  const run = childProcess.execFileSync;
+  const mock = t.mock.method(childProcess, 'execFileSync', (file, args, options) => {
+    // Start from a legacy encoding and substitute only the CIM result.
+    const fixture = '[Console]::OutputEncoding = [Text.Encoding]::ASCII; '
+      + `function Get-CimInstance { [PSCustomObject]@{ ExecutablePath = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String('${encoded}')) } }; `;
+    return run(file, [...args.slice(0, -1), fixture + args.at(-1)], options);
+  });
+  syncBuiltinESMExports();
+  try {
+    assert.equal(readParentCommand(SHELL_PID), expected);
+  } finally {
+    mock.mock.restore();
+    syncBuiltinESMExports();
+  }
+});
 
 /** 记录 spawn 调用与 unref 的 fake（**绝不真的执行命令**）。 */
 function makeFakeSpawn() {

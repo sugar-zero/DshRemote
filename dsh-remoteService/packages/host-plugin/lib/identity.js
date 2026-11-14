@@ -16,11 +16,11 @@ let opensslConfFile;
 
 /**
  * Windows 上 conda / 精简版 OpenSSL 经常没有默认 openssl.cnf，`openssl req` 会在校验前就退出。
- * 那不是 CSR 被拒绝。给子进程一份最小配置，已有且存在的 OPENSSL_CONF 保持不动。
+ * 仅在 Windows 下为子进程补最小配置，已有且存在的 OPENSSL_CONF 保持不动。
  */
 function opensslChildEnv() {
   const env = { ...process.env };
-  if (env.OPENSSL_CONF && existsSync(env.OPENSSL_CONF)) return env;
+  if (process.platform !== 'win32' || (env.OPENSSL_CONF && existsSync(env.OPENSSL_CONF))) return env;
   if (!opensslConfFile || !existsSync(opensslConfFile)) {
     const dir = join(paths.dir(), 'openssl');
     ensureDir(dir);

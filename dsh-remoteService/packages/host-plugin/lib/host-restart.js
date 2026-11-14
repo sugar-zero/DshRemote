@@ -117,7 +117,8 @@ export function readParentCommand(pid) {
         '-NoProfile',
         '-NonInteractive',
         '-Command',
-        `(Get-CimInstance Win32_Process -Filter "ProcessId=${id}").ExecutablePath`,
+        '[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false); '
+          + `(Get-CimInstance Win32_Process -Filter "ProcessId=${id}").ExecutablePath`,
       ], { encoding: 'utf8', timeout: 8000, windowsHide: true });
       const text = normalizeCommand(String(output).split(/\r?\n/).map((line) => line.trim()).filter(Boolean).at(-1) ?? '');
       return text === '' ? undefined : text;
