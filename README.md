@@ -22,6 +22,7 @@ DSH Remote 是 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的远
 3. 开发/测试：见 [`dsh-remoteService/README.md`](dsh-remoteService/README.md)
 4. 真机验收：[`dsh-remoteApp/docs/ACCEPTANCE.md`](dsh-remoteApp/docs/ACCEPTANCE.md)
 5. 诊断/排障：[`docs/diagnostics/`](docs/diagnostics/)
+6. 群体版设计：[`docs/group-service-design.zh.md`](docs/group-service-design.zh.md)
 
 ## 安全提示
 
