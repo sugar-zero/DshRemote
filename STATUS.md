@@ -8,11 +8,33 @@
 | 组件 | 版本 | 状态 |
 |---|---|---|
 | relay | **0.4.1**（镜像 `dsh-remote-relay:0.4.1-group`，已构建/导出） | 群体版全部能力 + **self 推送（部署方自签 App 用自己的 APNs key 直连 Apple）**；**official 转发官方 hub 的 legacy 已于 0.4.0 删除**（R2 官方 App 直连 hub，不经过 relay）；设备 token 只存内存 |
-| host-plugin | **0.2.8** | 群体版 + **推送意图 / 按设备分流（`self`→relay，`official`→直连官方 hub）/ 「推送提醒」+「详细推送内容」开关**；远程重启为可选组件（默认关闭） |
+| host-plugin | **0.2.9** | 群体版 + **推送意图 / 按设备分流（`self`→relay，`official`→直连官方 hub）/ 「推送提醒」+「详细推送内容」开关**；远程重启为可选组件（默认关闭） |
 | protocol | **0.3.2** | 群体版协议常量/QR v2/帧/签名校验 + 推送枚举/控制消息 + **R2 通道/channel/bundleId/设备登记消息** |
 | apns（新） | **0.1.1** | APNs HTTP/2 发送器（relay `self` 与官方 hub 共用，零第三方依赖） |
 | push-hub（新） | **0.3.3** | 官方推送 hub（**R2-only**）：设备登记（P-256 PoP）/ EdDSA device credential / 按 device·host·IP·全局配额限流 / 主机直连；通用文案 + 可选 title/body + sessionId、无状态、不落 token；**不识别 relay**（legacy relay-token 已删除） |
 | App | **0.2.0（iOS build 20 官方包 / Android versionCode 20）** | 群体 token 模式 + **R2 官方推送（App 向官方 hub 登记凭证、主机直连）+ 键盘避让修复（build 16 起）** + 通知点击跳转/推送设置卡；App 锁、远程重启 UI 保留；**0.2.0 build 20 = official 通道官方构建（2026-11-08 已上传 TestFlight）**；0.1.9 build 17 = self 包（代码相同）；TestFlight build 20 UI/推送已由用户确认（2026-11-09）；验收见 ACCEPTANCE |
+
+## 2026-11-16 群体推送「暂不可用」：self 通道 relay 未开推送 + 插件设置页 3 处 UI 缺陷（host-plugin 0.2.9）
+
+- **现象**：App「推送提醒」显示**暂不可用**、重试报「推送开启失败」；主机设置页**推送通道**显示 `—`；
+  顺带发现「详细推送内容」开关**关不掉**。
+- **根因（无代码故障）**：本次装机的是 **self 构建**（未注入 `EXPO_PUBLIC_PUSH_CHANNEL=official`），
+  登记链路是「App → 主机 → relay 自己的 APNs 通道」；部署侧 `server/.env` 里**没有任何
+  `RELAY_GROUP_PUSH_*`**，compose 默认 `RELAY_GROUP_PUSH_ENABLED=false` → relay 一律回
+  `push_disabled`。审计证据：`push-token` 结果 `ok/official` 134 条、`failed/push_disabled` 64 条，
+  两类交错出现即“两个不同构建的包”。
+- **「推送通道 —」= 结果不是独立故障**：通道由已登记设备推导，一台没登记上就是空；
+  本次把空值文案改为「—（暂无已登记设备）」。
+- **插件 UI 修复**（host-plugin **0.2.9**）：①「详细推送内容」不再跟随「推送提醒」禁用
+  （两者独立持久化）；②开关行标题/说明区可点击切换（DSH 原生设置页的手感）；
+  ③`[data-ra-sw]:disabled` 补禁用样式（此前禁用态无视觉差异 = “看着能点却点不动”）。
+- **验证**：`npm test` **303/303**；`validate:artifacts` ✅（warnings: 0）；客户端 `node --check` ✅。
+- **仍待用户执行**：VPS 上放部署方 APNs Auth Key 并把 `RELAY_GROUP_PUSH_ENABLED=true`
+  （`docker compose up -d --force-recreate` 重建），或在手机上改用官方构建包；细节见
+  [`docs/diagnostics/15-push-self-channel-disabled.md`](docs/diagnostics/15-push-self-channel-disabled.md)。
+  重启 DSH 后插件设置页才加载 0.2.9 的 host 半。
+- **未做**：App release 包仍只在 `__DEV__` 显示推送错误细节（用户只看到「暂不可用」），
+  需要 App 构建 + 真机确认，另列后续。
 
 ## 2026-11-09 远程重启后无法重连：控制通道看门狗 + App 自动恢复（App 0.2.1 build 23）
 
