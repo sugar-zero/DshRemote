@@ -5,16 +5,12 @@
 真机验收必须按本手册执行并记录结果。
 
 > **0.1.8 起 App 重新接入 iOS APNs 推送；0.1.9（R2）起官方推送与 relay 解耦**
-> （见下方「0.1.9」章节）。本文件中 0.1.8 之前版本记录里出现的「无推送 / 无 aps-environment /
 > 设置页无推送项」只描述**当时版本**；当前版本「设置页 → 推送」有开关/通道/状态/重新注册，
-> 构建产物带 `aps-environment` entitlement，官方构建额外使用官方推送 hub。
 
 ---
 
 ## 2026-11-16 App 0.2.2（build 25）真机验证记录
 
-> 版本：App **0.2.2 build 25**（开发签名验证包，`aps-environment=development`）；
-> App Store/TestFlight 分发包另行以 Apple Distribution + production APNs 导出。
 > 用户确认全部验证项通过（2026-11-16）。
 
 - [x] **主页**：只显示主机名，不再显示配对地址/端口。
@@ -26,7 +22,6 @@
 - [x] **侧栏状态**：取消配对/设备变化 2 秒内自动刷新。
 - [x] **键盘**：连续删字页面不跳动。
 - [x] **构建**：Archive/Export 成功；`CFBundleShortVersionString=0.2.2`、`CFBundleVersion=25`；
-      production APNs、official 通道、Apple Distribution 签名；IPA 已导出待上传。
 
 ---
 
@@ -39,10 +34,7 @@
 
 | 项目 | 值 |
 |---|---|
-| 构建 | iOS Release；`EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB`（hub 基址不入库）；本机开发描述文件手动签名（材料不入库） |
-| 产物 | `CFBundleShortVersionString=0.2.1` / `CFBundleVersion=23`；`main.jsbundle` 内联官方 hub 基址 |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native` 通过；`check:shell` 本机无头 Chrome 挂起（exit 13，环境问题，与本次改动无关） |
-| 安装 | `devicectl` 覆盖安装成功；一次启动因手机锁屏被拒（`Locked`），解锁后正常 |
 
 - [x] **远程重启后自动恢复**：手机点 ⏻ → 主机 08:35:48 受理 → 08:35:56 隧道就绪 →
       08:36:05 页面 WebSocket 恢复；全程约 **17 秒**，未手动刷新（用户确认“现在重启好了”）。
@@ -52,7 +44,6 @@
 
 ## 2026-11-09 推送详细内容 / 通知跳会话 真机验收记录
 
-> 版本：host-plugin **0.2.8** / push-hub **0.3.3** / App 0.2.0 build 20（App 无需重新构建）
 
 - [x] **详细推送 turn-end**：标题=会话标题、正文=本轮摘要（用户确认收到）。
 - [x] **详细推送 waiting-answer**：标题=会话标题、正文「正在等待你的回答」（用户确认）。
@@ -62,25 +53,16 @@
 - [x] **error 类型文案**：`任务出错，打开查看详情`（测试覆盖；未实机触发失败轮次）。
 - [x] 开关保存不重建隧道、详细内容默认关闭、隐私提示见设置页。
 - [x] 侧栏状态刷新（无点击 2s 内自动刷新）：用户确认“状态栏刷新了”。
-- [x] TestFlight build 20 的生产 UI 文案：用户确认“testflight 的文案也好了”。
 
 ---
 
-## 0.2.0 build 18（R2 官方构建：official 通道）真机验收记录 — 待用户验收（2026-11-08）
 
 > 说明：本包是 **0.1.9 build 17 的同一份 App 代码**，版本号递增为 **0.2.0**、构建号 **18**，并注入
-> **官方通道构建配置**：`EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB=https://<hub 公网基址>`
 > （真实地址只在构建环境，不入库；仓库默认仍是 `self` + 空地址）。
-> 前置：官方 hub（0.3.x，本次为 0.3.0 镜像 + env TTL=30；0.3.1 镜像默认 30 天也已备好）已部署且公网 HTTPS 可达（`/v1/enroll/challenge` 返回 200），
-> `HUB_PUBLIC_URL` 与 App 内置地址一致；`aps-environment=development`（APNs sandbox 通道）。
 > **以下结果尚未由用户确认，不得勾选。**
 
 | 项目 | 值 |
 |---|---|
-| 构建通道 | `official`（官方 hub 设备直连；**非 self 包**，不再走 relay 转发） |
-| 构建结果 | ✅ `** BUILD SUCCEEDED **`（产物 `CFBundleShortVersionString=0.2.0`、`CFBundleVersion=18`；entitlement `aps-environment=development`；`main.jsbundle` 内联了 hub 地址与 `dshremote-push-enroll-v1`，无 `EXPO_PUBLIC_*` 运行时残留） |
-| 构建目录 | `/tmp/dsh-ios-build-r2-official`（本机临时目录，不入库） |
-| 安装 | ✅ `devicectl` 覆盖安装成功（设备端 `0.2.0 / 18`），`devicectl` 启动成功（后续交互需用户解锁操作） |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 通过 |
 | 版本说明 | `app.json` / `package.json` / `modules/dsh-mtls`（package.json + android build.gradle + ios podspec）均已同步为 0.2.0 / build 18；`ios/Info.plist` 已同步（未重新 prebuild） |
 
@@ -96,7 +78,6 @@
 - [x] 键盘/输入框回归（build 16 修复）：点输入框聊天区不再整体上滚；连续删字不再上下跳（用户确认“打字不再跳了”）。
 - [x] hub 公网自检：`POST https://<hub>/v1/enroll/challenge` → 200；`/healthz` 显示
       `credential.enabled=true`、`enroll.enabled=true`、`credential.ttlDays=30`（不含 token/credential/密钥）。
-- [ ] official 凭证续期（剩余 <24h 自动重新登记）：默认 TTL 已延长到 **30 天**（hub 0.3.1），
       本轮未等到自然到期，**留作观察项**（下次 App 打开且剩余 <24h 时应自动续期）。
 - [ ] 设备撤销后清理对应 token：涉及重新配对，**留到后续单独验证**。
 - [ ] 其它功能全量回归（重启主机 ⏻ / 外链内嵌浏览器 / 清理缓存 / App 锁）：本轮只覆盖配对/会话/消息/WebSocket
@@ -110,43 +91,22 @@
 
 ---
 
-## 0.1.9 build 17（R2：官方推送与 relay 解耦）真机验收记录 — 待用户验收
+## 0.1.9 build 17 推送验收记录 — 待用户验收
 
-> 来源：用户已拍板的 **R2 方案**（官方推送设计文档仅本地保留）。官方 App 构建时内置官方 hub 地址
-> （`EXPO_PUBLIC_PUSH_CHANNEL=official` + `EXPO_PUBLIC_PUSH_HUB=https://<hub>`），用群体版
-> **设备 P-256 密钥**向官方 hub 登记换 per-device credential，再把 credential 交给主机
-> （`/__dsh_remote/push-token` 扩展字段）；主机**直连官方 hub** 推送，**不依赖部署方 relay
 > 的推送配置**。部署方自签 App（self，仓库默认构建）仍经 relay 推送（旧 body 向后兼容）。
 >
 > 本版本同时包含 build 16 的**键盘避让修复**（build 16 尚未由用户验收，本轮一并复验）。
 > **以下结果尚未由用户确认，不得勾选。**
 >
-> **前置条件（official 通道，缺一不可）**：
-> 1. 官方 App 构建注入了 `EXPO_PUBLIC_PUSH_CHANNEL=official` 与 `EXPO_PUBLIC_PUSH_HUB`
->    （https 基址；真实地址只在构建环境，不入库）；
-> 2. 官方 hub 已部署（`HUB_PUBLIC_URL` 与该地址一致、`apns.topic` = 官方 bundle id、
->    `HUB_ENROLL_ENABLED=true`）；**必须是设备能信任的 https**（本机自签证书需先在
->    iPhone 上信任该 CA，或用正式证书反代；App 侧不跳过 TLS 校验）；
-> 3. 主机 host-plugin **≥0.2.6**（支持 official 设备凭证字段、直连 hub 分流与按通道 status）；
-> 4. relay **不需要**配置任何推送（R2 的验收点之一）。
-> self 通道回归仍需 relay 配置 `group.push`（同 0.1.8 前置）。
+> **前置条件**：已配对主机；推送开关开启；测试用 App 版本/构建号见上方记录。
 
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.9（buildNumber **17** / Android versionCode **17**） |
-| 构建 | iOS Release **签名构建**（`CODE_SIGN_STYLE=Manual` + `DEVELOPMENT_TEAM=<TEAM_ID>` + `PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID>` + `CODE_SIGN_IDENTITY='Apple Development: <NAME> (<CERT_ID>)'`；前置 `expo prebuild -p ios --no-install` → `pod install`） |
-| 构建结果 | ✅ `** BUILD SUCCEEDED **`（产物 `CFBundleShortVersionString=0.1.9`、`CFBundleVersion=17`；entitlement `aps-environment = development`；JS bundle 含 R2 登记代码） |
-| 构建目录 | `/tmp/dsh-ios-build-r2`（本机临时目录，不入库） |
-| 安装 | ✅ `devicectl` 覆盖安装成功（设备端 `0.1.9 / 17`）；**本包为「默认 self」构建**（未注入 `EXPO_PUBLIC_PUSH_CHANNEL=official`），用于键盘回归/self 通道；官方 R2 验收需按下方「官方构建」重新构建（build 18）并安装。启动时设备处于锁屏，`devicectl launch` 被系统拒绝（Locked），待用户解锁后启动 |
-| 官方构建（R2 验收用，待做） | `EXPO_PUBLIC_PUSH_CHANNEL=official EXPO_PUBLIC_PUSH_HUB=https://<真实 hub 域名> npx expo prebuild -p ios --no-install` → pod install → 同参数 xcodebuild（真实域名不入库；构建号 18） |
-| entitlement | 同 0.1.8：`aps-environment = development`（发布 profile → production） |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过（shell 59 项断言） |
 
 ### 本版本改动（R2 App 侧）
 
-1. `src/lib/pushConfig.ts`（新）：`PUSH_CHANNEL` 读 `EXPO_PUBLIC_PUSH_CHANNEL`（仅 `official`
-   才 official，否则 self）；`PUSH_HUB_ENDPOINT` 读 `EXPO_PUBLIC_PUSH_HUB`（去尾斜杠）；
-   仓库默认 self + 空 endpoint（不写真实地址）。
 2. `src/lib/pushHub.ts`（新）：官方通道设备凭证登记 —— SecureStore 缓存 credential
    （key = `endpoint|token|hostId` 的摘要 hash，剩余 >24h 复用）→ `/v1/enroll/challenge` →
    `pushEnrollMessage`（与 server protocol 0.3.1 逐字节一致）→ `signGroupDeviceMessage`
@@ -183,15 +143,6 @@
 - [ ] 日志、设置页、主机 `status` 不含 token / credential / 密钥（安全项）。
 - [ ] 其它功能不回归：配对、会话/消息/WebSocket、token 续期、重启主机 ⏻、外链内嵌浏览器、清理缓存、App 锁。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# 构建/装机由 Lead 统一执行；目标 `** BUILD SUCCEEDED **`（见本文件「构建与安装（iOS）」）
-```
-
 ---
 
 ## 历史真机验收记录（0.1.8 build 16 — **已被 0.1.9 build 17 取代，验收项并入上方清单**）
@@ -218,41 +169,11 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.8（buildNumber **16** / Android versionCode **16**） |
-| 构建 | iOS Release（**手动签名**：`CODE_SIGN_STYLE=Manual` + `DEVELOPMENT_TEAM=<TEAM_ID>` + `PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID>` + `CODE_SIGN_IDENTITY='Apple Development: <NAME> (<CERT_ID>)'`；Team/描述文件/证书不入库）；前置 `expo prebuild -p ios --no-install` → `pod install`（ExpoNotifications 58.1.7） |
-| 构建结果 | `** BUILD SUCCEEDED **`（签名产物 `CFBundleShortVersionString=0.1.8`、`CFBundleVersion=16`；签名 entitlement 含 `aps-environment = development`、`application-identifier = <TEAM_ID>.com.amesucre.dshremote`） |
-| 构建目录 | `/tmp/dsh-ios-build-kb`（本机临时目录，不入库） |
-| 安装 | ✅ `devicectl` 覆盖安装并启动成功（设备端确认 `0.1.8 / 16`）→ **iPhone 17 Pro Max（iOS 27.0）**（UDID/设备名不入库）；**安装成功 ≠ 测过，推送/键盘两项验收待用户实测** |
-| entitlement | 已生成：`ios/DSHRemote/DSHRemote.entitlements` 含 `aps-environment = development`（`expo-notifications` plugin 写入；发布签名 profile 会覆盖为 production） |
 | 依赖 | `expo-notifications@~58.1.5`（安装解析到 58.1.7；config plugin，color `#4F8DF7`） |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过（shell 59 项断言） |
 
-### 服务端本地集成验证（Lead，**非用户验收**，2026-11-01）
-
-> 以下为服务端链路的本地运行态冒烟，不代表真机推送验收；真机项仍由用户实测后勾选。
-
-1. **relay `official` 模式 + stub hub（真实进程）**：12/12 通过 —— `push.register` 回
-   `push.registered(ok, mode=official)`；`push.send` 回 `push.result(ok, delivered=1)`；
-   hub 只收到 `{kind,host,tokens}`（Bearer relay token 正确、**无 title/body/sessionId**）；
-   重复意图回 `skipped=cooldown`；非法 kind 回 `invalid_request`。
-2. **relay `self` 模式 + 真实 APNs sandbox**：5/5 通过 —— 用随机生成的 P-256 key 冒充
-   provider key，Apple 返回 `InvalidProviderToken`：relay 归类为**配置错误**、`pruned` 为空
-   （不清理设备 token），证明 JWT/HTTP2/sandbox 路由与错误分类链路真实可用
-   （未发出真实通知，随机 key 无法通过 Apple 鉴权）。
-3. **真实 host-plugin `RelayConnector` ↔ 真实 relay 跨实现联调**：10/10 通过 —— token 登记、
-   推送意图、hub 内容剥离；**relay 重启（token 表清空）后 connector 自动重连并补报 token**
-   （`/healthz` 的 `push.tokens` 恢复）。
-4. **真实 push-hub 进程 + CLI + 真实 APNs**：13/13 通过 —— `relay create/list`（store 0600 只存
-   sha256、list 不显示 token）、`/healthz`、`/v1/push` 鉴权（错误 token 401）与 schema
-   （带 title/body → 400）、真实 APNs 配置错误归类（failed=1/pruned=[]）、日志不含 token。
-5. **relay-entrypoint 配置自动生成**：8/8 通过 —— self/official 两组 env → `relay.json` 的
-   `group.push`（0600）、已有配置不覆盖、缺 `RELAY_DOMAIN`/证书时给出可操作报错；
-   compose 渲染核对 push env 与 `data/apns` 只读挂载。
-6. **单测/静态**：`dsh-remoteService npm test` **275/275**、`validate:artifacts` 通过；
-   App 三项静态检查通过。
-
 ### 本版本改动
 
-1. `src/lib/push.ts`（新）：通知权限、APNs device token（64 hex）、`aps-environment`、
    经原生 `groupHttpFetch` 登记 `/__dsh_remote/push-token`、状态与 SecureStore 开关（默认开）；
    token 不落盘、不打印。
 2. `src/lib/group.ts`：新增 `onGroupSessionAvailable()` 事件（只带连接标识，不含 token），
@@ -288,15 +209,6 @@ cd dsh-remoteApp && npm run check:shell
 - [ ] relay 未开启推送时 App 显示「服务器未开启推送」，主流程（进入主机/会话）正常。
 - [ ] 其它功能不回归：配对、会话/消息/WebSocket、token 续期、重启主机 ⏻、外链内嵌浏览器、清理缓存、App 锁。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 免签名编译验证目标为 `** BUILD SUCCEEDED **`（见本文件「构建与安装（iOS）」）
-```
-
 ---
 
 ## 0.1.7（主机内设置入口调整 + iOS 底部边缘手势 defer）真机验收记录 — ✅ 2026-11-01 用户验收通过
@@ -323,10 +235,6 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.7（buildNumber 14 / Android versionCode 14） |
-| 构建 | iOS Release（手动签名），`expo prebuild -p ios --no-install` + `pod install` + `xcodebuild` |
-| 构建结果 | `** BUILD SUCCEEDED **`（Xcode Release，手动签名；bundle 版本读到 0.1.7 / 14）；`devicectl` 安装并启动成功 |
-| 安装 | 已覆盖安装并启动到用户验收用 iPhone（UDID/序列号不入库；设备侧显示 0.1.7 / 14） |
-| 构建目录 | `/tmp/dsh-ios-group-gesture14`（本机临时目录，不入库） |
 | 原生模块 | 新增 `DSHMTLSBottomEdgeGestures.swift`（iOS 底部边缘手势 defer）+ JS bridge `setBottomEdgeGestureDeferral`（Android no-op） |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过（59 项 shell 断言） |
 
@@ -370,15 +278,6 @@ cd dsh-remoteApp && npm run check:shell
 
 > 用户 **2026-11-01** 实测确认通过：主机内 ⚙ → 本主机「设备与安全」、系统设置入口/无设备与安全、挂件贴底拖动、开关关闭后一次上滑均按预期。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 14）见本文件「构建与安装（iOS）」
-```
-
 ---
 
 ## 0.1.5（WS 批量断开去抖 + 自动重连修复）真机验收记录 — ✅ 2026-11-01 用户验收通过
@@ -393,13 +292,8 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.5（buildNumber 11 / Android versionCode 11） |
-| 构建 | iOS Release（手动签名），`expo prebuild -p ios --no-install` + `pod install` + `xcodebuild` |
-| 构建结果 | `** BUILD SUCCEEDED **`（Xcode Release，手动签名；bundle 版本读到 0.1.5 / 11）；`devicectl` 安装并启动成功，进程存活 |
-| 安装 | `devicectl` 覆盖安装并启动到用户验收用 iPhone（UDID/序列号不入库） |
-| 构建目录 | `/tmp/dsh-ios-group-clean11`（本机临时目录，不入库） |
 | 原生模块 | 与 0.1.4 相同（本版本无原生改动） |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过（另用状态机模拟验证了「一波 5 个 close 只恢复一次 / reload 后仍断才累加预算 / 2 次后报错 / ws-open 重置」） |
-| entitlement | 构建产物无 `aps-environment`（**仅 ≤0.1.7 历史**：0.1.8 起由 expo-notifications plugin 生成并支持推送，见顶部 0.1.8 章节） |
 
 ### 本版本改动（WebSocket 自动恢复）
 
@@ -432,15 +326,6 @@ cd dsh-remoteApp && npm run check:shell
 - [x] 群体版既有功能不回归：配对（含 SAS）、会话/消息/WebSocket、token 续期、设备撤销提示、
       外链内嵌浏览器、清理缓存。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 11）见本文件「构建与安装（iOS）」
-```
-
 ### 备注 / 未决
 
 - host 侧（0.2.4）会把「保存组件」改成只断主 mux；App 本轮去抖确保即使 host 一次断多个 socket
@@ -464,10 +349,7 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.4（buildNumber 10 / Android versionCode 10） |
-| 构建 | iOS Release（手动签名）；构建目录 `/tmp/dsh-ios-group-clean10` |
-| 安装 | 已覆盖安装并启动（UDID 不入库） |
 | 前置 | host-plugin ≥ **0.2.2**（组件保存已修复）；relay 0.3.0 无需重部署 |
-| entitlement | 无 `aps-environment`（仍无推送能力） |
 
 ### 待用户确认
 
@@ -491,13 +373,8 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.3（buildNumber 9 / Android versionCode 9） |
-| 构建 | iOS Release（手动签名），`expo prebuild -p ios --no-install` + `pod install` + `xcodebuild` |
-| 构建结果 | `** BUILD SUCCEEDED **`（Xcode Release，手动签名；bundle 版本读到 0.1.3 / 9）；`devicectl` 安装并启动成功，进程存活 |
-| 安装 | `devicectl` 覆盖安装并启动到用户验收用 iPhone（UDID/序列号不入库） |
-| 构建目录 | `/tmp/dsh-ios-group-clean9`（本机临时目录，不入库） |
 | 原生模块 | 与 0.1.2 相同（含 `groupHttpFetch`：带 `__Host-dsh_session` cookie 的 HTTPS 请求）；本版本无原生改动 |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过 |
-| entitlement | 构建产物无 `aps-environment`（**仅 ≤0.1.7 历史**：0.1.8 起由 expo-notifications plugin 生成并支持推送，见顶部 0.1.8 章节） |
 
 ### 本版本改动（App 锁语义）
 
@@ -530,15 +407,6 @@ cd dsh-remoteApp && npm run check:shell
 - [ ] 群体版既有功能不回归：配对（含 SAS）、会话/消息/WebSocket、token 续期、设备撤销提示、
       外链内嵌浏览器、清理缓存。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 9）见本文件「构建与安装（iOS）」
-```
-
 ### 备注 / 未决
 
 - host 端「组件开关保存」bug 由 host-fix 在 host-plugin 0.2.2 修复（与 App 无关）；
@@ -562,13 +430,8 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.2（buildNumber 8 / Android versionCode 8） |
-| 构建 | iOS Release（手动签名），`expo prebuild -p ios --no-install` + `pod install` + `xcodebuild` |
-| 构建结果 | `** BUILD SUCCEEDED **`（Xcode Release，手动签名；bundle 版本读到 0.1.2 / 8） |
-| 安装 | 已用 `devicectl` 覆盖安装并启动到用户验收用 iPhone（UDID/序列号不入库）；启动后进程存活 |
-| 构建目录 | `/tmp/dsh-ios-group-clean8`（本机临时目录，不入库） |
 | 原生模块 | `modules/dsh-mtls` 新增 `groupHttpFetch`：带 `__Host-dsh_session` cookie（+ Bearer）的 HTTPS 请求，供主机 status/restart 内部接口使用；不使用设备证书 / mTLS |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过 |
-| entitlement | 构建产物无 `aps-environment`（**仅 ≤0.1.7 历史**：0.1.8 起由 expo-notifications plugin 生成并支持推送，见顶部 0.1.8 章节） |
 
 ### 本版本改动
 
@@ -602,15 +465,6 @@ cd dsh-remoteApp && npm run check:shell
 - [ ] 群体版既有功能不回归：配对（含 SAS 确认）、会话列表/消息收发、WebSocket 实时流、
       切后台回前台 token 续期、设备撤销提示、外链在 App 内嵌浏览器打开、清理缓存。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 8）见本文件「构建与安装（iOS）」
-```
-
 ### 备注 / 未决
 
 - relay 边缘（0.3.0，本轮不重部署）对普通隧道流量**只校验 `__Host-dsh_session` cookie**；
@@ -633,12 +487,8 @@ cd dsh-remoteApp && npm run check:shell
 | 项目 | 值 |
 |---|---|
 | App 版本 | 0.1.1（buildNumber 7 / Android versionCode 7） |
-| 构建 | iOS Release（手动签名），`expo prebuild -p ios --no-install` + `pod install` + `xcodebuild` |
-| 安装 | 覆盖安装到用户验收用 iPhone（`devicectl`；UDID/序列号不入库） |
-| 构建目录 | `/tmp/dsh-ios-group-clean`（本机临时目录，不入库） |
 | 原生模块 | `modules/dsh-mtls` 只含群体版：P-256 设备密钥 / 签名 / `__Host-` cookie / 缓存清理 |
 | 静态检查 | `npx tsc --noEmit`、`npm run check:native`、`npm run check:shell` 均通过 |
-| entitlement | 构建产物无 `aps-environment`（**仅 ≤0.1.7 历史**：0.1.8 起重新支持 iOS APNs 推送） |
 
 ### 待用户确认的验收项（未勾选）
 
@@ -654,15 +504,6 @@ cd dsh-remoteApp && npm run check:shell
 - [ ] 「设备与安全」页显示 token 认证、主机 ID、端口、P-256 设备密钥 label、App 锁开关；
       无证书 / mTLS 诊断 / 证书导入项。
 - [ ] 外链在 App 内嵌浏览器打开；解除本机配对后可重新扫码配对。
-
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 7）见 dsh-remoteApp/README.md「构建与安装」
-```
 
 ---
 
@@ -707,62 +548,9 @@ cd dsh-remoteApp && npm run check:shell
 5. **challenge 并发/重复导致 token 401**：relay 允许同一设备多个未消费 challenge（互不覆盖）。
 6. **配对后 redirect 的旧连接**：relay 在主机控制连接替换/短暂重连时不再清空设备表。
 
-### 回归命令（本机）
-
-```bash
-cd dsh-remoteService && npm test            # 195/195
-cd dsh-remoteService && npm run validate:artifacts
-cd dsh-remoteApp && npx tsc --noEmit
-cd dsh-remoteApp && npm run check:native
-cd dsh-remoteApp && npm run check:shell
-# iOS Release 构建（buildNumber 6）
-xcodebuild -workspace DSHRemote.xcworkspace -scheme DSHRemote -configuration Release \
-  -destination 'generic/platform=iOS' build
-```
-
 ---
 
 ---
-
-## 构建与安装（iOS）
-
-```bash
-cd dsh-remoteApp
-npm install
-npx expo prebuild -p ios --no-install
-cd ios && CP_HOME_DIR="$PWD/.pods-home" CP_CACHE_DIR="$PWD/.pods-cache" pod install
-cd ..
-
-# A) 免签名编译验证（开发机/代理用，不装机；确认原生工程与 expo-notifications 可编译）
-xcodebuild -workspace ios/DSHRemote.xcworkspace -scheme DSHRemote -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath /tmp/dsh-ios-build \
-  CODE_SIGNING_ALLOWED=NO build
-# 期望 `** BUILD SUCCEEDED **`；并确认推送 entitlement 已生成：
-plutil -p ios/DSHRemote/DSHRemote.entitlements   # 应包含 "aps-environment" => "development"
-
-# B) 真机签名安装（由持有签名材料的人执行）
-xcodebuild -workspace ios/DSHRemote.xcworkspace -scheme DSHRemote -configuration Release \
-  -destination 'generic/platform=iOS' -derivedDataPath /tmp/dsh-ios-build \
-  CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM=<TEAM_ID> \
-  PROVISIONING_PROFILE_SPECIFIER=<PROFILE_UUID> \
-  CODE_SIGN_IDENTITY='Apple Development: <NAME> (<CERT_ID>)' build
-xcrun devicectl device install app --device <IPHONE_UDID> /tmp/dsh-ios-build/Build/Products/Release-iphoneos/DSHRemote.app
-xcrun devicectl device process launch --device <IPHONE_UDID> <BUNDLE_ID>
-```
-
-> - 签名材料、Team ID、描述文件 UUID、UDID、bundle id 走本机参数/环境变量，不入库。
-> - 推送：`expo-notifications` plugin 在 `ios/DSHRemote/DSHRemote.entitlements` 生成
->   `aps-environment`（development）；TestFlight/App Store 签名 profile 会覆盖为 production。
->   **只有带该 entitlement 的签名包**才能拿到 APNs device token（模拟器 / Expo Go 不行）。
-> - 改了 `app.json` 的 `version`/`buildNumber` 或 plugins 后必须重新 `expo prebuild` +
->   `pod install`：`xcodebuild` 实际读生成后的 `ios/DSHRemote/Info.plist` 与 entitlements。
-> - **R2 官方包构建**（仅 owner 做）：在同一条命令前注入构建环境变量
->   `EXPO_PUBLIC_PUSH_CHANNEL=official EXPO_PUBLIC_PUSH_HUB=https://push.example.com`
->   （占位符；真实 hub 地址只放构建环境/CI secret，不入库）。
->   `self`（部署方自签）构建不注入这两个变量，继续走 relay 推送。
-
-Android（当前开发机无 SDK）：需要 Android SDK + JDK 17+，`npx expo prebuild -p android` 后
-`npx expo run:android --variant release`；同一份 JS/原生 group 模块，验收项同 iOS。
 
 ## 回归命令
 
@@ -776,9 +564,7 @@ cd dsh-remoteApp && npx expo config --type public
 ## 已知限制
 
 - Android 未构建/未真机（仅静态检查）。
-- 推送仅 iOS APNs（Android FCM 未接入）。R2 `official` 通道只对**内置官方 hub 地址的官方构建**生效
-  （仓库默认 self + 空 endpoint；真实地址由 owner 构建时注入，不入库）；official 不带 sessionId
-  （点通知只打开主机）；credential 缓存有效期由 hub 决定（默认 7 天，进入主机/回前台续期）。
+  official 通道点通知只打开主机（不带 sessionId）；credential 缓存有效期由 hub 决定（默认 7 天，进入主机/回前台续期）。
   App 本地「推送」开关只停止新登记，已登记 token 的注销依赖主机侧「推送提醒」/设备撤销/relay 重启。
 - iOS 原生无法程序化设置 HttpOnly cookie（依赖 relay `Set-Cookie`；App 注入的会话 cookie 为 Secure/SameSite=Strict/host-only）。
 - 旧 classic/单体版连接记录会在升级后直接丢弃（本分支只支持群体版）。
