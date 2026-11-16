@@ -1,8 +1,8 @@
 # 群体服务版（`feat/group-service`）设计决策记录
 
-> 状态：**P0 决策稿**（2026-10-27）· 分支 `feat/group-service`（基于 `main` @ `56ba36f`）
-> 决策人：项目所有者（2026-10-27 会话拍板）· 实施从 P1 POC 开始
-> 关联：根 `README.md`「群体服务版」、分支版 `AGENTS.md`「分支说明」、本地 `todo/TODO.md` T2 / T2.1
+> 状态：**设计决策记录**（2026-10-27 初稿；2026-11-17 更新分发/推送现状）· 分支 `feat/group-service`（基于 `main` @ `56ba36f`）
+> 决策人：项目所有者（2026-10-27 会话拍板；2026-11-17 分发/推送补充）· 实施从 P1 POC 开始
+> 关联：根 `README.md`「官方 TestFlight 版」、分支版 `AGENTS.md`「分支说明」、`STATUS.md`、本地 `todo/TODO.md`
 > 脱敏约定：本文所有域名 / hostId / 序列号一律使用占位符（`relay.example.com`、
 > `h_ab12cd34`、`<BUNDLE_ID>`、`<VPS_IP>`），与任何真实部署无关。
 
@@ -10,37 +10,52 @@
 
 给「**任何人可自行部署、邀约小范围群体使用**」的远程访问形态：**服务端终止 TLS（A 模式）**，
 主机只做出站隧道；**设备身份 = 配对注册的设备密钥 + 短时 token**（取消客户端证书）；
-主机 ID 由服务端分配管理；推送由服务端统一完成。`main` 的 B2 盲中继形态**保持不变**。
+主机 ID 由服务端分配管理。推送分两条：**official** 官方 App → 官方 hub（主机直连，relay 不参与）；
+**self** 自建 App → 部署方 relay（部署方自己的 APNs key）。官方 App 通过 TestFlight **公开链接**分发，
+relay 注册仍**邀请制**；`main` 的 B2 盲中继形态**保持不变**。
 
 > 落地过程中实际踩到的问题与根因（部署/鉴权/WebSocket/连接复用等）见
 > [`docs/diagnostics/12-group-service-issues.md`](diagnostics/12-group-service-issues.md)。
+
+> **2026-11-17 分发/推送现状（以此为准）**
+> - 官方 App 通过 TestFlight **公开链接**分发，不设邮箱/邀请门槛；公开链接不是权限边界
+>   （可停用/更换，上限 10,000 人，build 90 天过期）。
+> - App 可独立连接群体版 relay；官方 hub 推送是可选功能。官方版仅支持群体模式，
+>   不支持 `main` 的单机/mTLS 形态。
+> - 推送分两条：official = 官方 App → 官方 hub（主机直连，relay 不参与）；
+>   self = 自建 App → 部署方 relay APNs。
+> - relay 注册仍邀请制；插件邀请码只管 relay 主机注册，与 TestFlight/官方 hub 无关。
+>   官方 hub 开放登记（无账号/邀请），PoP + 限流 + APNs topic 兜底。
+> - 阶段状态：P1 ✅ / P2 🟡（official 已完成，self 待真机复验）/ P3 🟡（主体完成，单命令一键部署脚本未做）/ P4 🟡 持续；明细见 §12。
 
 ## 1. 目标与非目标
 
 ### 目标（v1）
 
-- 任何人（有 VPS + 域名）可一键部署一套服务，用邀请码邀约 3–20 人的小群体。
+- 任何人（有 VPS + 域名）可按 compose + 文档部署一套服务，用邀请码邀约 3–20 人的小群体。
 - 主机侧**零证书、零 token 手填**：填「服务地址 + 邀请码」后自动注册、领端口、出配对码。
-- App 支持两种来源：部署方**自建 App**（自己的 Apple 团队 + 自己的 APNs key），
-  或使用自托管 App（推送由部署方自行配置）。
+- App 支持两种来源：① **官方 TestFlight 版**（owner 签名，推送走官方 hub；公开链接分发）；
+  ② **部署方自建版**（自己的 Apple 团队 + 自己的 APNs key，推送走部署方 relay）。
+  官方版仅支持群体模式（token + group relay），不支持 `main` 的单机/mTLS 形态。
 - 保留现有能力：WebView 复用 DSH UI、会话/审批/终端、推送、设备管理、撤销、远程重启（可选组件）。
 
 ### 非目标（v1）
 
-- 不做公开注册 / 公开 SaaS（**邀请制**，只服务小范围可信群体）。
+- **relay 不做公开注册 / 公开 SaaS**（邀请制，只服务小范围可信群体）。
+  官方 App 的 TestFlight 分发是公开的，官方 hub 是开放登记——这两者不构成 relay 的公开注册。
 - 不做账号体系 / 工作区 / 计费（**配对即注册**）。
 - 不做服务端会话历史（T1.1 仍是后续独立选项）。
 - 不做 Android 服务端推送集中化（FCM 随后）。
 
-## 2. 关键决策（2026-10-27 拍板）
+## 2. 关键决策（2026-10-27 拍板；2026-11-17 推送/分发补充）
 
 | # | 决策 | 说明 |
 |---|---|---|
 | 1 | **A 模式** | relay 终止 TLS（通配证书）；主机只做出站隧道；部署方可见明文，**风险与责任由部署方承担** |
 | 2 | **取消客户端证书** | 设备密钥（Secure Enclave / Keystore，配对时注册公钥）+ **短时 token（15–30 分钟，native 续期）** |
 | 3 | **主机 ID 服务端管理** | 注册时分配、唯一、不可改；友好名称本地填写并同步服务端管理台 |
-| 4 | **推送服务端完成** | 自建 App → 部署方直连 APNs；推送内容可由部署方选择通用或摘要 |
-| 5 | **邀请制注册** | 邀请码 + 限速 + 配额；不做公开注册 |
+| 4 | **推送分流** | official：官方 App → 官方 hub（host 直连，relay 不参与）；self：自建 App → 部署方 relay APNs。官方 hub 开放登记（PoP + 限流 + APNs topic 兜底） |
+| 5 | **relay 邀请制注册** | 邀请码 + 限速 + 配额；官网/TestFlight 的公开分发不改变 relay 注册的邀请制 |
 | 6 | **`main` 不合并** | 两套形态同仓库、代码开关隔离；本分支不回流 `main` 默认路径 |
 
 ## 3. 架构
@@ -54,7 +69,7 @@ relay / 服务端（公网，A 模式，部署方运营）
   ├─ 设备鉴权：短时 token 校验（15–30min）
   ├─ 路由：SNI / Host → hostId（服务端校验，不信任客户端声明）
   ├─ 出站隧道：WSS 到主机插件（HTTP/WS 多路复用、背压、心跳独立）
-  └─ 推送：APNs direct（部署方 key） / webhook 兜底
+  └─ 推送：self（部署方 APNs key）
   ▼
 主机插件（DSH 主机，只出站）
   ├─ 隧道客户端：注册、心跳、多路复用、重连
@@ -63,15 +78,26 @@ relay / 服务端（公网，A 模式，部署方运营）
   └─ 推送意图 / 设备 token 上报（不持有任何 Apple 凭据）
 ```
 
+官方推送（R2，可选，不经过 relay）：
+
+```
+官方 App ──P-256 PoP──► 官方 hub（challenge → enroll → device credential）
+主机 ──device credential──► 官方 hub ──APNs──► Apple
+```
+
+- hub 只认官方 App 的 device credential；relay 不持有官方 APNs key，也不转发 official 推送。
+- 默认通用文案；主机开启「详细推送内容」后可选 title/body；`sessionId` 可选，点通知直达会话。
+- hub 不落 token/内容；开放登记，靠 PoP + 限流 + APNs topic 兜底（App Attest 为后续可选加固）。
+
 组件职责：
 
 | 组件 | 职责 |
 |---|---|
-| relay（新增 `group` 模式） | 终止 TLS、会话鉴权、hostId 路由、隧道终结、推送、限速/配额、审计 |
+| relay（`group` 模式） | 终止 TLS、会话鉴权、hostId 路由、隧道终结、**self 推送**、限速/配额、审计 |
 | 证书管理 | 部署时 ACME 签 `*.<relayDomain>`；续期；relay 启动自检 |
-| 注册 / 管理端 | 邀请码、hostId 分配、主机列表、撤销、配额、部署方推送配置 |
-| host-plugin（`group` 模式） | 出站隧道、注册/领配置、逐请求鉴权、反代、设备表、推送意图 |
-| App（最小改动） | QR v2 解析、token 认证流程、`__Host-` cookie、推送 token 上报（仍给主机） |
+| 注册 / 管理端 | 邀请码、hostId 分配、主机列表、撤销、配额、部署方推送配置（self） |
+| host-plugin（`group` 模式） | 出站隧道、注册/领配置、逐请求鉴权、反代、设备表、推送意图（self→relay / official→hub） |
+| App（最小改动） | QR v2 解析、token 认证流程、`__Host-` cookie、推送 token 上报（按构建通道分流） |
 
 ## 4. 信任模型与部署方责任
 
@@ -102,7 +128,7 @@ A 模式把「主机终止 TLS」换成「服务端终止 TLS」，**部署方�
 | 手机访问端口 | **只读**，随注册由服务端下发（写入配对二维码） |
 | 中继主机令牌 | **不显示**；注册时自动签发/轮换，0600 落盘；只提供「重置注册」 |
 | TLS 证书路径 / 私钥路径 | **删除**（A 模式主机没有证书） |
-| 推送（自托管直连 APNs / 私钥 / Key ID） | **整组移除**；仅保留「允许推送」开关；提示「推送由服务提供」 |
+| 推送（APNs 私钥 / Key ID / 通道选择） | **整组移除**；仅保留「推送提醒」开关；状态显示「自部署（经 relay）/ 官方（设备直连 hub）/ 混合」；official 由 App 自动向 hub 登记，relay 不需要 official 配置 |
 | 新设备配对需要本机确认 | **保留**（配对安全核心） |
 | 高级项 | 服务端地址覆盖、端口覆盖、`relayTlsInsecure`（仅 POC 显式开启并警告） |
 
@@ -113,7 +139,7 @@ A 模式把「主机终止 TLS」换成「服务端终止 TLS」，**部署方�
 
 1. **部署方**：域名 + 通配 DNS → 启动 relay → 签发 `*.<relayDomain>` 证书 → 管理端生成邀请码。
 2. **主机**：DSH 装插件 → 填「服务地址 + 邀请码」→ `POST /register`（限速）→ 服务端分配
-   `hostId`、签发 `hostToken`、下发手机访问端口与推送配置 → 本地 0600 落盘。
+   `hostId`、签发 `hostToken`、下发手机访问端口与隧道配置 → 本地 0600 落盘。
 3. **主机**：建立出站隧道 → 状态 = 已注册 / 在线。
 4. **主机**：生成配对二维码（QR v2）→ 手机扫码 → 主机本机确认（SAS 对照）→ 设备公钥注册 →
    主机把设备记录同步给 relay（供边缘鉴权）。
@@ -149,15 +175,29 @@ dshremote://pair?v=2&host=<hostId>.<relayDomain>&port=<port>
 - 二维码本身不含长期凭据；不得入库/截图外传。
 
 
-## 9. 推送（self）
+## 9. 推送（self + official R2）
+
+### 9.1 self（部署方自签 App）
 
 - 部署方在 relay 配置自己的 APNs（`p8` / Key ID / Team ID / topic），App 由部署方团队签名；
 - 主机把 device token 上报 relay，relay 直连 APNs 发送；
 - 内容可选 `generic`（固定文案）或 `summary`（会话标题 + 摘要）；
 - token 只存内存、不落盘、不进日志；设备撤销/重连后清理。
 
+### 9.2 official（官方 App，R2）
 
-## 10. 安全基线与攻击用例（P1 验收必须覆盖）
+- 官方 App 用设备 P-256 私钥向官方 hub 登记：`POST /v1/enroll/challenge` → `POST /v1/enroll`，
+  换 per-device EdDSA credential；
+- credential 绑定 tokenHash + hostId + environment + bundleId + aud + exp（默认 30 天）；
+- 主机凭 credential 直连 hub `POST /v1/push`，**不经过 relay**；
+- hub 开放登记（无账号/邀请），PoP + 限流（token/host/IP/全局）+ APNs topic 兜底；
+  App Attest 为后续可选加固；
+- 内容：默认通用文案；主机开启「详细推送内容」后可选 `title`/`body`（≤60/160 字）；
+  `sessionId` 可选，点通知直达会话；hub 不写 token/内容日志；
+- relay 不参与 official 推送；官方 App 的推送不依赖部署方 relay 配置。
+
+
+## 10. 安全基线与攻击用例（验收基线）
 
 | # | 攻击用例 | 期望 |
 |---|---|---|
@@ -180,23 +220,46 @@ dshremote://pair?v=2&host=<hostId>.<relayDomain>&port=<port>
 - 版本号 / 构建号沿用 `AGENTS.md` 7.1 / 7.4；App 改动仍需构建 + 真机 + 用户确认闸门。
 - 本分支**不得**把 A 模式做成 `main` 默认；若未来合并，须另行安全评审与用户决策。
 
-## 12. 分期、POC 验收与风险
+## 12. 实施状态与风险
 
-**P1（先做，约 2 周）**
+> 截止 2026-11-17。历史明细见 §15；版本以 `STATUS.md` 为准。
 
-1. relay 边缘 TLS 终止（通配证书）+ hostId 路由；
-2. 出站隧道（HTTP/WS 多路复用、大帧背压、心跳独立）；
-3. 注册 / 邀请 API + 最小管理端（CLI 或页面）；
-4. token 鉴权 + 签名断言 + 主机逐请求鉴权；
-5. 主机设置页「群体模式」；
-6. QR v2 + App 最小改动（token 流程）。
+### P1 核心链路（已完成）
 
-P1 验收：一台主机 + 一台手机 + 一个自部署 relay 跑通「打开会话 / 发消息 / 审批 / 远程重启」，
-且 §10 攻击用例表全部通过。
+- [x] relay 边缘 TLS 终止（通配证书）+ hostId 路由
+- [x] 出站隧道（HTTP/WS 多路复用、大帧背压、心跳独立）
+- [x] 注册 / 邀请 API + 管理端（CLI + `/__admin`）
+- [x] token 鉴权 + 签名断言 + 主机逐请求鉴权
+- [x] 主机设置页「群体模式」
+- [x] QR v2 + App token 流程
+- 验收：真机跑通打开会话 / 发消息 / 审批 / 远程重启；§10 攻击用例作为验收基线。
 
-**P2（约 1 周）**：服务端推送（直连 APNs，self 通道）。
-**P3（约 1 周）**：分发（自建 App 构建脚本/文档）+ 部署一键化。
-**P4（约 1 周）**：加固、审计、文档、真机验收。
+### P2 推送（official 已完成；self 待真机复验）
+
+- [x] self 实现：relay 直连部署方 APNs（通用 / 摘要）
+- [x] official R2：官方 App 设备登记 → 主机直连官方 hub
+- [x] App 推送设置 / 详细内容开关 / 通知点击直达会话
+- [ ] self 真机复验（需重新安装 self 包；见 `dsh-remoteApp/docs/ACCEPTANCE.md`）
+- 验收：official 真机通过；self 待复验。
+
+### P3 分发（主体完成）
+
+- [x] 官方 TestFlight 公开链接（不设邮箱/邀请门槛）
+- [x] 自建 App 构建脚本/文档
+- [x] relay group compose + 部署文档
+- 公开链接只负责装 App，不是 relay 注册/官方 hub 的权限边界。
+
+### 后续（未开始）
+
+- [ ] 单命令「一键部署」脚本（当前是 compose + 文档）
+
+### P4 加固 / 审计 / 文档 / 验收（持续）
+
+- [x] 安全基线 + 攻击用例清单（§10）
+- [x] 诊断文档、验收记录
+- [ ] 攻击用例逐条回归留证（按 §10）
+- [ ] 官方 hub 的 App Attest / allowlist / 更细配额（见 §13）
+- [ ] 长期审计/加固（按需）
 
 **主要风险**
 
@@ -208,10 +271,16 @@ P1 验收：一台主机 + 一台手机 + 一个自部署 relay 跑通「打开�
 
 ## 13. 未决问题
 
-2. 邀请码管理形态：CLI / 最小网页 / 二维码邀请链接？
-3. 手机访问端口分配策略：每主机一个端口，还是每部署一个端口（443/11443）？
-4. 隧道上传 / 下载大小上限（附件、导出、日志）与 relay 超时策略。
-5. 会话历史（T1.1）是否作为群体版 v2 选项（服务端存储会进一步加重部署方信任责任）。
+以下为仍需决策/实施的事项：
+
+1. 隧道上传 / 下载大小上限（附件、导出、日志）与 relay 超时策略。
+2. 会话历史（T1.1）是否作为群体版 v2 选项（服务端存储会进一步加重部署方信任责任）。
+3. 官方 hub 是否需要 App Attest / allowlist / 更细配额（当前开放登记 + PoP + 限流）。
+
+### 已解决（不再跟踪）
+
+- [x] 邀请码管理形态：CLI + `/__admin` 后台（P1）
+- [x] 手机访问端口分配：注册时按主机下发 `mobilePort`（P1）
 
 ## 14. 脱敏约定
 
@@ -219,7 +288,9 @@ P1 验收：一台主机 + 一台手机 + 一个自部署 relay 跑通「打开�
 `<BUNDLE_ID>`、`<VPS_IP>`、`<HOST_TOKEN>`、`<PAIRING_SECRET>`。真实域名 / IP / hostId /
 UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
 
-## 15. P1 进度
+## 15. 实施记录（历史）
+
+> 当前状态见 §12；以下按时间顺序保留实施记录。
 
 - **2026-10-27：切片 1 已落地**——relay `group` 模式 + 邀请码自助注册
   （`POST /__group/register`，服务端分配 hostId/hostToken/mobilePort，`mobilePort` 随注册下发）+
@@ -293,3 +364,8 @@ UDID / 设备名一律不得出现在仓库、issue、PR 或截图中。
   注入/续期（替代群体模式下的 mTLS）、配对页 v2 流程、WebView URL 带服务端下发端口；构建后交用户真机验证。
 - **2026-11-01：服务端集中推送切片（self）已落地**：relay 用部署方 APNs key 推送自签 App；
   protocol 新增推送登记/意图消息，host 上报 token 并触发提醒，App 增加推送设置与通知点击跳转。
+- **2026-11-17：分发/推送现状**——官方 App 通过 TestFlight 公开链接分发（`<TESTFLIGHT_PUBLIC_LINK>`，
+  不设邮箱/邀请门槛）；官方推送走 R2 hub（官方 App 设备登记 → 主机直连 hub），relay 只保留
+  self 推送；relay 注册仍邀请制，插件邀请码只用于 relay 主机注册，与 TestFlight/hub 无关。
+  当前版本以 `STATUS.md` 为准（App 0.2.2 / build 25、relay 0.4.1、host-plugin 0.2.9、
+  hub 0.3.3、protocol 0.3.2）。
