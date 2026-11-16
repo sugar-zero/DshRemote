@@ -1453,6 +1453,134 @@ test('设置页：推送提醒区开关保存 pushEnabled，并展示 self/offic
   assert.equal(refreshed.props['aria-checked'], false, '保存响应回来后开关态同步为关闭');
 });
 
+test('设置页：「详细推送内容」可独立关闭并保存（不跟随推送提醒禁用；点标题也能切换）', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: {
+      registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443',
+      hostId: 'h_test1234', fqdn: 'h_test1234.relay.example.com', mobilePort: 11443, plainPort: 34567,
+      controlUrl: '', lastError: null,
+    },
+    host: { id: 'h_test1234', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    restart: { enabled: false },
+    push: {
+      enabled: true,
+      detail: true,
+      self: { devices: 0, lastError: '服务器未开启推送（relay 的 group.push.enabled=false）' },
+      official: { devices: 0, lastError: null, hub: null },
+      mode: '',
+    },
+    config: {
+      enabled: true, hostName: 'Example Mac', requireApproval: true, restartHostEnabled: false,
+      pushEnabled: true, pushDetail: true,
+      groupServiceUrl: 'https://relay.example.com:19443', groupPlainPort: 34567, groupInsecure: false,
+    },
+  };
+  let pushDetail = true;
+  const calls = [];
+  const fetchImpl = async (url, options = {}) => {
+    calls.push({ url: String(url), options });
+    if (String(url).includes('/config') && options.method === 'POST') {
+      const patch = JSON.parse(String(options.body ?? '{}'));
+      if (patch.pushDetail !== undefined) pushDetail = patch.pushDetail === true;
+    }
+    const data = {
+      ...baseStatus,
+      push: { ...baseStatus.push, detail: pushDetail },
+      config: { ...baseStatus.config, pushDetail },
+    };
+    if (String(url).includes('/audit')) {
+      return { ok: true, status: 200, async json() { return { ok: true, data: { entries: [] } }; } };
+    }
+    return { ok: true, status: 200, async json() { return { ok: true, data }; } };
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, { fetchImpl });
+  let tree = renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  tree = renderer.render();
+
+  const findDetailToggle = (root) => findAll(root, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '') === '详细推送内容')[0];
+
+  let toggle = findDetailToggle(tree);
+  assert.ok(toggle, '推送区应有「详细推送内容」开关');
+  assert.equal(toggle.props['aria-checked'], true, 'config.pushDetail=true 时初值为开');
+  assert.notEqual(toggle.props.disabled, true, '「推送提醒」开着时不应禁用');
+
+  // 点标题（行标签）等价于点开关：DSH 原生设置行就是这个手感。
+  const labelRow = findAll(tree, (element) => element.props['data-ra-clickable'] === '1'
+    && String(element.props['aria-label'] ?? '') === '详细推送内容')[0];
+  assert.ok(labelRow, '标题区应可点击');
+  labelRow.props.onClick();
+  await flushAsync();
+  tree = renderer.render();
+  toggle = findDetailToggle(tree);
+  assert.equal(toggle.props['aria-checked'], false, '点标题后应为关闭');
+
+  const saveButtons = findAll(tree, (element) => element.props['data-ra-btn'] !== undefined && collectText(element).includes('保存'));
+  assert.ok(saveButtons.length >= 1, '推送区应有保存按钮');
+  saveButtons.at(-1).props.onClick();
+  await flushAsync();
+  const configCall = calls.filter((call) => call.url.includes('/config') && call.options.method === 'POST').at(-1);
+  assert.ok(configCall, '保存应 POST /config');
+  assert.deepEqual(JSON.parse(String(configCall.options.body)), { pushDetail: false }, '保存只提交 pushDetail');
+  assert.equal(findDetailToggle(renderer.render()).props['aria-checked'], false, '保存响应回来后保持关闭');
+  assert.equal(pushDetail, false, '服务端收到的 pushDetail=false');
+});
+
+test('设置页：「推送提醒」关闭时「详细推送内容」仍可切换（独立持久化）', async () => {
+  const baseStatus = {
+    enabled: true,
+    group: {
+      registered: true, connected: true, serviceUrl: 'https://relay.example.com:19443',
+      hostId: 'h_test1234', fqdn: 'h_test1234.relay.example.com', mobilePort: 11443, plainPort: 34567,
+      controlUrl: '', lastError: null,
+    },
+    host: { id: 'h_test1234', name: 'Example Mac', fingerprint: 'FpAbCdEfGhIjKlMnOpQrSt' },
+    pairing: { active: false },
+    devices: [],
+    restart: { enabled: false },
+    push: {
+      enabled: false,
+      detail: true,
+      self: { devices: 0, lastError: null },
+      official: { devices: 0, lastError: null, hub: null },
+      mode: '',
+    },
+    config: {
+      enabled: true, hostName: 'Example Mac', requireApproval: true, restartHostEnabled: false,
+      pushEnabled: false, pushDetail: true,
+      groupServiceUrl: 'https://relay.example.com:19443', groupPlainPort: 34567, groupInsecure: false,
+    },
+  };
+  const renderer = createStatefulRenderer();
+  const { clientModule, t } = setupClientWithReact(renderer.react, {
+    fetchImpl: async (url) => ({
+      ok: true,
+      status: 200,
+      async json() {
+        if (String(url).includes('/audit')) return { ok: true, data: { entries: [] } };
+        return { ok: true, data: baseStatus };
+      },
+    }),
+  });
+  renderer.mount(clientModule.__test.SettingsPage, { t, initialStatus: baseStatus });
+  await flushAsync();
+  const tree = renderer.render();
+  const toggle = findAll(tree, (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '') === '详细推送内容')[0];
+  assert.ok(toggle, '推送区应有「详细推送内容」开关');
+  assert.notEqual(toggle.props.disabled, true, '「推送提醒」关闭时也应可切换（此前会变灰且无视觉差异）');
+  toggle.props.onClick();
+  await flushAsync();
+  const after = findAll(renderer.render(), (element) => element.props['data-ra-sw'] !== undefined
+    && String(element.props['aria-label'] ?? '') === '详细推送内容')[0];
+  assert.equal(after.props['aria-checked'], false, '点击后关闭');
+});
+
 test('设置页：self/official 通道错误与隧道断开提示可读', async () => {
   const baseStatus = {
     enabled: true,

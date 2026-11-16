@@ -16,12 +16,12 @@ async function setup() {
   return { home, service };
 }
 
-test('RemoteService：版本与管理 API 展示的版本一致（0.2.8）', async () => {
+test('RemoteService：版本与管理 API 展示的版本一致（0.2.9）', async () => {
   const { home, service } = await setup();
   try {
     const pkgVersion = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8')).version;
     assert.equal(service.status().version, pkgVersion);
-    assert.equal(pkgVersion, '0.2.8');
+    assert.equal(pkgVersion, '0.2.9');
   } finally {
     await service.dispose();
     home.cleanup();

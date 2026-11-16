@@ -108,7 +108,7 @@ window.__ModuleLoader__.load({
       'push.modeSelf': '私有',
       'push.modeOfficial': '官方（TestFlight）',
       'push.modeMixed': '私有 + 官方（TestFlight）',
-      'push.modeNone': '—',
+      'push.modeNone': '—（暂无已登记设备）',
       'push.selfDevices': '私有推送',
       'push.officialDevices': '官方推送',
       'push.devicesValue': '{count} 台',
@@ -273,7 +273,7 @@ window.__ModuleLoader__.load({
       'push.modeSelf': 'Private',
       'push.modeOfficial': 'Official (TestFlight)',
       'push.modeMixed': 'Private + Official (TestFlight)',
-      'push.modeNone': '—',
+      'push.modeNone': '— (no registered device yet)',
       'push.selfDevices': 'Private push',
       'push.officialDevices': 'Official push',
       'push.devicesValue': '{count}',
@@ -791,6 +791,9 @@ window.__ModuleLoader__.load({
 [data-ra-sw][data-on]{background:var(--dsw-alias-state-business-primary,#3b82f6)}
 [data-ra-sw] i{position:absolute;top:3px;left:3px;display:block;width:16px;height:16px;border-radius:50%;background:#fff;transition:left .15s}
 [data-ra-sw][data-on] i{left:19px}
+[data-ra-sw]:disabled{cursor:default;opacity:.5}
+[data-ra-clickable]{cursor:pointer}
+[data-ra-clickable]:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#3b82f6);outline-offset:2px;border-radius:6px}
 [data-ra-actions]{display:flex;justify-content:flex-end;gap:8px;flex-wrap:wrap}
 [data-ra-card]{display:flex;align-items:flex-start;gap:10px;padding:10px 12px;border-radius:10px;
   border:1px solid var(--dsw-alias-border-l2,rgba(128,128,128,.14));
@@ -879,9 +882,31 @@ window.__ModuleLoader__.load({
         props.children);
     }
 
+    /**
+     * 表单行：左侧标题/说明 + 右侧控件（开关、按钮）。
+     *
+     * `onLabelClick` 存在时标题区也可点（等价于点右侧开关）：DSH 原生设置行点整行都能切换，
+     * 用户点了文字却“关不掉”是 2026-11-16 反馈的「详细推送内容开关关不掉」的典型表现。
+     */
     function Row(props) {
+      const interactive = typeof props.onLabelClick === 'function';
       return h('div', { 'data-ra-row': '' },
-        h('div', { 'data-ra-grow': '' },
+        h('div', {
+          'data-ra-grow': '',
+          'data-ra-clickable': interactive ? '1' : undefined,
+          role: interactive ? 'button' : undefined,
+          tabIndex: interactive ? 0 : undefined,
+          'aria-label': interactive ? props.label : undefined,
+          onClick: interactive ? props.onLabelClick : undefined,
+          onKeyDown: interactive
+            ? (event) => {
+              if (event && (event.key === 'Enter' || event.key === ' ')) {
+                event.preventDefault?.();
+                props.onLabelClick();
+              }
+            }
+            : undefined,
+        },
           h('div', { 'data-ra-label': '' }, props.label),
           props.note ? h('div', { 'data-ra-note': '' }, props.note) : null),
         props.children);
@@ -1697,7 +1722,11 @@ window.__ModuleLoader__.load({
 
       // 服务设置：开关 / 主机名 / 桌面确认。
       const serviceSection = h(Section, { title: t('section.service') },
-        h(Row, { label: t('sw.enabled'), note: t('sw.enabledNote') },
+        h(Row, {
+          label: t('sw.enabled'),
+          note: t('sw.enabledNote'),
+          onLabelClick: disabled ? undefined : () => setDraft({ ...draft, enabled: !draft.enabled }),
+        },
           h(Toggle, {
             checked: draft.enabled,
             disabled,
@@ -1711,7 +1740,11 @@ window.__ModuleLoader__.load({
             placeholder: t('field.hostNameHint'),
             onChange: (value) => setDraft({ ...draft, hostName: value }),
           })),
-        h(Row, { label: t('sw.requireApproval'), note: t('sw.requireApprovalNote') },
+        h(Row, {
+          label: t('sw.requireApproval'),
+          note: t('sw.requireApprovalNote'),
+          onLabelClick: disabled ? undefined : () => setDraft({ ...draft, requireApproval: !draft.requireApproval }),
+        },
           h(Toggle, {
             checked: draft.requireApproval,
             disabled,
@@ -1724,7 +1757,11 @@ window.__ModuleLoader__.load({
 
       // 组件：「允许手机重启主机 DSH」（默认关闭；关闭时 App 隐藏 ⏻ 且接口 501）。
       const componentsSection = h(Section, { title: t('section.components') },
-        h(Row, { label: t('sw.restartHost'), note: t('sw.restartHostNote') },
+        h(Row, {
+          label: t('sw.restartHost'),
+          note: t('sw.restartHostNote'),
+          onLabelClick: disabled ? undefined : () => setDraft({ ...draft, restartHostEnabled: !draft.restartHostEnabled }),
+        },
           h(Toggle, {
             checked: draft.restartHostEnabled,
             disabled,
@@ -1748,17 +1785,28 @@ window.__ModuleLoader__.load({
       const officialPushDevices = Number(officialPush.devices ?? 0) || 0;
       const pushDeviceCount = selfPushDevices + officialPushDevices;
       const pushSection = h(Section, { title: t('section.push') },
-        h(Row, { label: t('sw.pushEnabled'), note: t('sw.pushEnabledNote') },
+        h(Row, {
+          label: t('sw.pushEnabled'),
+          note: t('sw.pushEnabledNote'),
+          onLabelClick: disabled ? undefined : () => setDraft({ ...draft, pushEnabled: !draft.pushEnabled }),
+        },
           h(Toggle, {
             checked: draft.pushEnabled,
             disabled,
             label: t('sw.pushEnabled'),
             onChange: (value) => setDraft({ ...draft, pushEnabled: value }),
           })),
-        h(Row, { label: t('sw.pushDetail'), note: t('sw.pushDetailNote') },
+        // 「详细推送内容」独立开关：即使「推送提醒」关着也应能改（只影响后续发送时的文案，
+        // 服务端 pushDetail 与 pushEnabled 分开存）。之前它跟着 pushEnabled 一起 disabled，
+        // 而禁用态没有视觉差异 → 用户看到“开着的开关点不动”。
+        h(Row, {
+          label: t('sw.pushDetail'),
+          note: t('sw.pushDetailNote'),
+          onLabelClick: disabled ? undefined : () => setDraft({ ...draft, pushDetail: !draft.pushDetail }),
+        },
           h(Toggle, {
             checked: draft.pushDetail,
-            disabled: disabled || !draft.pushEnabled,
+            disabled,
             label: t('sw.pushDetail'),
             onChange: (value) => setDraft({ ...draft, pushDetail: value }),
           })),
