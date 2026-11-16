@@ -33,7 +33,8 @@ DSH 远程访问的手机端外壳：**Expo / React Native (TypeScript)**，iOS 
 | iOS 推送 | ✅ 自托管 APNs 直连（APNs device token + aps-environment；通知取会话标题+助手回复摘要；点击通知跳对应会话，2026-10-25 真机验证；App 锁屏时按系统通知显示）；Android FCM 未接入 |
 | 前台推送 | ✅ App 内通知卡片（默认不弹系统横幅，20s 自动消失；当前会话不弹卡片）；后台/锁屏仍是系统通知 |
 | 设置页 | ✅ 版本信息 / 应用内通知开关 / 通知权限 / 发送测试通知 / 清理 WebView 缓存 / 设备与安全入口 |
-| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 会话侧栏→左侧抽屉；窄屏右栏→全屏覆盖层；窄屏设置→全屏 + 分区菜单抽屉（左上返回退出设置）；外链→App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）；窄屏隐藏 DSH 的「在主机本机打开」控件（open-in-app，只按稳定 `data-*` 属性隐藏控件本身、不整段隐藏插件槽位）（`src/lib/mobileWebShell.ts`、`src/screens/WebViewScreen.tsx`；`npm run check:shell` 无头 Chrome 回归） |
+| DSH Web 兼容版本 | **DSH 0.2.2+**（真机验证基线 0.2.2-rc.2 / 2026-11-16）。0.2.2 起窄屏侧栏抽屉与设置弹窗由 DSH 原生布局承担，注入壳不再自绘；0.2.1 及更早不再支持手机侧栏入口。见 [诊断记录](../docs/diagnostics/13-dsh-0.2.2-mobile-shell.md) |
+| 手机布局（`?dsh_mobile=1`，注入手机壳） | ✅ 窄屏侧栏抽屉 / 设置弹窗交给 DSH 原生窄屏布局（0.2.2 起）；窄屏右栏→全屏覆盖层；外链→App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）；窄屏隐藏 DSH 的「在主机本机打开」控件（open-in-app，只按稳定 `data-*` 属性隐藏控件本身、不整段隐藏插件槽位）（`src/lib/mobileWebShell.ts`、`src/screens/WebViewScreen.tsx`；`npm run check:shell` 无头 Chrome 回归） |
 | 主机列表管理 | ✅ 多主机列表；每台可单独删除本机记录（确认框，不进入配对流程）；主机改名自动同步；主机侧撤销设备后卡片显示警示并可删除（0.1.8，真机验证）；「设备与安全」页只保留单一「解除本机配对」入口（0.1.9） |
 | 配对默认设备名 | ✅ 使用系统本机设备名（`expo-device`；系统只给通用名时回退机型名），可自定义；不再写死「我的 iPhone」 |
 | 服务端 relay / 主机插件 | ✅ 见 `dsh-remoteService` 与 `server/` |
