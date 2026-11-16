@@ -38,3 +38,5 @@ self 构建默认使用 `self` 推送通道（不注入额外变量）；推送�
 - `npm run check:shell`
 
 签名材料/描述文件只留在仓库外，不要提交。
+
+真机验收记录见 [`docs/ACCEPTANCE.md`](docs/ACCEPTANCE.md)。
