@@ -48,9 +48,16 @@ if (!enabled) return { ok: false, code: 'push_disabled', message: 'relay 未开�
 
 ### 2.3 部署侧配置核对（只读）
 
-仓库里部署用的 `server/.env`（集群版 compose 的 env 文件）**没有任何 `RELAY_GROUP_PUSH_*`**：
-`docker-compose.group.yml` 对这些变量是 `${RELAY_GROUP_PUSH_ENABLED:-false}`，
-所以容器内恒为 `false` → 上线以来 self 通道**一直没开过**，不是这次才坏的。
+本仓库的部署副本 `server/.env` **没有任何 `RELAY_GROUP_PUSH_*`**；
+`docker-compose.group.yml` 对这些变量是 `${RELAY_GROUP_PUSH_ENABLED:-false}`。
+线上 env 文件名可能不同（compose 默认读 `.env`，README 示例用 `--env-file .env.group`），
+可用下面命令核对容器里实际生效的值：
+
+```bash
+docker inspect dsh-relay-group --format '{{range .Config.Env}}{{println .}}{{end}}' | grep RELAY_GROUP_PUSH || echo "（一个都没配 = 推送关闭）"
+```
+
+从主机审计看，self 通道自 2026-11-09 起**每一次登记都是 `push_disabled`**，说明线上一直是关的。
 
 > 注：官方的 `/healthz` 摘要（`push.enabled/mode/tokens`）只绑宿主回环（默认 `127.0.0.1:18080`），
 > 不能从公网核对；本次结论完全来自主机审计 + 代码路径。
