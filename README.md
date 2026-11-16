@@ -15,6 +15,19 @@ DSH Remote 是 [DeepSeek Harness](https://github.com/deepseek-ai)（DSH）的远
 - 可选推送：部署方使用自己的 APNs Auth Key，经 relay 发送给自己的 App
 - App 锁、缓存清理、外链内嵌浏览器
 
+## 官方 TestFlight 版（测试中）
+
+官方 TestFlight 版仍在测试中，可直接通过公开链接安装：
+
+**https://testflight.apple.com/join/XRUhMjNM**
+
+- 安装后 App 可独立使用（连接你自己的群体版 relay服务器。仅适用于群体版不适用于单机版）。
+- 如何使用？：在主机设置里开启「推送提醒」即可
+- App 会自动向官方推送服务器登记，不需要再自己配置APNs即可享受到推送服务。
+
+> 公开链接可能随测试结束、build 过期或名额调整而关闭/更换；
+> TestFlight build 有效期 90 天，过期后需要安装新 build。
+
 ## 快速开始
 
 1. 部署 relay：见 [`server/README.md`](server/README.md)
