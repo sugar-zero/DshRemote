@@ -343,9 +343,15 @@ POST /__group/auth/token { deviceId, nonce, signature }
 
 ## 手机布局（注入 `MOBILE_WEB_SHELL_JS`）
 
-- 会话侧栏 → 左侧抽屉；窄屏右栏 → 全屏覆盖层；窄屏设置 → 全屏 + 分区菜单抽屉；
-  外链 → App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）；
-  窄屏隐藏 DSH 的「在主机本机打开」控件（open-in-app，只按稳定 `data-*` 属性隐藏控件本身、
+> **适配的 DSH 版本：0.2.2 及以上**（真机验证基线 `0.2.2-rc.2`，2026-11-16，iPhone 17 Pro Max）。
+> 0.2.2 起窄屏侧栏抽屉与设置弹窗由 DSH 客户端原生布局实现，注入壳**不再自绘**这两处；
+> 0.2.1 及更早没有这些原生布局，不在支持范围内。详见
+> [`../docs/diagnostics/14-dsh-0.2.2-mobile-shell.md`](../docs/diagnostics/14-dsh-0.2.2-mobile-shell.md)。
+
+- 窄屏侧栏抽屉、设置弹窗 → 交给 DSH 原生窄屏布局（0.2.2 起）；
+- 窄屏右栏 → 全屏覆盖层；
+- 外链 → App 内嵌浏览器（`ExternalPageScreen`，可切系统浏览器）；
+- 窄屏隐藏 DSH 的「在主机本机打开」控件（open-in-app，只按稳定 `data-*` 属性隐藏控件本身、
   不整段隐藏插件槽位）。实现见 `src/lib/mobileWebShell.ts` / `src/screens/WebViewScreen.tsx`，
   `npm run check:shell` 用无头 Chrome 回归。
 
@@ -357,7 +363,7 @@ POST /__group/auth/token { deviceId, nonce, signature }
 cd dsh-remoteApp
 npx tsc --noEmit          # TypeScript 全量检查
 npm run check:native      # JS bridge ↔ iOS/Android 原生导出 + classic 文件已删除 + 括号平衡
-npm run check:shell       # 注入手机壳的无头 Chrome 回归（59 项）
+npm run check:shell       # 注入手机壳的无头 Chrome 回归（25 项）
 npm run check:ios-env     # Xcode / CocoaPods 环境自检
 npm run check:android-env # Android SDK 环境自检
 ```
