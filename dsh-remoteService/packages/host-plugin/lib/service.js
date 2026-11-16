@@ -11,7 +11,7 @@ import { GroupHostRuntime, loadGroupRegistration } from './group.js';
 import { createHostRestartScheduler, requestHostRestart } from './host-restart.js';
 import { createGroupPushNotifier } from './push.js';
 
-const VERSION = '0.2.8';
+const VERSION = '0.2.9';
 
 /**
  * 未启动群体运行时的推送状态默认值（契约 §6.3 R2 形状；不含 token/credential）。
